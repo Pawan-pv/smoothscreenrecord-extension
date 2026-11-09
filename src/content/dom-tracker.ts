@@ -76,6 +76,7 @@ function findParentContainer(target: Element | null): BoundingBox | undefined {
 // Track mouse position and cursor style at up to 120Hz
 function handleMouseMove(e: MouseEvent) {
   if (!isRecording) return;
+  if ((e.target as HTMLElement)?.closest('#smoothstudio-floating-hud')) return;
 
   lastMouseX = e.clientX;
   lastMouseY = e.clientY;
@@ -108,6 +109,7 @@ function handleMouseMove(e: MouseEvent) {
 // Track clicks with smart bounding box lock
 function handleClick(e: MouseEvent) {
   if (!isRecording) return;
+  if ((e.target as HTMLElement)?.closest('#smoothstudio-floating-hud')) return;
 
   const target = e.target as Element | null;
   const tag = target?.tagName.toLowerCase() || 'unknown';
@@ -209,6 +211,88 @@ function handleInput(e: Event) {
   }
 }
 
+let floatingHudEl: HTMLElement | null = null;
+let timerInterval: number | null = null;
+
+function injectRecordingHud() {
+  if (floatingHudEl || document.getElementById('smoothstudio-floating-hud')) return;
+
+  floatingHudEl = document.createElement('div');
+  floatingHudEl.id = 'smoothstudio-floating-hud';
+  floatingHudEl.setAttribute('data-smoothstudio-ignore', 'true');
+  floatingHudEl.style.cssText = `
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 2147483647;
+    background: #14161D;
+    color: #F3F4F6;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 9999px;
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 13px;
+    user-select: none;
+    backdrop-filter: blur(12px);
+  `;
+
+  floatingHudEl.innerHTML = `
+    <div style="display:flex; align-items:center; gap:8px;">
+      <span style="width:10px; height:10px; border-radius:50%; background:#EF4444; display:inline-block; animation: smoothstudio-pulse 1.4s infinite;"></span>
+      <span id="smoothstudio-timer" style="font-family:monospace; font-weight:600; color:#F3F4F6;">00:00</span>
+    </div>
+    <div style="width:1px; height:16px; background:rgba(255,255,255,0.15);"></div>
+    <button id="smoothstudio-stop-btn" style="background:#8B5CF6; color:#FFF; border:none; border-radius:9999px; padding:4px 12px; font-size:12px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:6px;">
+      Stop & Edit
+    </button>
+    <style>
+      @keyframes smoothstudio-pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.4; transform: scale(0.85); }
+      }
+      #smoothstudio-stop-btn:hover { background: #7C3AED; }
+    </style>
+  `;
+
+  document.body.appendChild(floatingHudEl);
+
+  const timerEl = document.getElementById('smoothstudio-timer');
+  const stopBtn = document.getElementById('smoothstudio-stop-btn');
+
+  if (stopBtn) {
+    stopBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (typeof chrome !== 'undefined' && chrome.runtime) {
+        chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' });
+      }
+    };
+  }
+
+  const startT = performance.now();
+  timerInterval = window.setInterval(() => {
+    if (!timerEl) return;
+    const elapsedSec = Math.floor((performance.now() - startT) / 1000);
+    const m = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
+    const s = String(elapsedSec % 60).padStart(2, '0');
+    timerEl.innerText = `${m}:${s}`;
+  }, 1000);
+}
+
+function removeRecordingHud() {
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+  if (floatingHudEl) {
+    floatingHudEl.remove();
+    floatingHudEl = null;
+  }
+}
+
 export function startTracking(): void {
   isRecording = true;
   startTime = performance.now();
@@ -217,6 +301,8 @@ export function startTracking(): void {
   keystrokes = [];
   inputEvents = [];
   lastSampleTime = 0;
+
+  injectRecordingHud();
 
   window.addEventListener('mousemove', handleMouseMove, { passive: true, capture: true });
   window.addEventListener('click', handleClick, { passive: true, capture: true });
@@ -229,6 +315,7 @@ export function startTracking(): void {
 
 export function stopTracking(): TelemetryData {
   isRecording = false;
+  removeRecordingHud();
 
   window.removeEventListener('mousemove', handleMouseMove, { capture: true });
   window.removeEventListener('click', handleClick, { capture: true });

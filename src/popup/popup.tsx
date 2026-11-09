@@ -69,18 +69,13 @@ export function PopupApp() {
           }).catch(() => {});
         }
 
-        chrome.runtime.sendMessage({
-          type: 'START_STUDIO_RECORDING',
-          tabId: activeTab?.id,
-          includeMic
-        }, () => {
-          setIsRecording(true);
-          window.close();
-        });
+        // Open studio tab with live recording prompt
+        chrome.tabs.create({ url: chrome.runtime.getURL('editor.html?record=true') });
+        window.close();
       });
     } else {
-      // In standalone browser mode, redirect to studio editor
-      window.open('/editor.html', '_blank');
+      // In standalone browser mode, redirect to studio editor with recording prompt
+      window.open('/editor.html?record=true', '_blank');
     }
   };
 

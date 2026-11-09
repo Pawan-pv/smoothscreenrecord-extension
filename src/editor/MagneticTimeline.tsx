@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { ZoomPill, SilenceSegment, KeystrokeEvent } from '../types/telemetry';
 import { Scissors, Plus, Trash2, Eye, Box, Sliders } from 'lucide-react';
 
@@ -35,6 +35,46 @@ export function MagneticTimeline({
 }: MagneticTimelineProps) {
   const timelineRef = useRef<HTMLDivElement>(null);
   const [selectedPillId, setSelectedPillId] = useState<string | null>(null);
+  const [resizingPill, setResizingPill] = useState<{ id: string; edge: 'start' | 'end' } | null>(null);
+
+  const handleMouseDownResize = (e: React.MouseEvent, pillId: string, edge: 'start' | 'end') => {
+    e.stopPropagation();
+    setResizingPill({ id: pillId, edge });
+  };
+
+  useEffect(() => {
+    if (!resizingPill) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!timelineRef.current || durationMs <= 0) return;
+      const rect = timelineRef.current.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const ratio = Math.max(0, Math.min(1, clickX / rect.width));
+      const targetTimeMs = Math.round(ratio * durationMs);
+
+      const targetPill = pills.find((p) => p.id === resizingPill.id);
+      if (!targetPill) return;
+
+      if (resizingPill.edge === 'start') {
+        const nextStart = Math.min(targetPill.endTime - 600, Math.max(0, targetTimeMs));
+        onUpdatePill({ ...targetPill, startTime: nextStart });
+      } else {
+        const nextEnd = Math.max(targetPill.startTime + 600, Math.min(durationMs, targetTimeMs));
+        onUpdatePill({ ...targetPill, endTime: nextEnd });
+      }
+    };
+
+    const handleMouseUp = () => {
+      setResizingPill(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [resizingPill, durationMs, pills, onUpdatePill]);
 
   const selectedPill = pills.find((p) => p.id === selectedPillId);
 
@@ -228,13 +268,20 @@ export function MagneticTimeline({
                   e.stopPropagation();
                   setSelectedPillId(pill.id);
                 }}
-                className={`absolute h-9 rounded-lg flex items-center justify-between px-2 cursor-grab transition-all shadow-md ${
+                className={`group absolute h-9 rounded-lg flex items-center justify-between px-2 cursor-pointer transition-all shadow-md ${
                   isSelected
-                    ? 'bg-gradient-to-r from-purple-600 to-indigo-600 border-2 border-white ring-2 ring-purple-500/40'
+                    ? 'bg-gradient-to-r from-purple-600 to-indigo-600 border-2 border-white ring-2 ring-purple-500/40 z-10'
                     : 'bg-purple-900/60 hover:bg-purple-800/80 border border-purple-500/30'
                 }`}
                 style={{ left: `${left}%`, width: `${width}%` }}
               >
+                {/* Left Drag Resize Handle */}
+                <div
+                  onMouseDown={(e) => handleMouseDownResize(e, pill.id, 'start')}
+                  className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 bg-white/30 hover:bg-white rounded-l-md transition-opacity"
+                  title="Drag to adjust start time"
+                />
+
                 <div className="flex items-center gap-1.5 truncate">
                   <span className="text-[11px] font-semibold text-white truncate">
                     {pill.label || `Zoom ${pill.targetScale.toFixed(1)}x`}
@@ -246,6 +293,13 @@ export function MagneticTimeline({
                 <span className="text-[9px] font-mono text-purple-200/80 ml-1">
                   {((pill.endTime - pill.startTime) / 1000).toFixed(1)}s
                 </span>
+
+                {/* Right Drag Resize Handle */}
+                <div
+                  onMouseDown={(e) => handleMouseDownResize(e, pill.id, 'end')}
+                  className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 bg-white/30 hover:bg-white rounded-r-md transition-opacity"
+                  title="Drag to adjust end time"
+                />
               </div>
             );
           })}

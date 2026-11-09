@@ -53,6 +53,7 @@ export function EditorStudio() {
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [exportProgress, setExportProgress] = useState<number>(0);
   const [exportComplete, setExportComplete] = useState<boolean>(false);
+  const [copiedSop, setCopiedSop] = useState<boolean>(false);
   const [isRecordingLive, setIsRecordingLive] = useState<boolean>(false);
 
   // Engines
@@ -67,6 +68,15 @@ export function EditorStudio() {
   // 1. Initial Load: Try OPFS / storage or generate interactive demo
   useEffect(() => {
     async function loadInitial() {
+      if (typeof window !== 'undefined' && window.location.search.includes('record=true')) {
+        loadDemoWorkspace();
+        // Automatically prompt capture after initial render
+        setTimeout(() => {
+          handleStartLiveRecording();
+        }, 500);
+        return;
+      }
+
       const storedTelemetry = await loadTelemetry();
       const storedBlob = await getRecordingBlob();
 
@@ -358,17 +368,29 @@ export function EditorStudio() {
     };
   }, [isPlaying, durationMs, soundEnabled, telemetry, pills]);
 
-  // Spacebar to toggle Play/Pause
+  // Keyboard shortcuts: Space (play/pause), ArrowLeft/Right (seek), Z (add zoom)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      if (e.code === 'Space') {
         e.preventDefault();
         setIsPlaying((p) => !p);
+      } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        setCurrentTimeMs((t) => Math.max(0, t - 1000));
+      } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        setCurrentTimeMs((t) => Math.min(durationMs, t + 1000));
+      } else if (e.code === 'KeyZ' && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
+        if (!e.metaKey && !e.ctrlKey) {
+          handleAddPillAtPlayhead(0.5, 0.5);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [durationMs]);
 
   // Synchronize HTML5 video element currentTime if source is a real video
   useEffect(() => {
@@ -502,6 +524,18 @@ export function EditorStudio() {
     SopGuideExporter.downloadMarkdown(md, `${telemetry.metadata.title || 'SOP'}_Guide.md`);
   };
 
+  const handleCopySopGuide = async () => {
+    if (!telemetry) return;
+    try {
+      const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots());
+      await navigator.clipboard.writeText(md);
+      setCopiedSop(true);
+      setTimeout(() => setCopiedSop(false), 2200);
+    } catch {
+      handleExportSopGuide();
+    }
+  };
+
   // 3. Interactive HTML Click-Through Widget Export
   const handleExportInteractiveWidget = () => {
     if (!telemetry) return;
@@ -561,15 +595,31 @@ export function EditorStudio() {
 
         {/* 3-in-1 Export Multi-Format Action Buttons */}
         <div className="flex items-center gap-2">
-          {/* SOP Markdown Guide */}
-          <button
-            onClick={handleExportSopGuide}
-            className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-gray-200 text-xs font-medium flex items-center gap-1.5 border border-white/10 transition-colors"
-            title="Export Step-by-Step Markdown SOP guide with screenshots"
-          >
-            <FileText className="w-3.5 h-3.5 text-emerald-400" />
-            Export SOP Guide
-          </button>
+          {/* SOP Markdown Guide & Copy */}
+          <div className="flex items-center rounded-xl bg-white/5 border border-white/10 overflow-hidden">
+            <button
+              onClick={handleExportSopGuide}
+              className="px-3 py-1.5 hover:bg-white/10 text-gray-200 text-xs font-medium flex items-center gap-1.5 transition-colors"
+              title="Download Step-by-Step Markdown SOP guide with screenshots"
+            >
+              <FileText className="w-3.5 h-3.5 text-emerald-400" />
+              SOP Guide (.md)
+            </button>
+            <div className="w-[1px] h-4 bg-white/15" />
+            <button
+              onClick={handleCopySopGuide}
+              className="px-2.5 py-1.5 hover:bg-white/10 text-gray-300 text-xs font-medium flex items-center gap-1 transition-colors"
+              title="Copy SOP markdown formatted for Notion & Obsidian"
+            >
+              {copiedSop ? (
+                <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" /> Copied!
+                </span>
+              ) : (
+                'Copy'
+              )}
+            </button>
+          </div>
 
           {/* Interactive HTML Widget */}
           <button

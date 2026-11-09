@@ -102,7 +102,92 @@ export class CursorSplineEngine {
     };
   }
 
-  // Draw crisp 4K vector cursor and physics click ripple rings
+  public getClicks(): ClickEvent[] {
+    return this.clicks;
+  }
+
+  // Draw crisp 4K vector cursor and physics click ripple rings at specific screen coordinates
+  public drawCursorAt(
+    ctx: CanvasRenderingContext2D,
+    cursor: InterpolatedCursor,
+    screenX: number,
+    screenY: number,
+    currentTimeMs: number,
+    ringColor: string = '#8B5CF6',
+    activeRipples?: { x: number; y: number; progress: number }[]
+  ): void {
+    ctx.save();
+
+    // 1. Draw Active Click Ripples
+    if (activeRipples && activeRipples.length > 0) {
+      for (const ripple of activeRipples) {
+        const progress = ripple.progress;
+        const radius = 10 + progress * 34;
+        const alpha = Math.max(0, (1 - progress) * 0.85);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = ringColor;
+        ctx.lineWidth = 2.5 * (1 - progress * 0.5);
+        ctx.globalAlpha = alpha;
+        ctx.shadowColor = ringColor;
+        ctx.shadowBlur = 12;
+        ctx.stroke();
+
+        // Inner solid dot pop
+        if (progress < 0.4) {
+          ctx.beginPath();
+          ctx.arc(ripple.x, ripple.y, 4 * (1 - progress * 2), 0, Math.PI * 2);
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+
+    // 2. Motion trail / directional motion blur if moving fast
+    if (cursor.speed > 350) {
+      ctx.save();
+      const blurLen = Math.min(24, cursor.speed * 0.02);
+      const angle = Math.atan2(cursor.vy, cursor.vx);
+      ctx.beginPath();
+      ctx.moveTo(screenX, screenY);
+      ctx.lineTo(
+        screenX - Math.cos(angle) * blurLen,
+        screenY - Math.sin(angle) * blurLen
+      );
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+      ctx.lineWidth = 4;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 3. Render High-Resolution Vector Cursor
+    ctx.translate(screenX, screenY);
+
+    // Subtle drop shadow for vector cursor
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 2;
+
+    if (cursor.style.includes('pointer') || cursor.style.includes('hand')) {
+      // Sleek pointing hand SVG vector
+      this.drawHandCursor(ctx);
+    } else if (cursor.style.includes('text')) {
+      // macOS style I-beam cursor
+      this.drawIBeamCursor(ctx);
+    } else {
+      // Sleek modern Arrow Pointer
+      this.drawArrowCursor(ctx);
+    }
+
+    ctx.restore();
+  }
+
+  // Draw crisp 4K vector cursor and physics click ripple rings (legacy fallback)
   public drawCursor(
     ctx: CanvasRenderingContext2D,
     cursor: InterpolatedCursor,

@@ -124,19 +124,33 @@ export function computeCinematicCameraState(
   viewportHeight = 1080,
   followCursor = true
 ): CameraState {
-  const TRANSITION_MS = 450; // 450ms smooth spring-like ease
+  const TRANSITION_MS = 500; // 500ms smooth spring-like ease
 
-  // Find active pill or closest overlapping transition
+  // Ken Perlin's quintic smootherstep curve: 6t^5 - 15t^4 + 10t^3 (zero 1st & 2nd derivative)
+  const smootherStep = (t: number) => {
+    const c = Math.max(0, Math.min(1, t));
+    return c * c * c * (c * (c * 6 - 15) + 10);
+  };
+
+  // Find active pill
   let activePill: ZoomPill | undefined;
-  for (const pill of pills) {
-    if (timeMs >= pill.startTime && timeMs <= pill.endTime) {
-      activePill = pill;
+  let activePillIndex = -1;
+  for (let i = 0; i < pills.length; i++) {
+    if (timeMs >= pills[i].startTime && timeMs <= pills[i].endTime) {
+      activePill = pills[i];
+      activePillIndex = i;
       break;
     }
   }
 
-  // Smooth Hermite cubic ease curve
-  const smoothStep = (t: number) => t * t * (3 - 2 * t);
+  // Normalized cursor coordinates
+  let normCursorX = 0.5;
+  let normCursorY = 0.5;
+  const hasCursor = Boolean(cursor && viewportWidth > 0 && viewportHeight > 0);
+  if (hasCursor && cursor) {
+    normCursorX = Math.max(0.05, Math.min(0.95, cursor.x / viewportWidth));
+    normCursorY = Math.max(0.05, Math.min(0.95, cursor.y / viewportHeight));
+  }
 
   if (activePill) {
     const start = activePill.startTime;
@@ -144,42 +158,80 @@ export function computeCinematicCameraState(
     const totalPillDuration = end - start;
     const actualTransition = Math.min(TRANSITION_MS, totalPillDuration * 0.35);
 
-    let easeProgress = 1.0;
-    if (timeMs < start + actualTransition) {
-      // Transitioning in
-      const p = Math.max(0, Math.min(1, (timeMs - start) / actualTransition));
-      easeProgress = smoothStep(p);
-    } else if (timeMs > end - actualTransition) {
-      // Transitioning out
-      const p = Math.max(0, Math.min(1, (end - timeMs) / actualTransition));
-      easeProgress = smoothStep(p);
-    }
+    // Check if next pill starts soon (within 750ms of this pill ending)
+    const nextPill = activePillIndex >= 0 && activePillIndex < pills.length - 1 ? pills[activePillIndex + 1] : undefined;
+    const isChainedToNext = nextPill && (nextPill.startTime - end <= 750);
 
-    // Dynamic cursor following bias (follows cursor subtly inside the zoomed focal region)
+    // Check if previous pill ended soon (within 750ms before this pill starting)
+    const prevPill = activePillIndex > 0 ? pills[activePillIndex - 1] : undefined;
+    const isChainedFromPrev = prevPill && (start - prevPill.endTime <= 750);
+
+    // Compute cursor tracking bias for active pill (30% dynamic follow keeps target centered while gliding)
     let targetX = activePill.targetX;
     let targetY = activePill.targetY;
-
-    if (cursor && followCursor && viewportWidth > 0 && viewportHeight > 0) {
-      const normCursorX = Math.max(0.05, Math.min(0.95, cursor.x / viewportWidth));
-      const normCursorY = Math.max(0.05, Math.min(0.95, cursor.y / viewportHeight));
-      // 30% cursor tracking bias keeps element centered while gliding smoothly with mouse
-      targetX = targetX + (normCursorX - targetX) * 0.30;
-      targetY = targetY + (normCursorY - targetY) * 0.30;
+    if (hasCursor && followCursor) {
+      targetX = targetX + (normCursorX - targetX) * 0.32;
+      targetY = targetY + (normCursorY - targetY) * 0.32;
     }
 
-    const scale = 1.0 + (activePill.targetScale - 1.0) * easeProgress;
-    const x = 0.5 + (targetX - 0.5) * easeProgress;
-    const y = 0.5 + (targetY - 0.5) * easeProgress;
-    const tiltX = activePill.tiltX * easeProgress;
-    const tiltY = activePill.tiltY * easeProgress;
+    if (timeMs < start + actualTransition && !isChainedFromPrev) {
+      // Transitioning in from neutral full frame (0.5, 0.5, 1.0)
+      const p = Math.max(0, Math.min(1, (timeMs - start) / actualTransition));
+      const ease = smootherStep(p);
+      return {
+        x: 0.5 + (targetX - 0.5) * ease,
+        y: 0.5 + (targetY - 0.5) * ease,
+        scale: 1.0 + (activePill.targetScale - 1.0) * ease,
+        tiltX: activePill.tiltX * ease,
+        tiltY: activePill.tiltY * ease
+      };
+    } else if (timeMs < start + actualTransition && isChainedFromPrev && prevPill) {
+      // Chained transition directly from previous pill to this pill without dipping
+      const p = Math.max(0, Math.min(1, (timeMs - start) / actualTransition));
+      const ease = smootherStep(p);
+      return {
+        x: prevPill.targetX + (targetX - prevPill.targetX) * ease,
+        y: prevPill.targetY + (targetY - prevPill.targetY) * ease,
+        scale: prevPill.targetScale + (activePill.targetScale - prevPill.targetScale) * ease,
+        tiltX: prevPill.tiltX + (activePill.tiltX - prevPill.tiltX) * ease,
+        tiltY: prevPill.tiltY + (activePill.tiltY - prevPill.tiltY) * ease
+      };
+    } else if (timeMs > end - actualTransition && isChainedToNext && nextPill) {
+      // Chained transition directly towards next pill
+      const p = Math.max(0, Math.min(1, (timeMs - (end - actualTransition)) / actualTransition));
+      const ease = smootherStep(p);
+      return {
+        x: targetX + (nextPill.targetX - targetX) * ease,
+        y: targetY + (nextPill.targetY - targetY) * ease,
+        scale: activePill.targetScale + (nextPill.targetScale - activePill.targetScale) * ease,
+        tiltX: activePill.tiltX + (nextPill.tiltX - activePill.tiltX) * ease,
+        tiltY: activePill.tiltY + (nextPill.tiltY - activePill.tiltY) * ease
+      };
+    } else if (timeMs > end - actualTransition && !isChainedToNext) {
+      // Transitioning out towards neutral full frame
+      const p = Math.max(0, Math.min(1, (end - timeMs) / actualTransition));
+      const ease = smootherStep(p);
+      return {
+        x: 0.5 + (targetX - 0.5) * ease,
+        y: 0.5 + (targetY - 0.5) * ease,
+        scale: 1.0 + (activePill.targetScale - 1.0) * ease,
+        tiltX: activePill.tiltX * ease,
+        tiltY: activePill.tiltY * ease
+      };
+    }
 
-    return { x, y, scale, tiltX, tiltY };
+    // Fully inside active pill
+    return {
+      x: targetX,
+      y: targetY,
+      scale: activePill.targetScale,
+      tiltX: activePill.tiltX,
+      tiltY: activePill.tiltY
+    };
   }
 
-  // Outside zoom pills: smooth gentle pan towards cursor if cursor is active
-  if (cursor && followCursor && viewportWidth > 0 && viewportHeight > 0) {
-    const normCursorX = Math.max(0.05, Math.min(0.95, cursor.x / viewportWidth));
-    const normCursorY = Math.max(0.05, Math.min(0.95, cursor.y / viewportHeight));
+  // Outside zoom pills: smooth gentle breathing pan towards cursor if enabled
+  if (hasCursor && followCursor) {
     return {
       x: 0.5 + (normCursorX - 0.5) * 0.12,
       y: 0.5 + (normCursorY - 0.5) * 0.12,

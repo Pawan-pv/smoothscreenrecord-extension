@@ -61,16 +61,19 @@ export function PopupApp() {
     if (typeof chrome !== 'undefined' && chrome.tabs && chrome.runtime) {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         const activeTab = tabs[0];
+        const activeTabId = activeTab?.id;
+
         // Apply privacy settings first
-        if (activeTab?.id) {
-          chrome.tabs.sendMessage(activeTab.id, {
+        if (activeTabId) {
+          chrome.tabs.sendMessage(activeTabId, {
             type: 'APPLY_PRIVACY_OPTIONS',
             options: { blurEmails, blurRevenue, blurApiKeys }
           }).catch(() => {});
         }
 
-        // Open studio tab with live recording prompt
-        chrome.tabs.create({ url: chrome.runtime.getURL('editor.html?record=true') });
+        // Open studio tab with live recording prompt and sourceTab id
+        const url = chrome.runtime.getURL(`editor.html?record=true&sourceTab=${activeTabId || ''}`);
+        chrome.tabs.create({ url });
         window.close();
       });
     } else {

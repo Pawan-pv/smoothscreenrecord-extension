@@ -6,6 +6,12 @@ import {
   TelemetryData,
   BoundingBox
 } from '../types/telemetry';
+import {
+  applyAutoRedaction,
+  startElementPicker,
+  stopElementPicker,
+  resetRedactions
+} from './privacy-redactor';
 
 let isRecording = false;
 let startTime = 0;
@@ -58,6 +64,7 @@ export function extractBrandColors(): { primary: string; secondary: string; acce
 }
 
 // DOM tree climbing to find meaningful UI container for smart camera framing
+// Strictly uses viewport client coordinates so coordinates match getDisplayMedia viewport
 function findParentContainer(target: Element | null): BoundingBox | undefined {
   if (!target) return undefined;
 
@@ -66,8 +73,8 @@ function findParentContainer(target: Element | null): BoundingBox | undefined {
 
   const rect = container.getBoundingClientRect();
   return {
-    x: rect.left + window.scrollX,
-    y: rect.top + window.scrollY,
+    x: rect.left,
+    y: rect.top,
     width: rect.width,
     height: rect.height
   };
@@ -173,7 +180,7 @@ function handleKeyDown(e: KeyboardEvent) {
   }
 }
 
-// Track input focus & typing for smart camera zoom on text entry
+// Track input focus & typing for smart camera zoom on text entry (in viewport coordinates)
 function handleFocusIn(e: FocusEvent) {
   if (!isRecording) return;
   const target = e.target as HTMLElement | null;
@@ -184,8 +191,8 @@ function handleFocusIn(e: FocusEvent) {
       t: Math.round(getRelativeTime()),
       type: 'focus',
       bounds: {
-        x: rect.left + window.scrollX,
-        y: rect.top + window.scrollY,
+        x: rect.left,
+        y: rect.top,
         width: rect.width,
         height: rect.height
       }
@@ -202,8 +209,8 @@ function handleInput(e: Event) {
       t: Math.round(getRelativeTime()),
       type: 'type',
       bounds: {
-        x: rect.left + window.scrollX,
-        y: rect.top + window.scrollY,
+        x: rect.left,
+        y: rect.top,
         width: rect.width,
         height: rect.height
       }
@@ -359,6 +366,18 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage)
       sendResponse({ status: 'stopped', data });
     } else if (message.type === 'GET_BRAND_COLORS') {
       sendResponse({ brandColors: extractBrandColors() });
+    } else if (message.type === 'APPLY_PRIVACY_OPTIONS') {
+      applyAutoRedaction(message.options || {});
+      sendResponse({ status: 'applied' });
+    } else if (message.type === 'START_PICKER') {
+      startElementPicker();
+      sendResponse({ status: 'picker_active' });
+    } else if (message.type === 'STOP_PICKER') {
+      stopElementPicker();
+      sendResponse({ status: 'picker_stopped' });
+    } else if (message.type === 'RESET_PRIVACY') {
+      resetRedactions();
+      sendResponse({ status: 'reset' });
     }
     return true;
   });

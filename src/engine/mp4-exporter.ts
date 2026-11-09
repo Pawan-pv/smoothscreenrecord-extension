@@ -25,6 +25,7 @@ export interface ExportOptions {
   showSpotlight: boolean;
   showCursor: boolean;
   showHud: boolean;
+  metadata?: { width: number; height: number };
   onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
 }
 
@@ -103,6 +104,7 @@ export class HardwareMp4Exporter {
           showSpotlight,
           showCursor,
           showHud,
+          metadata: options.metadata,
           onProgress
         });
       } catch (err) {
@@ -124,6 +126,7 @@ export class HardwareMp4Exporter {
       showSpotlight,
       showCursor,
       showHud,
+      metadata: options.metadata,
       onProgress
     });
   }
@@ -145,6 +148,7 @@ export class HardwareMp4Exporter {
     showSpotlight: boolean;
     showCursor: boolean;
     showHud: boolean;
+    metadata?: { width: number; height: number };
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
   }): Promise<Blob> {
     const {
@@ -164,9 +168,11 @@ export class HardwareMp4Exporter {
       showSpotlight,
       showCursor,
       showHud,
+      metadata,
       onProgress
     } = params;
 
+    let isFinalized = false;
     const muxer = new Muxer({
       target: new ArrayBufferTarget(),
       video: {
@@ -178,7 +184,15 @@ export class HardwareMp4Exporter {
     });
 
     const videoEncoder = new VideoEncoder({
-      output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+      output: (chunk, meta) => {
+        if (!isFinalized) {
+          try {
+            muxer.addVideoChunk(chunk, meta);
+          } catch {
+            // Closed or finalized
+          }
+        }
+      },
       error: (e) => console.error('[SmoothStudio VideoEncoder Error]', e)
     });
 
@@ -201,8 +215,8 @@ export class HardwareMp4Exporter {
         currentMs,
         pills,
         cursor,
-        outW,
-        outH,
+        metadata?.width || outW,
+        metadata?.height || outH,
         true
       );
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
@@ -237,7 +251,8 @@ export class HardwareMp4Exporter {
         aspectRatio,
         showSpotlight,
         showCursor,
-        showHud
+        showHud,
+        metadata
       });
 
       // Encode frame
@@ -250,9 +265,13 @@ export class HardwareMp4Exporter {
       videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
       videoFrame.close();
 
-      // Yield to the event loop so the hardware GPU encoder processes the queue
-      if (videoEncoder.encodeQueueSize > 6 || f % 10 === 0) {
-        await new Promise((r) => setTimeout(r, 2));
+      // Yield to the event loop and apply backpressure if encoder queue is filling
+      if (videoEncoder.encodeQueueSize > 5) {
+        while (videoEncoder.encodeQueueSize > 2) {
+          await new Promise((r) => setTimeout(r, 4));
+        }
+      } else if (f % 10 === 0) {
+        await new Promise((r) => setTimeout(r, 1));
       }
 
       if (f % 15 === 0 && onProgress) {
@@ -265,16 +284,29 @@ export class HardwareMp4Exporter {
       onProgress(100, totalFrames, totalFrames);
     }
 
+    // Drain remaining encoder queue before flushing
+    let drainWait = 0;
+    while (videoEncoder.encodeQueueSize > 0 && drainWait < 200) {
+      await new Promise((r) => setTimeout(r, 10));
+      drainWait++;
+    }
+
     try {
       await Promise.race([
         videoEncoder.flush(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Flush timeout')), 8000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Flush timeout')), 5000))
       ]);
     } catch (flushErr) {
       console.warn('[SmoothStudio MP4 Exporter] Flush completed or notice:', flushErr);
     }
 
+    isFinalized = true;
     muxer.finalize();
+    try {
+      videoEncoder.close();
+    } catch {
+      // Ignored if already closed
+    }
 
     const buffer = muxer.target.buffer;
     const mp4Blob = new Blob([buffer], { type: 'video/mp4' });
@@ -296,6 +328,7 @@ export class HardwareMp4Exporter {
     showSpotlight: boolean;
     showCursor: boolean;
     showHud: boolean;
+    metadata?: { width: number; height: number };
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
   }): Promise<Blob> {
     const {
@@ -311,6 +344,7 @@ export class HardwareMp4Exporter {
       showSpotlight,
       showCursor,
       showHud,
+      metadata,
       onProgress
     } = params;
 
@@ -337,8 +371,8 @@ export class HardwareMp4Exporter {
         currentMs,
         pills,
         cursor,
-        exportCanvas.width,
-        exportCanvas.height,
+        metadata?.width || exportCanvas.width,
+        metadata?.height || exportCanvas.height,
         true
       );
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
@@ -360,7 +394,8 @@ export class HardwareMp4Exporter {
         aspectRatio,
         showSpotlight,
         showCursor,
-        showHud
+        showHud,
+        metadata
       });
 
       if (f % 10 === 0) {

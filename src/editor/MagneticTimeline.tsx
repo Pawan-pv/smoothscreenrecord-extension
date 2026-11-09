@@ -36,14 +36,16 @@ export function MagneticTimeline({
   const timelineRef = useRef<HTMLDivElement>(null);
   const [selectedPillId, setSelectedPillId] = useState<string | null>(null);
   const [resizingPill, setResizingPill] = useState<{ id: string; edge: 'start' | 'end' } | null>(null);
+  const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
 
   const handleMouseDownResize = (e: React.MouseEvent, pillId: string, edge: 'start' | 'end') => {
     e.stopPropagation();
     setResizingPill({ id: pillId, edge });
   };
 
+  // Continuous scrubbing and pill resizing effect
   useEffect(() => {
-    if (!resizingPill) return;
+    if (!resizingPill && !isScrubbing) return;
 
     const handleMouseMove = (e: MouseEvent) => {
       if (!timelineRef.current || durationMs <= 0) return;
@@ -52,20 +54,28 @@ export function MagneticTimeline({
       const ratio = Math.max(0, Math.min(1, clickX / rect.width));
       const targetTimeMs = Math.round(ratio * durationMs);
 
-      const targetPill = pills.find((p) => p.id === resizingPill.id);
-      if (!targetPill) return;
+      if (isScrubbing) {
+        onSeek(targetTimeMs);
+        return;
+      }
 
-      if (resizingPill.edge === 'start') {
-        const nextStart = Math.min(targetPill.endTime - 600, Math.max(0, targetTimeMs));
-        onUpdatePill({ ...targetPill, startTime: nextStart });
-      } else {
-        const nextEnd = Math.max(targetPill.startTime + 600, Math.min(durationMs, targetTimeMs));
-        onUpdatePill({ ...targetPill, endTime: nextEnd });
+      if (resizingPill) {
+        const targetPill = pills.find((p) => p.id === resizingPill.id);
+        if (!targetPill) return;
+
+        if (resizingPill.edge === 'start') {
+          const nextStart = Math.min(targetPill.endTime - 600, Math.max(0, targetTimeMs));
+          onUpdatePill({ ...targetPill, startTime: nextStart });
+        } else {
+          const nextEnd = Math.max(targetPill.startTime + 600, Math.min(durationMs, targetTimeMs));
+          onUpdatePill({ ...targetPill, endTime: nextEnd });
+        }
       }
     };
 
     const handleMouseUp = () => {
       setResizingPill(null);
+      setIsScrubbing(false);
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -74,16 +84,17 @@ export function MagneticTimeline({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [resizingPill, durationMs, pills, onUpdatePill]);
+  }, [resizingPill, isScrubbing, durationMs, pills, onUpdatePill, onSeek]);
 
   const selectedPill = pills.find((p) => p.id === selectedPillId);
 
-  const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handleTimelineMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!timelineRef.current || durationMs <= 0) return;
     const rect = timelineRef.current.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const ratio = Math.max(0, Math.min(1, clickX / rect.width));
     onSeek(ratio * durationMs);
+    setIsScrubbing(true);
   };
 
   const getPercent = (timeMs: number) => {
@@ -197,7 +208,7 @@ export function MagneticTimeline({
       {/* Main Multi-Track Magnetic Timeline */}
       <div
         ref={timelineRef}
-        onClick={handleTimelineClick}
+        onMouseDown={handleTimelineMouseDown}
         className="relative h-24 bg-[#0B0C10] rounded-xl border border-white/10 overflow-hidden cursor-pointer"
       >
         {/* Track 1: Audio Waveform & Silences */}

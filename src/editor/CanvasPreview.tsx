@@ -26,6 +26,7 @@ interface CanvasPreviewProps {
   showCursor: boolean;
   showHud: boolean;
   followCursor: boolean;
+  metadata?: { width: number; height: number };
   onCanvasClickToAddZoom?: (normalizedX: number, normalizedY: number) => void;
 }
 
@@ -45,6 +46,7 @@ export function CanvasPreview({
   showCursor,
   showHud,
   followCursor,
+  metadata,
   onCanvasClickToAddZoom
 }: CanvasPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -67,8 +69,8 @@ export function CanvasPreview({
       currentTimeMs,
       pills,
       cursor,
-      targetW,
-      targetH,
+      metadata?.width || targetW,
+      metadata?.height || targetH,
       followCursor
     );
 
@@ -86,7 +88,8 @@ export function CanvasPreview({
       aspectRatio,
       showSpotlight,
       showCursor,
-      showHud
+      showHud,
+      metadata
     });
   }, [
     currentTimeMs,
@@ -97,18 +100,43 @@ export function CanvasPreview({
     showSpotlight,
     showCursor,
     showHud,
+    followCursor,
     cursorEngine,
-    keystrokes
+    keystrokes,
+    metadata
   ]);
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!canvasRef.current || !onCanvasClickToAddZoom) return;
+    if (!canvasRef.current || !onCanvasClickToAddZoom || !video) return;
     const rect = canvasRef.current.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const clickY = e.clientY - rect.top;
 
-    const normX = Math.max(0.1, Math.min(0.9, clickX / rect.width));
-    const normY = Math.max(0.1, Math.min(0.9, clickY / rect.height));
+    const canvasW = canvasRef.current.width;
+    const canvasH = canvasRef.current.height;
+    const paddingX = canvasW * 0.08;
+    const paddingY = canvasH * 0.08;
+    const availW = canvasW - paddingX * 2;
+    const availH = canvasH - paddingY * 2;
+    const sourceW = (video as HTMLVideoElement).videoWidth || (video as HTMLCanvasElement).width || 1920;
+    const sourceH = (video as HTMLVideoElement).videoHeight || (video as HTMLCanvasElement).height || 1080;
+    const videoAspect = sourceW / sourceH;
+
+    let windowW = availW;
+    let windowH = availW / videoAspect;
+    if (windowH > availH) {
+      windowH = availH;
+      windowW = availH * videoAspect;
+    }
+    const windowX = (canvasW - windowW) / 2;
+    const windowY = (canvasH - windowH) / 2;
+
+    const scaleOnScreen = rect.width / canvasW;
+    const clickCanvasX = clickX / scaleOnScreen;
+    const clickCanvasY = clickY / scaleOnScreen;
+
+    const normX = Math.max(0.1, Math.min(0.9, (clickCanvasX - windowX) / windowW));
+    const normY = Math.max(0.1, Math.min(0.9, (clickCanvasY - windowY) / windowH));
 
     onCanvasClickToAddZoom(normX, normY);
   };

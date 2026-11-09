@@ -5,7 +5,7 @@ export interface RecorderOptions {
   includeMic: boolean;
   frameRate?: number;
   onChunkSaved?: (chunkIndex: number) => void;
-  onStop?: (telemetry: TelemetryData, videoBlob: Blob) => void;
+  onStop?: () => void;
 }
 
 export class ScreenCaptureEngine {
@@ -19,6 +19,7 @@ export class ScreenCaptureEngine {
   private lastFrameData: Uint8ClampedArray | null = null;
   private frameDiffInterval: number | null = null;
   private snapshots: { timestamp: number; dataUrl: string }[] = [];
+  private onStopHandler: (() => void) | null = null;
 
   constructor() {
     this.frameDiffCanvas = document.createElement('canvas');
@@ -31,6 +32,7 @@ export class ScreenCaptureEngine {
     await initStorage();
     this.chunkCount = 0;
     this.snapshots = [];
+    this.onStopHandler = options.onStop || null;
 
     // Prompt user for display capture with native cursor removed
     const displayMediaOptions: DisplayMediaStreamOptions = {
@@ -189,6 +191,14 @@ export class ScreenCaptureEngine {
 
     await finalizeVideo();
     console.log('[SmoothStudio CaptureEngine] Recording finished and saved.');
+
+    if (this.onStopHandler) {
+      try {
+        this.onStopHandler();
+      } catch (err) {
+        console.error('[SmoothStudio] onStopHandler error:', err);
+      }
+    }
   }
 
   public getActiveStream(): MediaStream | null {

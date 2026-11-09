@@ -68,13 +68,33 @@ export function EditorStudio() {
 
   // 1. Initial Load: Try OPFS / storage or generate interactive demo
   useEffect(() => {
+    // Register editor tab with service worker and listen for background stop capture
+    if (typeof chrome !== 'undefined' && chrome.runtime) {
+      chrome.runtime.sendMessage({ type: 'REGISTER_EDITOR_TAB' }).catch(() => {});
+
+      const messageListener = (msg: any) => {
+        if (msg.type === 'STUDIO_STOP_CAPTURE') {
+          handleStopLiveRecording(msg.telemetry);
+        }
+      };
+      chrome.runtime.onMessage.addListener(messageListener);
+      return () => {
+        chrome.runtime.onMessage.removeListener(messageListener);
+      };
+    }
+  }, []);
+
+  useEffect(() => {
     async function loadInitial() {
       if (typeof window !== 'undefined' && window.location.search.includes('record=true')) {
+        const urlParams = new URLSearchParams(window.location.search);
+        const sourceTabStr = urlParams.get('sourceTab');
+        const sourceTabId = sourceTabStr ? parseInt(sourceTabStr) : undefined;
         loadDemoWorkspace();
         // Automatically prompt capture after initial render
         setTimeout(() => {
-          handleStartLiveRecording();
-        }, 500);
+          handleStartLiveRecording(sourceTabId);
+        }, 400);
         return;
       }
 
@@ -403,45 +423,57 @@ export function EditorStudio() {
   }, [currentTimeMs, videoElement]);
 
   // Handle Live Screen Recording within the browser tab
-  const handleStartLiveRecording = async () => {
+  const handleStartLiveRecording = async (sourceTabId?: number) => {
     try {
       setIsRecordingLive(true);
       await captureEngineRef.current.start({
         includeMic: true,
-        frameRate: 60
+        frameRate: 60,
+        onStop: () => {
+          handleStopLiveRecording();
+        }
       });
+
+      // Clear record=true query param without refreshing page
+      if (typeof window !== 'undefined' && window.history) {
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+
+      // Notify service worker to initiate 120Hz DOM tracking on target tab
+      if (typeof chrome !== 'undefined' && chrome.runtime) {
+        chrome.runtime.sendMessage({
+          type: 'START_STUDIO_RECORDING',
+          tabId: sourceTabId,
+          focusTarget: Boolean(sourceTabId)
+        }).catch(() => {});
+      }
     } catch (err) {
       console.warn('Capture canceled or rejected:', err);
       setIsRecordingLive(false);
     }
   };
 
-  const handleStopLiveRecording = async () => {
+  const handleStopLiveRecording = async (passedTelemetry?: TelemetryData | null) => {
     await captureEngineRef.current.stop();
     setIsRecordingLive(false);
+
+    // Notify background worker recording stopped
+    if (typeof chrome !== 'undefined' && chrome.runtime) {
+      chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' }).catch(() => {});
+    }
 
     const blob = await getRecordingBlob();
     if (blob) {
       // 1. Check if real DOM telemetry was captured by the recorded tab
-      const realTelemetry = await loadTelemetry();
+      const realTelemetry = passedTelemetry || (await loadTelemetry());
       if (realTelemetry && realTelemetry.mousePoints && realTelemetry.mousePoints.length > 0) {
         console.log('[SmoothStudio] Loaded live recording with DOM telemetry:', realTelemetry);
         setupLoadedRecording(blob, realTelemetry);
         return;
       }
 
-      // 2. Fullscreen / Window Fallback: If recorded outside Chrome tab, generate smooth cinematic camera path
-      const actualDuration = Math.max(3000, Date.now() - (realTelemetry?.metadata.startTime || Date.now() - 10000));
-      const fallbackPoints = [];
-      for (let t = 0; t <= actualDuration; t += 30) {
-        const prog = t / actualDuration;
-        fallbackPoints.push({
-          t,
-          x: (window.innerWidth * 0.5) + Math.sin(prog * Math.PI * 2) * (window.innerWidth * 0.2),
-          y: (window.innerHeight * 0.5) + Math.cos(prog * Math.PI * 2) * (window.innerHeight * 0.15),
-          c: 'default'
-        });
-      }
+      // 2. Fullscreen / Window Fallback: If recorded outside Chrome tab, maintain clean full-frame view
+      const actualDuration = Math.max(3000, Date.now() - (realTelemetry?.metadata?.startTime || Date.now() - 10000));
 
       const fallbackTelemetry: TelemetryData = {
         metadata: {
@@ -454,17 +486,8 @@ export function EditorStudio() {
           devicePixelRatio: window.devicePixelRatio || 1,
           title: 'Screen Recording'
         },
-        mousePoints: fallbackPoints,
-        clicks: [
-          {
-            t: Math.round(actualDuration * 0.25),
-            x: window.innerWidth * 0.5,
-            y: window.innerHeight * 0.45,
-            button: 0,
-            targetTag: 'div',
-            targetText: 'Focal Action'
-          }
-        ],
+        mousePoints: [],
+        clicks: [],
         keystrokes: [],
         inputEvents: []
       };
@@ -536,6 +559,7 @@ export function EditorStudio() {
         showSpotlight,
         showCursor,
         showHud,
+        metadata: telemetry?.metadata,
         onProgress: (pct) => setExportProgress(pct)
       });
 
@@ -599,7 +623,7 @@ export function EditorStudio() {
         <div className="flex items-center gap-2">
           {isRecordingLive ? (
             <button
-              onClick={handleStopLiveRecording}
+              onClick={() => handleStopLiveRecording()}
               className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-medium flex items-center gap-2 shadow-lg shadow-red-600/30 animate-pulse"
             >
               <div className="w-2 h-2 rounded-sm bg-white" />
@@ -607,7 +631,7 @@ export function EditorStudio() {
             </button>
           ) : (
             <button
-              onClick={handleStartLiveRecording}
+              onClick={() => handleStartLiveRecording()}
               className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-medium flex items-center gap-1.5 border border-white/10 transition-colors"
             >
               <CircleDot className="w-3.5 h-3.5 text-red-400" />
@@ -727,6 +751,7 @@ export function EditorStudio() {
           showCursor={showCursor}
           showHud={showHud}
           followCursor={followCursor}
+          metadata={telemetry?.metadata}
           onCanvasClickToAddZoom={handleAddPillAtPlayhead}
         />
       </div>

@@ -84,6 +84,7 @@ export interface RenderFrameOptions {
   showSpotlight: boolean;
   showCursor: boolean;
   showHud: boolean;
+  metadata?: { width: number; height: number };
 }
 
 export function getAspectDimensions(aspect: AspectRatioType, targetWidth = 1920): { width: number; height: number } {
@@ -125,7 +126,8 @@ export class StudioRenderer {
       aspectRatio,
       showSpotlight,
       showCursor,
-      showHud
+      showHud,
+      metadata
     } = options;
 
     const ctx = canvas.getContext('2d');
@@ -143,8 +145,8 @@ export class StudioRenderer {
     const availW = canvasW - paddingX * 2;
     const availH = canvasH - paddingY * 2;
 
-    const sourceW = (video as HTMLVideoElement).videoWidth || 1920;
-    const sourceH = (video as HTMLVideoElement).videoHeight || 1080;
+    const sourceW = (video as HTMLVideoElement).videoWidth || (video as HTMLCanvasElement).width || 1920;
+    const sourceH = (video as HTMLVideoElement).videoHeight || (video as HTMLCanvasElement).height || 1080;
     const videoAspect = sourceW / sourceH;
 
     let windowW = availW;
@@ -171,31 +173,7 @@ export class StudioRenderer {
       // Source might not be ready yet
     }
 
-    // 4. Render Dynamic Spotlight Mask onto Offscreen Video Canvas if enabled
-    const isSpotlightActive = showSpotlight && (activePill ? activePill.spotlight : false);
-    const cursor = cursorEngine.getCursorAt(currentTimeMs);
-
-    if (isSpotlightActive) {
-      this.applySpotlightMask(
-        this.offscreenVideoCtx,
-        sourceW,
-        sourceH,
-        camera.x * sourceW,
-        camera.y * sourceH
-      );
-    }
-
-    // 5. Draw Vector Cursor on Offscreen Video
-    if (showCursor) {
-      cursorEngine.drawCursor(
-        this.offscreenVideoCtx,
-        cursor,
-        currentTimeMs,
-        preset.cursorRingColor
-      );
-    }
-
-    // 6. Draw Window Framing with 3D Isometric Transform and Diffused Shadow
+    // 4. Draw Window Framing with 3D Isometric Transform and Diffused Shadow
     ctx.save();
 
     // Pivot center of the window
@@ -237,20 +215,73 @@ export class StudioRenderer {
     this.roundRect(ctx, 0, 0, windowW, windowH, preset.borderRadius);
     ctx.clip();
 
-    // 7. Apply Camera Zoom & Pan Transformations
-    // Zoom in towards camera focal point (camera.x, camera.y)
-    const zoomScale = Math.max(1.0, camera.scale);
-    const focalPxX = camera.x * windowW;
-    const focalPxY = camera.y * windowH;
+    // 5. Apply Camera Zoom & Pan Transformations
+    // Clamped focal point ensures video fills window with zero blank margins
+    const S = Math.max(1.0, camera.scale);
+    const halfViewX = 0.5 / S;
+    const halfViewY = 0.5 / S;
+    const clampedCamX = Math.max(halfViewX, Math.min(1 - halfViewX, camera.x));
+    const clampedCamY = Math.max(halfViewY, Math.min(1 - halfViewY, camera.y));
 
     ctx.save();
-    ctx.translate(focalPxX, focalPxY);
-    ctx.scale(zoomScale, zoomScale);
-    ctx.translate(-focalPxX, -focalPxY);
+    // Center camera onto target focal point
+    ctx.translate(windowW * 0.5, windowH * 0.5);
+    ctx.scale(S, S);
+    ctx.translate(-clampedCamX * windowW, -clampedCamY * windowH);
 
-    // Draw the processed video content inside the window
+    // Draw the source video content inside the window
     ctx.drawImage(this.offscreenVideoCanvas, 0, 0, windowW, windowH);
     ctx.restore();
+
+    // 6. Render Dynamic Spotlight Mask if enabled (soft radial darkening around focal point)
+    const isSpotlightActive = showSpotlight && (activePill ? activePill.spotlight : false);
+    if (isSpotlightActive) {
+      // The focal center in the window is windowW * 0.5, windowH * 0.5
+      this.applySpotlightMask(
+        ctx,
+        windowW,
+        windowH,
+        windowW * 0.5,
+        windowH * 0.5
+      );
+    }
+
+    // 7. Render High-Resolution Vector Cursor and Click Ripples
+    if (showCursor) {
+      const cursor = cursorEngine.getCursorAt(currentTimeMs);
+      const metaW = metadata?.width || sourceW;
+      const metaH = metadata?.height || sourceH;
+
+      const normCursorX = Math.max(0.01, Math.min(0.99, cursor.x / metaW));
+      const normCursorY = Math.max(0.01, Math.min(0.99, cursor.y / metaH));
+
+      // Calculate cursor screen position mapped into window frame
+      const cursorScreenX = (windowW * 0.5) + (normCursorX - clampedCamX) * windowW * S;
+      const cursorScreenY = (windowH * 0.5) + (normCursorY - clampedCamY) * windowH * S;
+
+      // Compute active click ripple positions in window screen coordinates
+      const activeRipples: { x: number; y: number; progress: number }[] = [];
+      for (const click of cursorEngine.getClicks()) {
+        const elapsed = currentTimeMs - click.t;
+        if (elapsed >= 0 && elapsed <= 500) {
+          const clickNormX = click.x / metaW;
+          const clickNormY = click.y / metaH;
+          const rx = (windowW * 0.5) + (clickNormX - clampedCamX) * windowW * S;
+          const ry = (windowH * 0.5) + (clickNormY - clampedCamY) * windowH * S;
+          activeRipples.push({ x: rx, y: ry, progress: elapsed / 500 });
+        }
+      }
+
+      cursorEngine.drawCursorAt(
+        ctx,
+        cursor,
+        cursorScreenX,
+        cursorScreenY,
+        currentTimeMs,
+        preset.cursorRingColor,
+        activeRipples
+      );
+    }
 
     // Subtle window inner border for crisp Apple-like finish
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
@@ -304,6 +335,7 @@ export class StudioRenderer {
   }
 
   // Dynamic Spotlight Dimming mask around active element / cursor
+  // Feathered radial gradient leaves center crystal-clear while dimming perimeter by up to 55%
   private applySpotlightMask(
     ctx: CanvasRenderingContext2D,
     w: number,
@@ -312,23 +344,15 @@ export class StudioRenderer {
     focalY: number
   ) {
     ctx.save();
-    // Darken entire frame by 45%
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-    ctx.fillRect(0, 0, w, h);
-
-    // Punch out a soft feathered spotlight around the focal point
-    ctx.globalCompositeOperation = 'destination-out';
-    const radius = Math.min(w, h) * 0.35;
-    const spotGrad = ctx.createRadialGradient(focalX, focalY, 40, focalX, focalY, radius);
-    spotGrad.addColorStop(0, 'rgba(0, 0, 0, 1)');
-    spotGrad.addColorStop(0.5, 'rgba(0, 0, 0, 0.85)');
-    spotGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    const radius = Math.min(w, h) * 0.48;
+    const innerRadius = Math.min(w, h) * 0.14;
+    const spotGrad = ctx.createRadialGradient(focalX, focalY, innerRadius, focalX, focalY, radius);
+    spotGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    spotGrad.addColorStop(0.45, 'rgba(0, 0, 0, 0.18)');
+    spotGrad.addColorStop(1, 'rgba(0, 0, 0, 0.55)');
 
     ctx.fillStyle = spotGrad;
-    ctx.beginPath();
-    ctx.arc(focalX, focalY, radius, 0, Math.PI * 2);
-    ctx.fill();
-
+    ctx.fillRect(0, 0, w, h);
     ctx.restore();
   }
 

@@ -114,7 +114,83 @@ export class SpringCameraSolver {
   }
 }
 
-// Calculate Apple Keynote 3D Isometric perspective tilt based on screen quadrant
+// Analytical Cinematic Camera State Solver
+// Evaluates continuous, deterministic, and silky-smooth camera framing for any timestamp
+export function computeCinematicCameraState(
+  timeMs: number,
+  pills: ZoomPill[],
+  cursor?: { x: number; y: number; speed?: number },
+  viewportWidth = 1920,
+  viewportHeight = 1080,
+  followCursor = true
+): CameraState {
+  const TRANSITION_MS = 450; // 450ms smooth spring-like ease
+
+  // Find active pill or closest overlapping transition
+  let activePill: ZoomPill | undefined;
+  for (const pill of pills) {
+    if (timeMs >= pill.startTime && timeMs <= pill.endTime) {
+      activePill = pill;
+      break;
+    }
+  }
+
+  // Smooth Hermite cubic ease curve
+  const smoothStep = (t: number) => t * t * (3 - 2 * t);
+
+  if (activePill) {
+    const start = activePill.startTime;
+    const end = activePill.endTime;
+    const totalPillDuration = end - start;
+    const actualTransition = Math.min(TRANSITION_MS, totalPillDuration * 0.35);
+
+    let easeProgress = 1.0;
+    if (timeMs < start + actualTransition) {
+      // Transitioning in
+      const p = Math.max(0, Math.min(1, (timeMs - start) / actualTransition));
+      easeProgress = smoothStep(p);
+    } else if (timeMs > end - actualTransition) {
+      // Transitioning out
+      const p = Math.max(0, Math.min(1, (end - timeMs) / actualTransition));
+      easeProgress = smoothStep(p);
+    }
+
+    // Dynamic cursor following bias (follows cursor subtly inside the zoomed focal region)
+    let targetX = activePill.targetX;
+    let targetY = activePill.targetY;
+
+    if (cursor && followCursor && viewportWidth > 0 && viewportHeight > 0) {
+      const normCursorX = Math.max(0.05, Math.min(0.95, cursor.x / viewportWidth));
+      const normCursorY = Math.max(0.05, Math.min(0.95, cursor.y / viewportHeight));
+      // 30% cursor tracking bias keeps element centered while gliding smoothly with mouse
+      targetX = targetX + (normCursorX - targetX) * 0.30;
+      targetY = targetY + (normCursorY - targetY) * 0.30;
+    }
+
+    const scale = 1.0 + (activePill.targetScale - 1.0) * easeProgress;
+    const x = 0.5 + (targetX - 0.5) * easeProgress;
+    const y = 0.5 + (targetY - 0.5) * easeProgress;
+    const tiltX = activePill.tiltX * easeProgress;
+    const tiltY = activePill.tiltY * easeProgress;
+
+    return { x, y, scale, tiltX, tiltY };
+  }
+
+  // Outside zoom pills: smooth gentle pan towards cursor if cursor is active
+  if (cursor && followCursor && viewportWidth > 0 && viewportHeight > 0) {
+    const normCursorX = Math.max(0.05, Math.min(0.95, cursor.x / viewportWidth));
+    const normCursorY = Math.max(0.05, Math.min(0.95, cursor.y / viewportHeight));
+    return {
+      x: 0.5 + (normCursorX - 0.5) * 0.12,
+      y: 0.5 + (normCursorY - 0.5) * 0.12,
+      scale: 1.0,
+      tiltX: 0,
+      tiltY: 0
+    };
+  }
+
+  return { x: 0.5, y: 0.5, scale: 1.0, tiltX: 0, tiltY: 0 };
+}
 export function calculateIsometricTilt(targetX: number, targetY: number, scale: number): { tiltX: number; tiltY: number } {
   if (scale <= 1.15) {
     return { tiltX: 0, tiltY: 0 };

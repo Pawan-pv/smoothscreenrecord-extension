@@ -20,6 +20,8 @@ interface VibePresetsPanelProps {
   onToggleCursor: (val: boolean) => void;
   showHud: boolean;
   onToggleHud: (val: boolean) => void;
+  followCursor: boolean;
+  onToggleFollowCursor: (val: boolean) => void;
   soundEnabled: boolean;
   onToggleSound: (val: boolean) => void;
   onUpdatePresetBorderRadius: (radius: number) => void;
@@ -37,6 +39,8 @@ export function VibePresetsPanel({
   onToggleCursor,
   showHud,
   onToggleHud,
+  followCursor,
+  onToggleFollowCursor,
   soundEnabled,
   onToggleSound,
   onUpdatePresetBorderRadius
@@ -217,6 +221,16 @@ export function VibePresetsPanel({
             type="checkbox"
             checked={showHud}
             onChange={(e) => onToggleHud(e.target.checked)}
+            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+          />
+        </label>
+
+        <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
+          <span>Camera Dynamic Follow (Cursor)</span>
+          <input
+            type="checkbox"
+            checked={followCursor}
+            onChange={(e) => onToggleFollowCursor(e.target.checked)}
             className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
           />
         </label>

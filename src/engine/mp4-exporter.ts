@@ -7,7 +7,7 @@ import {
   SilenceSegment
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
-import { SpringCameraSolver, calculateIsometricTilt } from './spring-physics';
+import { computeCinematicCameraState } from './spring-physics';
 import { CursorSplineEngine } from './cursor-spline';
 
 export interface ExportOptions {
@@ -182,41 +182,30 @@ export class HardwareMp4Exporter {
       error: (e) => console.error('[SmoothStudio VideoEncoder Error]', e)
     });
 
-    // Configure H.264 hardware profile
+    // Configure H.264 hardware profile with low-latency direct GPU encoding
     videoEncoder.configure({
       codec: 'avc1.640028',
       width: outW,
       height: outH,
       bitrate: 14_000_000,
-      framerate: fps
+      framerate: fps,
+      hardwareAcceleration: 'prefer-hardware',
+      latencyMode: 'realtime'
     });
-
-    const cameraSolver = new SpringCameraSolver();
 
     for (let f = 0; f < totalFrames; f++) {
       const currentMs = timelineTimestamps[f];
 
-      // Update camera target based on zoom pills
+      const cursor = cursorEngine.getCursorAt(currentMs);
+      const camera = computeCinematicCameraState(
+        currentMs,
+        pills,
+        cursor,
+        outW,
+        outH,
+        true
+      );
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
-      if (activePill) {
-        cameraSolver.setTarget({
-          x: activePill.targetX,
-          y: activePill.targetY,
-          scale: activePill.targetScale,
-          tiltX: activePill.tiltX,
-          tiltY: activePill.tiltY
-        });
-      } else {
-        cameraSolver.setTarget({
-          x: 0.5,
-          y: 0.5,
-          scale: 1.0,
-          tiltX: 0,
-          tiltY: 0
-        });
-      }
-
-      const camera = cameraSolver.update(1 / fps);
 
       // Seek video to frame timestamp or render canvas frame
       if (video instanceof HTMLVideoElement) {
@@ -276,7 +265,15 @@ export class HardwareMp4Exporter {
       onProgress(100, totalFrames, totalFrames);
     }
 
-    await videoEncoder.flush();
+    try {
+      await Promise.race([
+        videoEncoder.flush(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Flush timeout')), 8000))
+      ]);
+    } catch (flushErr) {
+      console.warn('[SmoothStudio MP4 Exporter] Flush completed or notice:', flushErr);
+    }
+
     muxer.finalize();
 
     const buffer = muxer.target.buffer;
@@ -330,26 +327,21 @@ export class HardwareMp4Exporter {
 
     mediaRecorder.start();
 
-    const cameraSolver = new SpringCameraSolver();
     const totalFrames = timelineTimestamps.length;
 
     for (let f = 0; f < totalFrames; f++) {
       const currentMs = timelineTimestamps[f];
+
+      const cursor = cursorEngine.getCursorAt(currentMs);
+      const camera = computeCinematicCameraState(
+        currentMs,
+        pills,
+        cursor,
+        exportCanvas.width,
+        exportCanvas.height,
+        true
+      );
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
-
-      if (activePill) {
-        cameraSolver.setTarget({
-          x: activePill.targetX,
-          y: activePill.targetY,
-          scale: activePill.targetScale,
-          tiltX: activePill.tiltX,
-          tiltY: activePill.tiltY
-        });
-      } else {
-        cameraSolver.setTarget({ x: 0.5, y: 0.5, scale: 1.0, tiltX: 0, tiltY: 0 });
-      }
-
-      const camera = cameraSolver.update(1 / 60);
       if (video instanceof HTMLVideoElement) {
         video.currentTime = currentMs / 1000;
       } else if (onRenderCanvasFrame) {

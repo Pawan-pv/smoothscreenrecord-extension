@@ -6,7 +6,7 @@ import {
   KeystrokeEvent
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from '../engine/renderer';
-import { SpringCameraSolver } from '../engine/spring-physics';
+import { computeCinematicCameraState } from '../engine/spring-physics';
 import { CursorSplineEngine } from '../engine/cursor-spline';
 import { Play, Pause, RotateCcw } from 'lucide-react';
 
@@ -25,6 +25,7 @@ interface CanvasPreviewProps {
   showSpotlight: boolean;
   showCursor: boolean;
   showHud: boolean;
+  followCursor: boolean;
   onCanvasClickToAddZoom?: (normalizedX: number, normalizedY: number) => void;
 }
 
@@ -43,11 +44,11 @@ export function CanvasPreview({
   showSpotlight,
   showCursor,
   showHud,
+  followCursor,
   onCanvasClickToAddZoom
 }: CanvasPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<StudioRenderer>(new StudioRenderer());
-  const cameraSolverRef = useRef<SpringCameraSolver>(new SpringCameraSolver());
 
   // Render preview frame whenever currentTimeMs, preset, or props change
   useEffect(() => {
@@ -60,27 +61,18 @@ export function CanvasPreview({
       canvas.height = targetH;
     }
 
-    // Determine active zoom pill
-    const activePill = pills.find((p) => currentTimeMs >= p.startTime && currentTimeMs <= p.endTime);
-    if (activePill) {
-      cameraSolverRef.current.setTarget({
-        x: activePill.targetX,
-        y: activePill.targetY,
-        scale: activePill.targetScale,
-        tiltX: activePill.tiltX,
-        tiltY: activePill.tiltY
-      });
-    } else {
-      cameraSolverRef.current.setTarget({
-        x: 0.5,
-        y: 0.5,
-        scale: 1.0,
-        tiltX: 0,
-        tiltY: 0
-      });
-    }
+    // Compute continuous, buttery-smooth cinematic camera framing and cursor tracking
+    const cursor = cursorEngine.getCursorAt(currentTimeMs);
+    const camera = computeCinematicCameraState(
+      currentTimeMs,
+      pills,
+      cursor,
+      targetW,
+      targetH,
+      followCursor
+    );
 
-    const camera = cameraSolverRef.current.update(1 / 60);
+    const activePill = pills.find((p) => currentTimeMs >= p.startTime && currentTimeMs <= p.endTime);
 
     rendererRef.current.renderFrame({
       canvas,

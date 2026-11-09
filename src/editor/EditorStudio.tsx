@@ -47,6 +47,7 @@ export function EditorStudio() {
   const [showSpotlight, setShowSpotlight] = useState<boolean>(true);
   const [showCursor, setShowCursor] = useState<boolean>(true);
   const [showHud, setShowHud] = useState<boolean>(true);
+  const [followCursor, setFollowCursor] = useState<boolean>(true);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
 
   // Export State
@@ -421,24 +422,54 @@ export function EditorStudio() {
 
     const blob = await getRecordingBlob();
     if (blob) {
-      const snap = captureEngineRef.current.getSnapshots();
-      const mockTel: TelemetryData = {
+      // 1. Check if real DOM telemetry was captured by the recorded tab
+      const realTelemetry = await loadTelemetry();
+      if (realTelemetry && realTelemetry.mousePoints && realTelemetry.mousePoints.length > 0) {
+        console.log('[SmoothStudio] Loaded live recording with DOM telemetry:', realTelemetry);
+        setupLoadedRecording(blob, realTelemetry);
+        return;
+      }
+
+      // 2. Fullscreen / Window Fallback: If recorded outside Chrome tab, generate smooth cinematic camera path
+      const actualDuration = Math.max(3000, Date.now() - (realTelemetry?.metadata.startTime || Date.now() - 10000));
+      const fallbackPoints = [];
+      for (let t = 0; t <= actualDuration; t += 30) {
+        const prog = t / actualDuration;
+        fallbackPoints.push({
+          t,
+          x: (window.innerWidth * 0.5) + Math.sin(prog * Math.PI * 2) * (window.innerWidth * 0.2),
+          y: (window.innerHeight * 0.5) + Math.cos(prog * Math.PI * 2) * (window.innerHeight * 0.15),
+          c: 'default'
+        });
+      }
+
+      const fallbackTelemetry: TelemetryData = {
         metadata: {
           id: 'live_' + Date.now(),
-          startTime: Date.now() - 10000,
+          startTime: Date.now() - actualDuration,
           endTime: Date.now(),
-          durationMs: 10000,
+          durationMs: actualDuration,
           width: window.innerWidth,
           height: window.innerHeight,
           devicePixelRatio: window.devicePixelRatio || 1,
-          title: 'Live Browser Capture'
+          title: 'Screen Recording'
         },
-        mousePoints: [],
-        clicks: [],
+        mousePoints: fallbackPoints,
+        clicks: [
+          {
+            t: Math.round(actualDuration * 0.25),
+            x: window.innerWidth * 0.5,
+            y: window.innerHeight * 0.45,
+            button: 0,
+            targetTag: 'div',
+            targetText: 'Focal Action'
+          }
+        ],
         keystrokes: [],
         inputEvents: []
       };
-      setupLoadedRecording(blob, mockTel);
+
+      setupLoadedRecording(blob, fallbackTelemetry);
     }
   };
 
@@ -672,6 +703,8 @@ export function EditorStudio() {
           onToggleCursor={setShowCursor}
           showHud={showHud}
           onToggleHud={setShowHud}
+          followCursor={followCursor}
+          onToggleFollowCursor={setFollowCursor}
           soundEnabled={soundEnabled}
           onToggleSound={setSoundEnabled}
           onUpdatePresetBorderRadius={(r) => setPreset((p) => ({ ...p, borderRadius: r }))}
@@ -693,6 +726,7 @@ export function EditorStudio() {
           showSpotlight={showSpotlight}
           showCursor={showCursor}
           showHud={showHud}
+          followCursor={followCursor}
           onCanvasClickToAddZoom={handleAddPillAtPlayhead}
         />
       </div>

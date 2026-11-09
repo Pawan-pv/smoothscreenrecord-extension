@@ -123,7 +123,10 @@ export async function loadTelemetry(): Promise<TelemetryData | null> {
   }
 
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-    const data = await chrome.storage.local.get(TELEMETRY_FILE_NAME);
+    const data = await chrome.storage.local.get(['smoothstudio_telemetry', TELEMETRY_FILE_NAME]);
+    if (data && data.smoothstudio_telemetry) {
+      return data.smoothstudio_telemetry as TelemetryData;
+    }
     if (data && data[TELEMETRY_FILE_NAME]) {
       return data[TELEMETRY_FILE_NAME] as TelemetryData;
     }

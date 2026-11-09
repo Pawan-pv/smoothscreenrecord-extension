@@ -13,30 +13,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     isRecording = true;
     activeRecordingTabId = message.tabId || sender.tab?.id || null;
 
-    // Notify tab to start DOM tracking
-    if (activeRecordingTabId) {
-      chrome.tabs.sendMessage(activeRecordingTabId, { type: 'START_TELEMETRY' }).catch(() => {});
-    }
+    // Broadcast START_TELEMETRY to active tabs so mouse tracking begins immediately
+    chrome.tabs.query({ active: true }, (tabs) => {
+      for (const tab of tabs) {
+        if (tab.id) {
+          chrome.tabs.sendMessage(tab.id, { type: 'START_TELEMETRY' }).catch(() => {});
+        }
+      }
+    });
 
     sendResponse({ status: 'recording_started' });
   } else if (message.type === 'STOP_STUDIO_RECORDING') {
     isRecording = false;
 
-    // Collect telemetry from tab
-    if (activeRecordingTabId) {
-      chrome.tabs.sendMessage(activeRecordingTabId, { type: 'STOP_TELEMETRY' }, (response) => {
-        if (response && response.data) {
-          chrome.storage.local.set({ smoothstudio_telemetry: response.data }, () => {
-            // Open editor tab
+    // Collect telemetry from active tab and save to chrome.storage.local
+    chrome.tabs.query({ active: true }, (tabs) => {
+      const tabToQuery = (activeRecordingTabId ? tabs.find(t => t.id === activeRecordingTabId) : null) || tabs[0];
+      if (tabToQuery?.id) {
+        chrome.tabs.sendMessage(tabToQuery.id, { type: 'STOP_TELEMETRY' }, (response) => {
+          if (response && response.data) {
+            chrome.storage.local.set({
+              smoothstudio_telemetry: response.data,
+              'smoothstudio_telemetry.json': response.data
+            }, () => {
+              chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
+            });
+          } else {
             chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
-          });
-        } else {
-          chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
-        }
-      });
-    } else {
-      chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
-    }
+          }
+        });
+      } else {
+        chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
+      }
+    });
 
     sendResponse({ status: 'recording_stopped' });
   } else if (message.type === 'GET_RECORDING_STATUS') {

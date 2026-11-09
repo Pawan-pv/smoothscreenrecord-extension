@@ -75,13 +75,21 @@ export class CursorSplineEngine {
     const t = segmentDuration > 0 ? (timeMs - p1.t) / segmentDuration : 0;
     const clampedT = Math.max(0, Math.min(1, t));
 
-    const x = catmullRom(p0.x, p1.x, p2.x, p3.x, clampedT);
-    const y = catmullRom(p0.y, p1.y, p2.y, p3.y, clampedT);
+    // Use Catmull-Rom for rapid 120Hz micro-movements (< 120ms), linear blend for pauses to prevent spline overshooting
+    let x: number;
+    let y: number;
+    if (segmentDuration > 120) {
+      x = p1.x + (p2.x - p1.x) * clampedT;
+      y = p1.y + (p2.y - p1.y) * clampedT;
+    } else {
+      x = catmullRom(p0.x, p1.x, p2.x, p3.x, clampedT);
+      y = catmullRom(p0.y, p1.y, p2.y, p3.y, clampedT);
+    }
 
     // Calculate instantaneous velocity in pixels/second
     const dt = Math.max(0.001, segmentDuration / 1000);
-    const vx = (p2.x - p1.x) / dt;
-    const vy = (p2.y - p1.y) / dt;
+    const vx = segmentDuration < 300 ? (p2.x - p1.x) / dt : 0;
+    const vy = segmentDuration < 300 ? (p2.y - p1.y) / dt : 0;
     const speed = Math.hypot(vx, vy);
 
     return {

@@ -1,0 +1,278 @@
+import {
+  MousePoint,
+  ClickEvent,
+  KeystrokeEvent,
+  InputFocusEvent,
+  TelemetryData,
+  BoundingBox
+} from '../types/telemetry';
+
+let isRecording = false;
+let startTime = 0;
+let mousePoints: MousePoint[] = [];
+let clicks: ClickEvent[] = [];
+let keystrokes: KeystrokeEvent[] = [];
+let inputEvents: InputFocusEvent[] = [];
+
+let lastMouseX = 0;
+let lastMouseY = 0;
+let lastCursor = 'default';
+let lastSampleTime = 0;
+const SAMPLE_INTERVAL_MS = 8.33; // ~120Hz sampling
+
+function getRelativeTime(): number {
+  return performance.now() - startTime;
+}
+
+// Extract website brand colors to automatically style the video background
+export function extractBrandColors(): { primary: string; secondary: string; accent: string; background: string } {
+  try {
+    const metaTheme = document.querySelector('meta[name="theme-color"]')?.getAttribute('content');
+    const bodyBg = window.getComputedStyle(document.body).backgroundColor;
+
+    // Search for primary buttons or accent links
+    const buttons = Array.from(document.querySelectorAll('button, a.btn, input[type="submit"]'));
+    let buttonBg = '#8B5CF6';
+    for (const btn of buttons) {
+      const bg = window.getComputedStyle(btn).backgroundColor;
+      if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent' && bg !== bodyBg) {
+        buttonBg = bg;
+        break;
+      }
+    }
+
+    return {
+      primary: buttonBg || '#8B5CF6',
+      secondary: '#6366F1',
+      accent: metaTheme || '#EC4899',
+      background: bodyBg || '#0B0C10'
+    };
+  } catch {
+    return {
+      primary: '#8B5CF6',
+      secondary: '#6366F1',
+      accent: '#EC4899',
+      background: '#0B0C10'
+    };
+  }
+}
+
+// DOM tree climbing to find meaningful UI container for smart camera framing
+function findParentContainer(target: Element | null): BoundingBox | undefined {
+  if (!target) return undefined;
+
+  const selector = 'dialog, [role="dialog"], [role="alertdialog"], form, [class*="modal"], [class*="card"], [class*="dialog"], section, article, table, nav, aside';
+  const container = target.closest(selector) || target;
+
+  const rect = container.getBoundingClientRect();
+  return {
+    x: rect.left + window.scrollX,
+    y: rect.top + window.scrollY,
+    width: rect.width,
+    height: rect.height
+  };
+}
+
+// Track mouse position and cursor style at up to 120Hz
+function handleMouseMove(e: MouseEvent) {
+  if (!isRecording) return;
+
+  lastMouseX = e.clientX;
+  lastMouseY = e.clientY;
+
+  const now = performance.now();
+  if (now - lastSampleTime >= SAMPLE_INTERVAL_MS) {
+    lastSampleTime = now;
+
+    // Detect computed cursor style
+    let cursorStyle = 'default';
+    try {
+      const target = document.elementFromPoint(e.clientX, e.clientY);
+      if (target) {
+        cursorStyle = window.getComputedStyle(target).cursor || 'default';
+      }
+    } catch {
+      cursorStyle = 'default';
+    }
+    lastCursor = cursorStyle;
+
+    mousePoints.push({
+      t: Math.round(getRelativeTime()),
+      x: e.clientX,
+      y: e.clientY,
+      c: cursorStyle
+    });
+  }
+}
+
+// Track clicks with smart bounding box lock
+function handleClick(e: MouseEvent) {
+  if (!isRecording) return;
+
+  const target = e.target as Element | null;
+  const tag = target?.tagName.toLowerCase() || 'unknown';
+  const text = target?.textContent?.trim().slice(0, 80) || undefined;
+  const containerBounds = findParentContainer(target);
+
+  clicks.push({
+    t: Math.round(getRelativeTime()),
+    x: e.clientX,
+    y: e.clientY,
+    button: e.button,
+    targetTag: tag,
+    targetText: text,
+    containerBounds
+  });
+
+  // Ensure an immediate mouse point is also captured on click
+  mousePoints.push({
+    t: Math.round(getRelativeTime()),
+    x: e.clientX,
+    y: e.clientY,
+    c: lastCursor
+  });
+}
+
+// Track keyboard shortcuts for the 3D HUD (e.g. Cmd+K, Ctrl+C, Enter)
+function handleKeyDown(e: KeyboardEvent) {
+  if (!isRecording) return;
+
+  // Never record passwords or sensitive form inputs
+  const target = e.target as HTMLElement | null;
+  if (target instanceof HTMLInputElement && target.type === 'password') {
+    return;
+  }
+
+  // Detect key combinations
+  const parts: string[] = [];
+  if (e.metaKey) parts.push('⌘');
+  if (e.ctrlKey) parts.push('Ctrl');
+  if (e.altKey) parts.push('Alt');
+  if (e.shiftKey && parts.length > 0) parts.push('Shift');
+
+  let key = e.key;
+  if (key === ' ') key = 'Space';
+  if (key === 'Escape') key = 'Esc';
+  if (key === 'ArrowUp') key = '↑';
+  if (key === 'ArrowDown') key = '↓';
+  if (key === 'ArrowLeft') key = '←';
+  if (key === 'ArrowRight') key = '→';
+
+  // Only push non-modifier keys or modifier combinations
+  if (!['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) {
+    parts.push(key.toUpperCase());
+    const combo = parts.join(' + ');
+
+    keystrokes.push({
+      t: Math.round(getRelativeTime()),
+      key: e.key,
+      combo
+    });
+  }
+}
+
+// Track input focus & typing for smart camera zoom on text entry
+function handleFocusIn(e: FocusEvent) {
+  if (!isRecording) return;
+  const target = e.target as HTMLElement | null;
+
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+    const rect = target.getBoundingClientRect();
+    inputEvents.push({
+      t: Math.round(getRelativeTime()),
+      type: 'focus',
+      bounds: {
+        x: rect.left + window.scrollX,
+        y: rect.top + window.scrollY,
+        width: rect.width,
+        height: rect.height
+      }
+    });
+  }
+}
+
+function handleInput(e: Event) {
+  if (!isRecording) return;
+  const target = e.target as HTMLElement | null;
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+    const rect = target.getBoundingClientRect();
+    inputEvents.push({
+      t: Math.round(getRelativeTime()),
+      type: 'type',
+      bounds: {
+        x: rect.left + window.scrollX,
+        y: rect.top + window.scrollY,
+        width: rect.width,
+        height: rect.height
+      }
+    });
+  }
+}
+
+export function startTracking(): void {
+  isRecording = true;
+  startTime = performance.now();
+  mousePoints = [];
+  clicks = [];
+  keystrokes = [];
+  inputEvents = [];
+  lastSampleTime = 0;
+
+  window.addEventListener('mousemove', handleMouseMove, { passive: true, capture: true });
+  window.addEventListener('click', handleClick, { passive: true, capture: true });
+  window.addEventListener('keydown', handleKeyDown, { passive: true, capture: true });
+  window.addEventListener('focusin', handleFocusIn, { passive: true, capture: true });
+  window.addEventListener('input', handleInput, { passive: true, capture: true });
+
+  console.log('[SmoothStudio DOM-Tracker] Started 120Hz recording telemetry');
+}
+
+export function stopTracking(): TelemetryData {
+  isRecording = false;
+
+  window.removeEventListener('mousemove', handleMouseMove, { capture: true });
+  window.removeEventListener('click', handleClick, { capture: true });
+  window.removeEventListener('keydown', handleKeyDown, { capture: true });
+  window.removeEventListener('focusin', handleFocusIn, { capture: true });
+  window.removeEventListener('input', handleInput, { capture: true });
+
+  const durationMs = Math.round(performance.now() - startTime);
+
+  const telemetry: TelemetryData = {
+    metadata: {
+      id: 'rec_' + Date.now(),
+      startTime: Date.now() - durationMs,
+      endTime: Date.now(),
+      durationMs,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      devicePixelRatio: window.devicePixelRatio || 1,
+      title: document.title || 'Screen Recording',
+      url: window.location.href,
+      brandColors: extractBrandColors()
+    },
+    mousePoints,
+    clicks,
+    keystrokes,
+    inputEvents
+  };
+
+  console.log('[SmoothStudio DOM-Tracker] Telemetry captured:', telemetry);
+  return telemetry;
+}
+
+// Chrome extension message listener
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === 'START_TELEMETRY') {
+      startTracking();
+      sendResponse({ status: 'started' });
+    } else if (message.type === 'STOP_TELEMETRY') {
+      const data = stopTracking();
+      sendResponse({ status: 'stopped', data });
+    } else if (message.type === 'GET_BRAND_COLORS') {
+      sendResponse({ brandColors: extractBrandColors() });
+    }
+    return true;
+  });
+}

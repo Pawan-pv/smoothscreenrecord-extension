@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "SmoothStudio - Cinematic Screen Recorder & SOP Studio",
+  "version": "1.0.0",
+  "description": "DOM-aware smart auto-zoom, 3D Keynote camera tilts, hardware 60fps MP4 exports, and instant SOP documentation.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "offscreen",
+    "downloads"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SmoothStudio Recording Studio"
+  },
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/dom-tracker.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "editor.html",
+        "content/*",
+        "assets/*"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

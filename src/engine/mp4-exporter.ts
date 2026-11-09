@@ -11,7 +11,9 @@ import { SpringCameraSolver, calculateIsometricTilt } from './spring-physics';
 import { CursorSplineEngine } from './cursor-spline';
 
 export interface ExportOptions {
-  videoBlob: Blob;
+  videoSource: HTMLVideoElement | HTMLCanvasElement;
+  videoBlob?: Blob | null;
+  onRenderCanvasFrame?: (timeMs: number) => void;
   durationMs: number;
   aspectRatio: AspectRatioType;
   preset: VibePreset;
@@ -35,7 +37,9 @@ export class HardwareMp4Exporter {
 
   public async exportMp4(options: ExportOptions): Promise<Blob> {
     const {
+      videoSource,
       videoBlob,
+      onRenderCanvasFrame,
       durationMs,
       aspectRatio,
       preset,
@@ -57,18 +61,7 @@ export class HardwareMp4Exporter {
     exportCanvas.width = outW;
     exportCanvas.height = outH;
 
-    // Load source video
-    const videoUrl = URL.createObjectURL(videoBlob);
-    const video = document.createElement('video');
-    video.src = videoUrl;
-    video.muted = true;
-    video.playsInline = true;
-
-    await new Promise<void>((resolve, reject) => {
-      video.onloadedmetadata = () => resolve();
-      video.onerror = (e) => reject(e);
-      video.load();
-    });
+    const video = videoSource;
 
     const fps = 60;
     const frameIntervalMs = 1000 / fps;
@@ -95,6 +88,7 @@ export class HardwareMp4Exporter {
       try {
         return await this.exportWithWebCodecs({
           video,
+          onRenderCanvasFrame,
           exportCanvas,
           outW,
           outH,
@@ -119,6 +113,7 @@ export class HardwareMp4Exporter {
     // Fallback exporter
     return await this.exportWithCanvasStream({
       video,
+      onRenderCanvasFrame,
       exportCanvas,
       timelineTimestamps,
       pills,
@@ -134,7 +129,8 @@ export class HardwareMp4Exporter {
   }
 
   private async exportWithWebCodecs(params: {
-    video: HTMLVideoElement;
+    video: HTMLVideoElement | HTMLCanvasElement;
+    onRenderCanvasFrame?: (timeMs: number) => void;
     exportCanvas: HTMLCanvasElement;
     outW: number;
     outH: number;
@@ -153,6 +149,7 @@ export class HardwareMp4Exporter {
   }): Promise<Blob> {
     const {
       video,
+      onRenderCanvasFrame,
       exportCanvas,
       outW,
       outH,
@@ -221,19 +218,22 @@ export class HardwareMp4Exporter {
 
       const camera = cameraSolver.update(1 / fps);
 
-      // Seek video to frame timestamp
-      video.currentTime = currentMs / 1000;
-      await new Promise<void>((r) => {
-        const onSeeked = () => {
-          video.removeEventListener('seeked', onSeeked);
-          r();
-        };
-        video.addEventListener('seeked', onSeeked, { once: true });
-        // Handle immediate seek
-        if (Math.abs(video.currentTime - currentMs / 1000) < 0.01) {
-          r();
-        }
-      });
+      // Seek video to frame timestamp or render canvas frame
+      if (video instanceof HTMLVideoElement) {
+        video.currentTime = currentMs / 1000;
+        await new Promise<void>((r) => {
+          const onSeeked = () => {
+            video.removeEventListener('seeked', onSeeked);
+            r();
+          };
+          video.addEventListener('seeked', onSeeked, { once: true });
+          if (Math.abs(video.currentTime - currentMs / 1000) < 0.01) {
+            r();
+          }
+        });
+      } else if (onRenderCanvasFrame) {
+        onRenderCanvasFrame(currentMs);
+      }
 
       // Render composite frame
       this.renderer.renderFrame({
@@ -261,10 +261,19 @@ export class HardwareMp4Exporter {
       videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
       videoFrame.close();
 
+      // Yield to the event loop so the hardware GPU encoder processes the queue
+      if (videoEncoder.encodeQueueSize > 6 || f % 10 === 0) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+
       if (f % 15 === 0 && onProgress) {
         const percent = Math.round(((f + 1) / totalFrames) * 100);
         onProgress(percent, f + 1, totalFrames);
       }
+    }
+
+    if (onProgress) {
+      onProgress(100, totalFrames, totalFrames);
     }
 
     await videoEncoder.flush();
@@ -278,7 +287,8 @@ export class HardwareMp4Exporter {
 
   // Fallback using HTML5 Canvas captureStream + MediaRecorder
   private async exportWithCanvasStream(params: {
-    video: HTMLVideoElement;
+    video: HTMLVideoElement | HTMLCanvasElement;
+    onRenderCanvasFrame?: (timeMs: number) => void;
     exportCanvas: HTMLCanvasElement;
     timelineTimestamps: number[];
     pills: ZoomPill[];
@@ -293,6 +303,7 @@ export class HardwareMp4Exporter {
   }): Promise<Blob> {
     const {
       video,
+      onRenderCanvasFrame,
       exportCanvas,
       timelineTimestamps,
       pills,
@@ -339,7 +350,11 @@ export class HardwareMp4Exporter {
       }
 
       const camera = cameraSolver.update(1 / 60);
-      video.currentTime = currentMs / 1000;
+      if (video instanceof HTMLVideoElement) {
+        video.currentTime = currentMs / 1000;
+      } else if (onRenderCanvasFrame) {
+        onRenderCanvasFrame(currentMs);
+      }
 
       this.renderer.renderFrame({
         canvas: exportCanvas,
@@ -356,9 +371,17 @@ export class HardwareMp4Exporter {
         showHud
       });
 
+      if (f % 10 === 0) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+
       if (f % 15 === 0 && onProgress) {
         onProgress(Math.round(((f + 1) / totalFrames) * 100), f + 1, totalFrames);
       }
+    }
+
+    if (onProgress) {
+      onProgress(100, totalFrames, totalFrames);
     }
 
     return new Promise<Blob>((resolve) => {

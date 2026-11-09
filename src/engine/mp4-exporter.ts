@@ -4,10 +4,13 @@ import {
   VibePreset,
   ZoomPill,
   KeystrokeEvent,
-  SilenceSegment
+  SilenceSegment,
+  CaptionBlock,
+  CaptionStyle,
+  CursorTheme
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
-import { computeCinematicCameraState } from './spring-physics';
+import { computeCinematicCameraState, SpringCameraSolver } from './spring-physics';
 import { CursorSplineEngine } from './cursor-spline';
 
 export interface ExportOptions {
@@ -26,6 +29,14 @@ export interface ExportOptions {
   showCursor: boolean;
   showHud: boolean;
   metadata?: { width: number; height: number };
+  cursorTheme?: CursorTheme;
+  cursorScale?: number;
+  captions?: CaptionBlock[];
+  captionStyle?: CaptionStyle;
+  showCaptions?: boolean;
+  showIntroCard?: boolean;
+  introHeadline?: string;
+  introSubheadline?: string;
   onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
 }
 
@@ -105,6 +116,14 @@ export class HardwareMp4Exporter {
           showCursor,
           showHud,
           metadata: options.metadata,
+          cursorTheme: options.cursorTheme,
+          cursorScale: options.cursorScale,
+          captions: options.captions,
+          captionStyle: options.captionStyle,
+          showCaptions: options.showCaptions,
+           showIntroCard: options.showIntroCard,
+           introHeadline: options.introHeadline,
+           introSubheadline: options.introSubheadline,
           onProgress
         });
       } catch (err) {
@@ -127,6 +146,14 @@ export class HardwareMp4Exporter {
       showCursor,
       showHud,
       metadata: options.metadata,
+      cursorTheme: options.cursorTheme,
+      cursorScale: options.cursorScale,
+      captions: options.captions,
+      captionStyle: options.captionStyle,
+      showCaptions: options.showCaptions,
+      showIntroCard: options.showIntroCard,
+      introHeadline: options.introHeadline,
+      introSubheadline: options.introSubheadline,
       onProgress
     });
   }
@@ -149,6 +176,14 @@ export class HardwareMp4Exporter {
     showCursor: boolean;
     showHud: boolean;
     metadata?: { width: number; height: number };
+    cursorTheme?: CursorTheme;
+    cursorScale?: number;
+    captions?: CaptionBlock[];
+    captionStyle?: CaptionStyle;
+    showCaptions?: boolean;
+    showIntroCard?: boolean;
+    introHeadline?: string;
+    introSubheadline?: string;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
   }): Promise<Blob> {
     const {
@@ -169,6 +204,14 @@ export class HardwareMp4Exporter {
       showCursor,
       showHud,
       metadata,
+      cursorTheme,
+      cursorScale,
+      captions,
+      captionStyle,
+      showCaptions,
+      showIntroCard,
+      introHeadline,
+      introSubheadline,
       onProgress
     } = params;
 
@@ -207,11 +250,24 @@ export class HardwareMp4Exporter {
       latencyMode: 'realtime'
     });
 
+    const springCamera = new SpringCameraSolver();
+    if (totalFrames > 0) {
+      const firstTarget = computeCinematicCameraState(
+        timelineTimestamps[0],
+        pills,
+        cursorEngine.getCursorAt(timelineTimestamps[0]),
+        metadata?.width || outW,
+        metadata?.height || outH,
+        true
+      );
+      springCamera.snapTo(firstTarget);
+    }
+
     for (let f = 0; f < totalFrames; f++) {
       const currentMs = timelineTimestamps[f];
 
       const cursor = cursorEngine.getCursorAt(currentMs);
-      const camera = computeCinematicCameraState(
+      const targetCamera = computeCinematicCameraState(
         currentMs,
         pills,
         cursor,
@@ -219,6 +275,8 @@ export class HardwareMp4Exporter {
         metadata?.height || outH,
         true
       );
+      springCamera.setTarget(targetCamera);
+      const camera = f === 0 ? targetCamera : springCamera.update(1 / fps);
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
 
       // Seek video to frame timestamp or render canvas frame
@@ -252,7 +310,15 @@ export class HardwareMp4Exporter {
         showSpotlight,
         showCursor,
         showHud,
-        metadata
+        metadata,
+        cursorTheme,
+        cursorScale,
+        captions,
+        captionStyle,
+        showCaptions,
+        showIntroCard,
+        introHeadline,
+        introSubheadline
       });
 
       // Encode frame
@@ -329,6 +395,14 @@ export class HardwareMp4Exporter {
     showCursor: boolean;
     showHud: boolean;
     metadata?: { width: number; height: number };
+    cursorTheme?: CursorTheme;
+    cursorScale?: number;
+    captions?: CaptionBlock[];
+    captionStyle?: CaptionStyle;
+    showCaptions?: boolean;
+    showIntroCard?: boolean;
+    introHeadline?: string;
+    introSubheadline?: string;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
   }): Promise<Blob> {
     const {
@@ -345,6 +419,14 @@ export class HardwareMp4Exporter {
       showCursor,
       showHud,
       metadata,
+      cursorTheme,
+      cursorScale,
+      captions,
+      captionStyle,
+      showCaptions,
+      showIntroCard,
+      introHeadline,
+      introSubheadline,
       onProgress
     } = params;
 
@@ -362,12 +444,24 @@ export class HardwareMp4Exporter {
     mediaRecorder.start();
 
     const totalFrames = timelineTimestamps.length;
+    const springCameraFallback = new SpringCameraSolver();
+    if (totalFrames > 0) {
+      const firstTarget = computeCinematicCameraState(
+        timelineTimestamps[0],
+        pills,
+        cursorEngine.getCursorAt(timelineTimestamps[0]),
+        metadata?.width || exportCanvas.width,
+        metadata?.height || exportCanvas.height,
+        true
+      );
+      springCameraFallback.snapTo(firstTarget);
+    }
 
     for (let f = 0; f < totalFrames; f++) {
       const currentMs = timelineTimestamps[f];
 
       const cursor = cursorEngine.getCursorAt(currentMs);
-      const camera = computeCinematicCameraState(
+      const targetCamera = computeCinematicCameraState(
         currentMs,
         pills,
         cursor,
@@ -375,6 +469,8 @@ export class HardwareMp4Exporter {
         metadata?.height || exportCanvas.height,
         true
       );
+      springCameraFallback.setTarget(targetCamera);
+      const camera = f === 0 ? targetCamera : springCameraFallback.update(1 / 60);
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
       if (video instanceof HTMLVideoElement) {
         video.currentTime = currentMs / 1000;
@@ -395,7 +491,15 @@ export class HardwareMp4Exporter {
         showSpotlight,
         showCursor,
         showHud,
-        metadata
+        metadata,
+        cursorTheme,
+        cursorScale,
+        captions,
+        captionStyle,
+        showCaptions,
+        showIntroCard,
+        introHeadline,
+        introSubheadline
       });
 
       if (f % 10 === 0) {

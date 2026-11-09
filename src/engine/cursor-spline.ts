@@ -1,4 +1,4 @@
-import { MousePoint, ClickEvent } from '../types/telemetry';
+import { MousePoint, ClickEvent, CursorTheme } from '../types/telemetry';
 
 export interface InterpolatedCursor {
   x: number;
@@ -114,7 +114,9 @@ export class CursorSplineEngine {
     screenY: number,
     currentTimeMs: number,
     ringColor: string = '#8B5CF6',
-    activeRipples?: { x: number; y: number; progress: number }[]
+    activeRipples?: { x: number; y: number; progress: number }[],
+    theme: CursorTheme = 'mac-obsidian',
+    cursorScale: number = 1.0
   ): void {
     ctx.save();
 
@@ -122,7 +124,7 @@ export class CursorSplineEngine {
     if (activeRipples && activeRipples.length > 0) {
       for (const ripple of activeRipples) {
         const progress = ripple.progress;
-        const radius = 10 + progress * 34;
+        const radius = (10 + progress * 34) * Math.min(1.4, Math.max(0.8, cursorScale));
         const alpha = Math.max(0, (1 - progress) * 0.85);
 
         ctx.save();
@@ -149,7 +151,7 @@ export class CursorSplineEngine {
     // 2. Motion trail / directional motion blur if moving fast
     if (cursor.speed > 350) {
       ctx.save();
-      const blurLen = Math.min(24, cursor.speed * 0.02);
+      const blurLen = Math.min(24, cursor.speed * 0.02) * cursorScale;
       const angle = Math.atan2(cursor.vy, cursor.vx);
       ctx.beginPath();
       ctx.moveTo(screenX, screenY);
@@ -157,8 +159,8 @@ export class CursorSplineEngine {
         screenX - Math.cos(angle) * blurLen,
         screenY - Math.sin(angle) * blurLen
       );
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
-      ctx.lineWidth = 4;
+      ctx.strokeStyle = theme === 'neon-glow' ? 'rgba(168, 85, 247, 0.45)' : 'rgba(255, 255, 255, 0.25)';
+      ctx.lineWidth = 4 * cursorScale;
       ctx.lineCap = 'round';
       ctx.stroke();
       ctx.restore();
@@ -166,22 +168,32 @@ export class CursorSplineEngine {
 
     // 3. Render High-Resolution Vector Cursor
     ctx.translate(screenX, screenY);
+    if (cursorScale !== 1.0) {
+      ctx.scale(cursorScale, cursorScale);
+    }
 
     // Subtle drop shadow for vector cursor
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
-    ctx.shadowBlur = 8;
-    ctx.shadowOffsetX = 1;
-    ctx.shadowOffsetY = 2;
+    if (theme === 'neon-glow') {
+      ctx.shadowColor = '#8B5CF6';
+      ctx.shadowBlur = 14;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 2;
+    } else {
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+      ctx.shadowBlur = 8;
+      ctx.shadowOffsetX = 1;
+      ctx.shadowOffsetY = 2;
+    }
 
     if (cursor.style.includes('pointer') || cursor.style.includes('hand')) {
       // Sleek pointing hand SVG vector
-      this.drawHandCursor(ctx);
+      this.drawHandCursor(ctx, theme);
     } else if (cursor.style.includes('text')) {
       // macOS style I-beam cursor
-      this.drawIBeamCursor(ctx);
+      this.drawIBeamCursor(ctx, theme);
     } else {
       // Sleek modern Arrow Pointer
-      this.drawArrowCursor(ctx);
+      this.drawArrowCursor(ctx, theme);
     }
 
     ctx.restore();
@@ -266,7 +278,7 @@ export class CursorSplineEngine {
     ctx.restore();
   }
 
-  private drawArrowCursor(ctx: CanvasRenderingContext2D) {
+  private drawArrowCursor(ctx: CanvasRenderingContext2D, theme: CursorTheme = 'mac-obsidian') {
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.lineTo(0, 19);
@@ -277,16 +289,29 @@ export class CursorSplineEngine {
     ctx.lineTo(15, 13.5);
     ctx.closePath();
 
-    ctx.fillStyle = '#0F1117'; // Crisp obsidian black fill
-    ctx.fill();
-
-    ctx.strokeStyle = '#FFFFFF'; // Crisp white outline
-    ctx.lineWidth = 1.8;
-    ctx.lineJoin = 'round';
-    ctx.stroke();
+    if (theme === 'neon-glow') {
+      ctx.fillStyle = '#8B5CF6'; // Vibrant electric violet
+      ctx.fill();
+      ctx.strokeStyle = '#F3E8FF';
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+    } else if (theme === 'minimal-white') {
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fill();
+      ctx.strokeStyle = '#18181B';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = '#0F1117'; // Crisp obsidian black fill
+      ctx.fill();
+      ctx.strokeStyle = '#FFFFFF'; // Crisp white outline
+      ctx.lineWidth = 1.8;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    }
   }
 
-  private drawHandCursor(ctx: CanvasRenderingContext2D) {
+  private drawHandCursor(ctx: CanvasRenderingContext2D, theme: CursorTheme = 'mac-obsidian') {
     ctx.translate(-4, -1);
     ctx.scale(0.85, 0.85);
 
@@ -311,16 +336,29 @@ export class CursorSplineEngine {
     ctx.quadraticCurveTo(10, 0, 8, 2);
     ctx.closePath();
 
-    ctx.fillStyle = '#0F1117';
-    ctx.fill();
-
-    ctx.strokeStyle = '#FFFFFF';
-    ctx.lineWidth = 1.8;
-    ctx.lineJoin = 'round';
-    ctx.stroke();
+    if (theme === 'neon-glow') {
+      ctx.fillStyle = '#8B5CF6';
+      ctx.fill();
+      ctx.strokeStyle = '#F3E8FF';
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+    } else if (theme === 'minimal-white') {
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fill();
+      ctx.strokeStyle = '#18181B';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = '#0F1117';
+      ctx.fill();
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 1.8;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    }
   }
 
-  private drawIBeamCursor(ctx: CanvasRenderingContext2D) {
+  private drawIBeamCursor(ctx: CanvasRenderingContext2D, theme: CursorTheme = 'mac-obsidian') {
     ctx.translate(0, -9);
     ctx.beginPath();
     // Top bar
@@ -333,15 +371,31 @@ export class CursorSplineEngine {
     ctx.moveTo(-5, 18);
     ctx.lineTo(5, 18);
 
-    ctx.strokeStyle = '#FFFFFF';
-    ctx.lineWidth = 2.2;
-    ctx.stroke();
+    if (theme === 'neon-glow') {
+      ctx.strokeStyle = '#C084FC';
+      ctx.lineWidth = 2.4;
+      ctx.stroke();
+    } else if (theme === 'minimal-white') {
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 2.2;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, 1);
+      ctx.lineTo(0, 17);
+      ctx.strokeStyle = '#18181B';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 2.2;
+      ctx.stroke();
 
-    ctx.beginPath();
-    ctx.moveTo(0, 1);
-    ctx.lineTo(0, 17);
-    ctx.strokeStyle = '#0F1117';
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, 1);
+      ctx.lineTo(0, 17);
+      ctx.strokeStyle = '#0F1117';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    }
   }
 }

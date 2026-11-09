@@ -3,7 +3,10 @@ import {
   VibePreset,
   VibePresetId,
   ZoomPill,
-  KeystrokeEvent
+  KeystrokeEvent,
+  CaptionBlock,
+  CaptionStyle,
+  CursorTheme
 } from '../types/telemetry';
 import { CameraState } from './spring-physics';
 import { CursorSplineEngine, InterpolatedCursor } from './cursor-spline';
@@ -85,6 +88,14 @@ export interface RenderFrameOptions {
   showCursor: boolean;
   showHud: boolean;
   metadata?: { width: number; height: number };
+  cursorTheme?: CursorTheme;
+  cursorScale?: number;
+  captions?: CaptionBlock[];
+  captionStyle?: CaptionStyle;
+  showCaptions?: boolean;
+  showIntroCard?: boolean;
+  introHeadline?: string;
+  introSubheadline?: string;
 }
 
 export function getAspectDimensions(aspect: AspectRatioType, targetWidth = 1920): { width: number; height: number } {
@@ -127,7 +138,15 @@ export class StudioRenderer {
       showSpotlight,
       showCursor,
       showHud,
-      metadata
+      metadata,
+      cursorTheme,
+      cursorScale,
+      captions,
+      captionStyle,
+      showCaptions,
+      showIntroCard,
+      introHeadline,
+      introSubheadline
     } = options;
 
     const ctx = canvas.getContext('2d');
@@ -138,6 +157,37 @@ export class StudioRenderer {
 
     // 1. Draw Animated Procedural Mesh Gradient Background
     this.drawMeshGradientBackground(ctx, canvasW, canvasH, preset, currentTimeMs);
+
+    // Calculate Intro Transition Factors & 3D Spring Zoom
+    let introCardAlpha = 0;
+    let introCardScale = 1.0;
+    let windowIntroAlpha = 1.0;
+    let windowIntroScale = 1.0;
+    let windowIntroTiltX = 0;
+    let windowIntroTiltY = 0;
+
+    if (showIntroCard && currentTimeMs < 1500) {
+      if (currentTimeMs < 1000) {
+        // First 1000ms: Title hook card is fully visible with entrance spring pop
+        const enterProgress = Math.min(1, currentTimeMs / 320);
+        const enterEase = enterProgress * enterProgress * enterProgress * (enterProgress * (enterProgress * 6 - 15) + 10);
+        introCardAlpha = enterEase;
+        introCardScale = 0.88 + 0.12 * enterEase;
+        windowIntroAlpha = 0;
+        windowIntroScale = 0.72;
+      } else {
+        // 1000ms to 1500ms: Smooth 3D spring zoom transition from title card into screen recording!
+        const transProgress = Math.min(1, Math.max(0, (currentTimeMs - 1000) / 500));
+        const ease = transProgress * transProgress * transProgress * (transProgress * (transProgress * 6 - 15) + 10);
+        introCardAlpha = Math.max(0, 1 - ease);
+        introCardScale = 1.0 + 0.12 * ease; // Card blooms gently outward as it dissolves
+
+        windowIntroAlpha = ease;
+        windowIntroScale = 0.72 + 0.28 * ease; // 3D spring zoom from 72% up to 100% full frame
+        windowIntroTiltX = (1 - ease) * 8; // Dynamic isometric entry flair
+        windowIntroTiltY = (1 - ease) * -12;
+      }
+    }
 
     // 2. Calculate Window Dimensions with Studio Padding
     const paddingX = canvasW * 0.08;
@@ -173,126 +223,156 @@ export class StudioRenderer {
       // Source might not be ready yet
     }
 
-    // 4. Draw Window Framing with 3D Isometric Transform and Diffused Shadow
-    ctx.save();
+    // 4. Render Window Framing with 3D Isometric Transform and Diffused Shadow (if visible)
+    if (windowIntroAlpha > 0.001) {
+      ctx.save();
+      ctx.globalAlpha = windowIntroAlpha;
 
-    // Pivot center of the window
-    const centerX = windowX + windowW / 2;
-    const centerY = windowY + windowH / 2;
-    ctx.translate(centerX, centerY);
+      // Pivot center of the window
+      const centerX = windowX + windowW / 2;
+      const centerY = windowY + windowH / 2;
+      ctx.translate(centerX, centerY);
 
-    // Apply 3D isometric perspective tilt via shear & scale matrix
-    if (Math.abs(camera.tiltX) > 0.1 || Math.abs(camera.tiltY) > 0.1) {
-      const radY = (camera.tiltY * Math.PI) / 180;
-      const radX = (camera.tiltX * Math.PI) / 180;
-      // 2.5D isometric projection approximation on 2D context
-      ctx.transform(
-        Math.cos(radY),
-        Math.sin(radX) * 0.35,
-        Math.sin(radY) * 0.35,
-        Math.cos(radX),
-        0,
-        0
-      );
-    }
-
-    // Move back from pivot
-    ctx.translate(-windowW / 2, -windowH / 2);
-
-    // Draw Diffused Drop Shadow
-    ctx.save();
-    ctx.shadowColor = preset.shadowColor;
-    ctx.shadowBlur = preset.shadowBlur;
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = 24;
-    ctx.fillStyle = '#0F1117';
-    this.roundRect(ctx, 0, 0, windowW, windowH, preset.borderRadius);
-    ctx.fill();
-    ctx.restore();
-
-    // Clip to rounded window corners
-    ctx.save();
-    this.roundRect(ctx, 0, 0, windowW, windowH, preset.borderRadius);
-    ctx.clip();
-
-    // 5. Apply Camera Zoom & Pan Transformations
-    // Clamped focal point ensures video fills window with zero blank margins
-    const S = Math.max(1.0, camera.scale);
-    const halfViewX = 0.5 / S;
-    const halfViewY = 0.5 / S;
-    const clampedCamX = Math.max(halfViewX, Math.min(1 - halfViewX, camera.x));
-    const clampedCamY = Math.max(halfViewY, Math.min(1 - halfViewY, camera.y));
-
-    ctx.save();
-    // Center camera onto target focal point
-    ctx.translate(windowW * 0.5, windowH * 0.5);
-    ctx.scale(S, S);
-    ctx.translate(-clampedCamX * windowW, -clampedCamY * windowH);
-
-    // Draw the source video content inside the window
-    ctx.drawImage(this.offscreenVideoCanvas, 0, 0, windowW, windowH);
-    ctx.restore();
-
-    // 6. Render Dynamic Spotlight Mask if enabled (soft radial darkening around focal point)
-    const isSpotlightActive = showSpotlight && (activePill ? activePill.spotlight : false);
-    if (isSpotlightActive) {
-      // The focal center in the window is windowW * 0.5, windowH * 0.5
-      this.applySpotlightMask(
-        ctx,
-        windowW,
-        windowH,
-        windowW * 0.5,
-        windowH * 0.5
-      );
-    }
-
-    // 7. Render High-Resolution Vector Cursor and Click Ripples
-    if (showCursor) {
-      const cursor = cursorEngine.getCursorAt(currentTimeMs);
-      const metaW = metadata?.width || sourceW;
-      const metaH = metadata?.height || sourceH;
-
-      const normCursorX = Math.max(0.01, Math.min(0.99, cursor.x / metaW));
-      const normCursorY = Math.max(0.01, Math.min(0.99, cursor.y / metaH));
-
-      // Calculate cursor screen position mapped into window frame
-      const cursorScreenX = (windowW * 0.5) + (normCursorX - clampedCamX) * windowW * S;
-      const cursorScreenY = (windowH * 0.5) + (normCursorY - clampedCamY) * windowH * S;
-
-      // Compute active click ripple positions in window screen coordinates
-      const activeRipples: { x: number; y: number; progress: number }[] = [];
-      for (const click of cursorEngine.getClicks()) {
-        const elapsed = currentTimeMs - click.t;
-        if (elapsed >= 0 && elapsed <= 500) {
-          const clickNormX = click.x / metaW;
-          const clickNormY = click.y / metaH;
-          const rx = (windowW * 0.5) + (clickNormX - clampedCamX) * windowW * S;
-          const ry = (windowH * 0.5) + (clickNormY - clampedCamY) * windowH * S;
-          activeRipples.push({ x: rx, y: ry, progress: elapsed / 500 });
-        }
+      // Apply Intro 3D Spring Zoom scale
+      if (windowIntroScale < 0.999) {
+        ctx.scale(windowIntroScale, windowIntroScale);
       }
 
-      cursorEngine.drawCursorAt(
+      // Apply 3D isometric perspective tilt via shear & scale matrix
+      const effectiveTiltX = camera.tiltX + windowIntroTiltX;
+      const effectiveTiltY = camera.tiltY + windowIntroTiltY;
+      if (Math.abs(effectiveTiltX) > 0.1 || Math.abs(effectiveTiltY) > 0.1) {
+        const radY = (effectiveTiltY * Math.PI) / 180;
+        const radX = (effectiveTiltX * Math.PI) / 180;
+        // 2.5D isometric projection approximation on 2D context
+        ctx.transform(
+          Math.cos(radY),
+          Math.sin(radX) * 0.35,
+          Math.sin(radY) * 0.35,
+          Math.cos(radX),
+          0,
+          0
+        );
+      }
+
+      // Move back from pivot
+      ctx.translate(-windowW / 2, -windowH / 2);
+
+      // Draw Diffused Drop Shadow
+      ctx.save();
+      ctx.shadowColor = preset.shadowColor;
+      ctx.shadowBlur = preset.shadowBlur;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 24;
+      ctx.fillStyle = '#0F1117';
+      this.roundRect(ctx, 0, 0, windowW, windowH, preset.borderRadius);
+      ctx.fill();
+      ctx.restore();
+
+      // Clip to rounded window corners
+      ctx.save();
+      this.roundRect(ctx, 0, 0, windowW, windowH, preset.borderRadius);
+      ctx.clip();
+
+      // 5. Apply Camera Zoom & Pan Transformations
+      // Clamped focal point ensures video fills window with zero blank margins
+      const S = Math.max(1.0, camera.scale);
+      const halfViewX = 0.5 / S;
+      const halfViewY = 0.5 / S;
+      const clampedCamX = Math.max(halfViewX, Math.min(1 - halfViewX, camera.x));
+      const clampedCamY = Math.max(halfViewY, Math.min(1 - halfViewY, camera.y));
+
+      ctx.save();
+      // Center camera onto target focal point
+      ctx.translate(windowW * 0.5, windowH * 0.5);
+      ctx.scale(S, S);
+      ctx.translate(-clampedCamX * windowW, -clampedCamY * windowH);
+
+      // Draw the source video content inside the window
+      ctx.drawImage(this.offscreenVideoCanvas, 0, 0, windowW, windowH);
+      ctx.restore();
+
+      // 6. Render Dynamic Spotlight Mask if enabled (soft radial darkening around focal point)
+      const isSpotlightActive = showSpotlight && (activePill ? activePill.spotlight : false);
+      if (isSpotlightActive) {
+        this.applySpotlightMask(
+          ctx,
+          windowW,
+          windowH,
+          windowW * 0.5,
+          windowH * 0.5
+        );
+      }
+
+      // 7. Render High-Resolution Vector Cursor and Click Ripples
+      if (showCursor) {
+        const cursor = cursorEngine.getCursorAt(currentTimeMs);
+        const metaW = metadata?.width || sourceW;
+        const metaH = metadata?.height || sourceH;
+
+        const normCursorX = Math.max(0.01, Math.min(0.99, cursor.x / metaW));
+        const normCursorY = Math.max(0.01, Math.min(0.99, cursor.y / metaH));
+
+        // Calculate cursor screen position mapped into window frame
+        const cursorScreenX = (windowW * 0.5) + (normCursorX - clampedCamX) * windowW * S;
+        const cursorScreenY = (windowH * 0.5) + (normCursorY - clampedCamY) * windowH * S;
+
+        // Compute active click ripple positions in window screen coordinates
+        const activeRipples: { x: number; y: number; progress: number }[] = [];
+        for (const click of cursorEngine.getClicks()) {
+          const elapsed = currentTimeMs - click.t;
+          if (elapsed >= 0 && elapsed <= 500) {
+            const clickNormX = click.x / metaW;
+            const clickNormY = click.y / metaH;
+            const rx = (windowW * 0.5) + (clickNormX - clampedCamX) * windowW * S;
+            const ry = (windowH * 0.5) + (clickNormY - clampedCamY) * windowH * S;
+            activeRipples.push({ x: rx, y: ry, progress: elapsed / 500 });
+          }
+        }
+
+        cursorEngine.drawCursorAt(
+          ctx,
+          cursor,
+          cursorScreenX,
+          cursorScreenY,
+          currentTimeMs,
+          preset.cursorRingColor,
+          activeRipples,
+          cursorTheme || 'mac-obsidian',
+          cursorScale || 1.0
+        );
+      }
+
+      // 8. Render Animated Word-by-Word Captions
+      if (showCaptions && captions && captions.length > 0) {
+        this.drawAnimatedCaptions(ctx, windowW, windowH, captions, currentTimeMs, captionStyle || 'tiktok-bold');
+      }
+
+      // Subtle window inner border for crisp Apple-like finish
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+      ctx.lineWidth = 1.5;
+      this.roundRect(ctx, 0, 0, windowW, windowH, preset.borderRadius);
+      ctx.stroke();
+
+      ctx.restore(); // end clip
+      ctx.restore(); // end 3D transform & intro alpha
+    }
+
+    // 9. Render Floating Intro Title Card over brand mesh gradient during first 1.5s
+    if (showIntroCard && introCardAlpha > 0.001) {
+      this.drawIntroTitleCard(
         ctx,
-        cursor,
-        cursorScreenX,
-        cursorScreenY,
-        currentTimeMs,
-        preset.cursorRingColor,
-        activeRipples
+        canvasW,
+        canvasH,
+        introHeadline || 'Introducing SmoothStudio 2.0',
+        introSubheadline || 'Cinematic screen demos in seconds',
+        introCardAlpha,
+        introCardScale,
+        preset
       );
     }
 
-    // Subtle window inner border for crisp Apple-like finish
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
-    ctx.lineWidth = 1.5;
-    this.roundRect(ctx, 0, 0, windowW, windowH, preset.borderRadius);
-    ctx.stroke();
-
-    ctx.restore(); // end clip
-    ctx.restore(); // end 3D transform
-
-    // 8. Render 3D Glassmorphic Keystroke HUD at bottom
+    // 9. Render 3D Glassmorphic Keystroke HUD at bottom
     if (showHud) {
       this.drawKeystrokeHud(ctx, canvasW, canvasH, keystrokes, currentTimeMs, preset);
     }
@@ -428,6 +508,288 @@ export class StudioRenderer {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, canvasW / 2, y + badgeH / 2);
+
+    ctx.restore();
+  }
+
+  // Render modern animated word-by-word captions (TikTok / Apple Keynote style)
+  private drawAnimatedCaptions(
+    ctx: CanvasRenderingContext2D,
+    windowW: number,
+    windowH: number,
+    captions: CaptionBlock[],
+    timeMs: number,
+    style: CaptionStyle
+  ) {
+    const active = captions.find((c) => timeMs >= c.startTime && timeMs <= c.endTime);
+    if (!active) return;
+
+    ctx.save();
+
+    const isTikTok = style === 'tiktok-bold';
+    const isKeynote = style === 'apple-keynote';
+    const isMinimal = style === 'minimal-pill';
+
+    const baseFontSize = isTikTok ? Math.max(18, Math.min(26, Math.round(windowW * 0.022)))
+      : isKeynote ? Math.max(16, Math.min(22, Math.round(windowW * 0.019)))
+      : Math.max(15, Math.min(20, Math.round(windowW * 0.017)));
+
+    const fontFace = isKeynote
+      ? '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Plus Jakarta Sans", Inter, sans-serif'
+      : '"Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+
+    ctx.font = `${isTikTok ? '900' : '600'} ${baseFontSize}px ${fontFace}`;
+    ctx.textBaseline = 'middle';
+
+    const words = active.words && active.words.length > 0 ? active.words : active.text.split(' ').map((w, i, arr) => {
+      const dur = active.endTime - active.startTime;
+      return {
+        word: w,
+        startTime: active.startTime + (i / arr.length) * dur,
+        endTime: active.startTime + ((i + 1) / arr.length) * dur
+      };
+    });
+
+    const maxLineWidth = windowW * 0.84;
+    const spaceWidth = ctx.measureText(' ').width;
+
+    // Group words into lines for clean responsive wrap
+    const lines: { words: typeof words; lineWidth: number; wordWidths: number[] }[] = [];
+    let currentLineWords: typeof words = [];
+    let currentLineWidth = 0;
+    let currentWordWidths: number[] = [];
+
+    words.forEach((w) => {
+      const wWidth = ctx.measureText(w.word).width;
+      const addedWidth = currentLineWords.length === 0 ? wWidth : spaceWidth + wWidth;
+
+      if (currentLineWidth + addedWidth > maxLineWidth && currentLineWords.length > 0) {
+        lines.push({
+          words: currentLineWords,
+          lineWidth: currentLineWidth,
+          wordWidths: currentWordWidths
+        });
+        currentLineWords = [w];
+        currentLineWidth = wWidth;
+        currentWordWidths = [wWidth];
+      } else {
+        currentLineWords.push(w);
+        currentLineWidth += addedWidth;
+        currentWordWidths.push(wWidth);
+      }
+    });
+
+    if (currentLineWords.length > 0) {
+      lines.push({
+        words: currentLineWords,
+        lineWidth: currentLineWidth,
+        wordWidths: currentWordWidths
+      });
+    }
+
+    const lineHeight = baseFontSize * 1.5;
+    const maxLineW = Math.max(...lines.map((l) => l.lineWidth));
+    const padX = isKeynote ? 28 : 22;
+    const padY = 12;
+    const badgeW = maxLineW + padX * 2;
+    const badgeH = lines.length * lineHeight + padY * 2;
+    const badgeX = (windowW - badgeW) / 2;
+    const badgeY = windowH - badgeH - 36;
+
+    // Draw caption container pill with frosted glass blur & high-contrast shadow
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
+    ctx.shadowBlur = 24;
+    ctx.shadowOffsetY = 8;
+
+    if (isTikTok) {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.88)';
+      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 14);
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+      ctx.lineWidth = 1.5;
+      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 14);
+      ctx.stroke();
+    } else if (isKeynote) {
+      // Frosted Glassmorphic Apple Keynote Pill
+      const pillGrad = ctx.createLinearGradient(badgeX, badgeY, badgeX, badgeY + badgeH);
+      pillGrad.addColorStop(0, 'rgba(24, 30, 44, 0.82)');
+      pillGrad.addColorStop(1, 'rgba(15, 20, 30, 0.88)');
+      ctx.fillStyle = pillGrad;
+      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 9999);
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+      ctx.lineWidth = 1.2;
+      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 9999);
+      ctx.stroke();
+    } else if (isMinimal) {
+      ctx.fillStyle = 'rgba(15, 17, 23, 0.85)';
+      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 9999);
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(139, 92, 246, 0.4)';
+      ctx.lineWidth = 1;
+      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 9999);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 8);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // Render individual words across lines with active word highlight & micro-pop
+    lines.forEach((line, lineIdx) => {
+      let curX = (windowW - line.lineWidth) / 2;
+      const curY = badgeY + padY + lineIdx * lineHeight + lineHeight / 2;
+
+      line.words.forEach((w, wIdx) => {
+        const isWordActive = timeMs >= w.startTime && timeMs <= w.endTime;
+        const isPast = timeMs > w.endTime;
+        const wWidth = line.wordWidths[wIdx];
+
+        ctx.save();
+
+        if (isWordActive) {
+          if (isTikTok) {
+            ctx.fillStyle = '#FACC15'; // Punchy viral TikTok yellow
+            ctx.shadowColor = '#FACC15';
+            ctx.shadowBlur = 14;
+            // Micro-pop scale on active word
+            ctx.translate(curX + wWidth / 2, curY);
+            ctx.scale(1.08, 1.08);
+            ctx.translate(-(curX + wWidth / 2), -curY);
+          } else if (isKeynote) {
+            ctx.fillStyle = '#38BDF8'; // Electric Keynote cyan
+            ctx.shadowColor = '#38BDF8';
+            ctx.shadowBlur = 12;
+            ctx.translate(curX + wWidth / 2, curY);
+            ctx.scale(1.05, 1.05);
+            ctx.translate(-(curX + wWidth / 2), -curY);
+          } else if (isMinimal) {
+            ctx.fillStyle = '#C084FC';
+            ctx.shadowColor = '#C084FC';
+            ctx.shadowBlur = 8;
+          } else {
+            ctx.fillStyle = '#FDE047';
+          }
+        } else if (isPast) {
+          ctx.fillStyle = '#FFFFFF';
+        } else {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+        }
+
+        ctx.textAlign = 'left';
+        ctx.fillText(w.word, curX, curY);
+        ctx.restore();
+
+        curX += wWidth + spaceWidth;
+      });
+    });
+
+    ctx.restore();
+  }
+
+  // Floating Glassmorphic Intro Hook Card over brand mesh gradient
+  private drawIntroTitleCard(
+    ctx: CanvasRenderingContext2D,
+    canvasW: number,
+    canvasH: number,
+    headline: string,
+    subheadline: string,
+    alpha: number,
+    scale: number,
+    preset: VibePreset
+  ) {
+    if (alpha <= 0.001) return;
+
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.translate(canvasW / 2, canvasH / 2);
+    ctx.scale(scale, scale);
+
+    const cardW = Math.min(canvasW * 0.78, 860);
+    const cardH = Math.min(canvasH * 0.44, 300);
+    const cardX = -cardW / 2;
+    const cardY = -cardH / 2;
+
+    // Card shadow
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.75)';
+    ctx.shadowBlur = 48;
+    ctx.shadowOffsetY = 20;
+
+    // Background gradient
+    const cardGrad = ctx.createLinearGradient(cardX, cardY, cardX + cardW, cardY + cardH);
+    cardGrad.addColorStop(0, 'rgba(20, 24, 35, 0.88)');
+    cardGrad.addColorStop(1, 'rgba(11, 13, 20, 0.94)');
+    ctx.fillStyle = cardGrad;
+    this.roundRect(ctx, cardX, cardY, cardW, cardH, 24);
+    ctx.fill();
+    ctx.restore();
+
+    // Glass Card Bevel Border
+    ctx.save();
+    const borderGrad = ctx.createLinearGradient(cardX, cardY, cardX + cardW, cardY + cardH);
+    borderGrad.addColorStop(0, 'rgba(255, 255, 255, 0.28)');
+    borderGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.1)');
+    borderGrad.addColorStop(1, 'rgba(139, 92, 246, 0.35)');
+    ctx.strokeStyle = borderGrad;
+    ctx.lineWidth = 1.5;
+    this.roundRect(ctx, cardX, cardY, cardW, cardH, 24);
+    ctx.stroke();
+    ctx.restore();
+
+    // Top Badge Pill
+    const badgeText = 'SMOOTHSTUDIO PRO DEMO';
+    ctx.save();
+    ctx.font = '700 11px Inter, sans-serif';
+    const badgeMetrics = ctx.measureText(badgeText);
+    const badgeW = badgeMetrics.width + 24;
+    const badgeH = 26;
+    const badgeX = -badgeW / 2;
+    const badgeY = cardY + 36;
+
+    ctx.fillStyle = 'rgba(139, 92, 246, 0.2)';
+    this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 13);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(168, 85, 247, 0.45)';
+    ctx.lineWidth = 1;
+    this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 13);
+    ctx.stroke();
+
+    ctx.fillStyle = '#C084FC';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(badgeText, 0, badgeY + badgeH / 2);
+    ctx.restore();
+
+    // Main Headline
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const headlineFontSize = Math.max(28, Math.min(52, Math.round(cardW * 0.058)));
+    ctx.font = `bold ${headlineFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+    ctx.shadowBlur = 18;
+    ctx.shadowOffsetY = 4;
+    ctx.fillText(headline || 'Introducing SmoothStudio 2.0', 0, cardY + cardH * 0.52);
+    ctx.restore();
+
+    // Subheadline
+    if (subheadline) {
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const subFontSize = Math.max(15, Math.min(22, Math.round(cardW * 0.026)));
+      ctx.font = `400 ${subFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+      ctx.fillStyle = 'rgba(226, 232, 240, 0.85)';
+      ctx.fillText(subheadline, 0, cardY + cardH * 0.76);
+      ctx.restore();
+    }
 
     ctx.restore();
   }

@@ -52,12 +52,31 @@ export interface RecordingMetadata {
   };
 }
 
+export interface CaptionWord {
+  word: string;
+  startTime: number;
+  endTime: number;
+}
+
+export interface CaptionBlock {
+  id: string;
+  startTime: number;
+  endTime: number;
+  text: string;
+  words: CaptionWord[];
+}
+
+export type CaptionStyle = 'tiktok-bold' | 'apple-keynote' | 'minimal-pill' | 'classic-sub';
+
+export type CursorTheme = 'mac-obsidian' | 'neon-glow' | 'minimal-white';
+
 export interface TelemetryData {
   metadata: RecordingMetadata;
   mousePoints: MousePoint[];
   clicks: ClickEvent[];
   keystrokes: KeystrokeEvent[];
   inputEvents: InputFocusEvent[];
+  captions?: CaptionBlock[];
 }
 
 export interface ZoomPill {

@@ -42,20 +42,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Collect telemetry from the recorded tab and save to chrome.storage.local
     const collectAndFinish = (tabIdToQuery: number | null) => {
       if (tabIdToQuery) {
-        chrome.tabs.sendMessage(tabIdToQuery, { type: 'STOP_TELEMETRY' }, (response) => {
-          const telemetryData = response?.data || null;
+        try {
+          chrome.tabs.sendMessage(tabIdToQuery, { type: 'STOP_TELEMETRY' }, (response) => {
+            try {
+              const telemetryData = response?.data || null;
 
-          if (telemetryData) {
-            chrome.storage.local.set({
-              smoothstudio_telemetry: telemetryData,
-              'smoothstudio_telemetry.json': telemetryData
-            }, () => {
-              notifyEditorAndFocus(telemetryData);
-            });
-          } else {
-            notifyEditorAndFocus(null);
-          }
-        });
+              if (telemetryData) {
+                chrome.storage.local.set({
+                  smoothstudio_telemetry: telemetryData,
+                  'smoothstudio_telemetry.json': telemetryData
+                }, () => {
+                  notifyEditorAndFocus(telemetryData);
+                });
+              } else {
+                notifyEditorAndFocus(null);
+              }
+            } catch {
+              notifyEditorAndFocus(null);
+            }
+          });
+        } catch {
+          notifyEditorAndFocus(null);
+        }
       } else {
         notifyEditorAndFocus(null);
       }

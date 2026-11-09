@@ -3,10 +3,12 @@ import {
   AspectRatioType,
   VibePreset,
   VibePresetId,
-  RecordingMetadata
+  RecordingMetadata,
+  CursorTheme,
+  CaptionStyle
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
-import { Palette, Volume2, Sparkles, Monitor, Smartphone, Square, Tv } from 'lucide-react';
+import { Palette, Volume2, Sparkles, Monitor, Smartphone, Square, Tv, MousePointer, Subtitles, Scissors } from 'lucide-react';
 
 interface VibePresetsPanelProps {
   currentPreset: VibePreset;
@@ -24,7 +26,23 @@ interface VibePresetsPanelProps {
   onToggleFollowCursor: (val: boolean) => void;
   soundEnabled: boolean;
   onToggleSound: (val: boolean) => void;
+  autoCutSilences?: boolean;
+  onToggleAutoCutSilences?: (val: boolean) => void;
   onUpdatePresetBorderRadius: (radius: number) => void;
+  cursorTheme: CursorTheme;
+  onChangeCursorTheme: (theme: CursorTheme) => void;
+  cursorScale: number;
+  onChangeCursorScale: (scale: number) => void;
+  showCaptions: boolean;
+  onToggleCaptions: (val: boolean) => void;
+  captionStyle: CaptionStyle;
+  onChangeCaptionStyle: (style: CaptionStyle) => void;
+  showIntroCard?: boolean;
+  onToggleIntroCard?: (val: boolean) => void;
+  introHeadline?: string;
+  onChangeIntroHeadline?: (val: string) => void;
+  introSubheadline?: string;
+  onChangeIntroSubheadline?: (val: string) => void;
 }
 
 export function VibePresetsPanel({
@@ -43,7 +61,23 @@ export function VibePresetsPanel({
   onToggleFollowCursor,
   soundEnabled,
   onToggleSound,
-  onUpdatePresetBorderRadius
+  autoCutSilences = true,
+  onToggleAutoCutSilences,
+  onUpdatePresetBorderRadius,
+  cursorTheme,
+  onChangeCursorTheme,
+  cursorScale,
+  onChangeCursorScale,
+  showCaptions,
+  onToggleCaptions,
+  captionStyle,
+  onChangeCaptionStyle,
+  showIntroCard,
+  onToggleIntroCard,
+  introHeadline,
+  onChangeIntroHeadline,
+  introSubheadline,
+  onChangeIntroSubheadline
 }: VibePresetsPanelProps) {
   const handleMatchBrand = () => {
     if (!metadata?.brandColors) return;
@@ -189,6 +223,128 @@ export function VibePresetsPanel({
         />
       </div>
 
+      {/* Cursor Theme & Scale Customizer */}
+      <div className="pt-2 border-t border-white/10 space-y-3">
+        <div className="flex items-center justify-between text-xs font-semibold text-gray-300 uppercase tracking-wider">
+          <span className="flex items-center gap-1.5">
+            <MousePointer className="w-3.5 h-3.5 text-purple-400" />
+            Vector Cursor Styling
+          </span>
+          <span className="font-mono text-purple-400 text-[11px]">{cursorScale.toFixed(1)}x</span>
+        </div>
+
+        {/* Theme pills */}
+        <div className="grid grid-cols-3 gap-1 text-[11px]">
+          <button
+            onClick={() => onChangeCursorTheme('mac-obsidian')}
+            className={`p-1.5 rounded-lg border text-center transition-colors ${
+              cursorTheme === 'mac-obsidian'
+                ? 'bg-purple-600/25 border-purple-500 text-white font-medium'
+                : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+            }`}
+          >
+            Obsidian
+          </button>
+          <button
+            onClick={() => onChangeCursorTheme('neon-glow')}
+            className={`p-1.5 rounded-lg border text-center transition-colors ${
+              cursorTheme === 'neon-glow'
+                ? 'bg-purple-600/25 border-purple-500 text-purple-200 font-medium'
+                : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+            }`}
+          >
+            Neon Glow
+          </button>
+          <button
+            onClick={() => onChangeCursorTheme('minimal-white')}
+            className={`p-1.5 rounded-lg border text-center transition-colors ${
+              cursorTheme === 'minimal-white'
+                ? 'bg-purple-600/25 border-purple-500 text-white font-medium'
+                : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+            }`}
+          >
+            Clean White
+          </button>
+        </div>
+
+        {/* Cursor Scale Slider */}
+        <div className="space-y-1">
+          <div className="flex justify-between text-[11px] text-gray-400">
+            <span>Pointer Size</span>
+          </div>
+          <input
+            type="range"
+            min="0.8"
+            max="2.0"
+            step="0.1"
+            value={cursorScale}
+            onChange={(e) => onChangeCursorScale(parseFloat(e.target.value))}
+            className="w-full accent-purple-500"
+          />
+        </div>
+      </div>
+
+      {/* TikTok / Reels Auto-Captions */}
+      <div className="pt-2 border-t border-white/10 space-y-2.5">
+        <div className="flex items-center justify-between text-xs font-semibold text-gray-300 uppercase tracking-wider">
+          <span className="flex items-center gap-1.5">
+            <Subtitles className="w-3.5 h-3.5 text-amber-400" />
+            Viral Auto-Captions
+          </span>
+          <input
+            type="checkbox"
+            checked={showCaptions}
+            onChange={(e) => onToggleCaptions(e.target.checked)}
+            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+          />
+        </div>
+
+        {showCaptions && (
+          <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+            <button
+              onClick={() => onChangeCaptionStyle('tiktok-bold')}
+              className={`p-1.5 rounded-lg border text-center transition-colors ${
+                captionStyle === 'tiktok-bold'
+                  ? 'bg-amber-500/25 border-amber-500 text-amber-200 font-medium'
+                  : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+              }`}
+            >
+              TikTok Bold (Yellow)
+            </button>
+            <button
+              onClick={() => onChangeCaptionStyle('apple-keynote')}
+              className={`p-1.5 rounded-lg border text-center transition-colors ${
+                captionStyle === 'apple-keynote'
+                  ? 'bg-sky-500/25 border-sky-400 text-sky-200 font-medium'
+                  : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+              }`}
+            >
+              Apple Keynote (Glass)
+            </button>
+            <button
+              onClick={() => onChangeCaptionStyle('minimal-pill')}
+              className={`p-1.5 rounded-lg border text-center transition-colors ${
+                captionStyle === 'minimal-pill'
+                  ? 'bg-purple-600/25 border-purple-500 text-purple-200 font-medium'
+                  : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+              }`}
+            >
+              Minimal Pill
+            </button>
+            <button
+              onClick={() => onChangeCaptionStyle('classic-sub')}
+              className={`p-1.5 rounded-lg border text-center transition-colors ${
+                captionStyle === 'classic-sub'
+                  ? 'bg-white/20 border-white/40 text-white font-medium'
+                  : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+              }`}
+            >
+              Classic Sub
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Visual & Sound Superpowers Toggles */}
       <div className="pt-2 border-t border-white/10 space-y-2.5">
         <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider block">
@@ -247,6 +403,101 @@ export function VibePresetsPanel({
             className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
           />
         </label>
+
+        <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
+          <span className="flex items-center gap-1.5">
+            <Scissors className="w-3.5 h-3.5 text-amber-400" />
+            Auto-Cut Silences (&gt;1.2s)
+          </span>
+          <input
+            type="checkbox"
+            checked={!!autoCutSilences}
+            onChange={(e) => onToggleAutoCutSilences?.(e.target.checked)}
+            className="rounded bg-gray-800 border-gray-600 text-amber-500 focus:ring-0"
+          />
+        </label>
+      </div>
+
+      {/* Built-In Intro Title Hook Cards */}
+      <div className="pt-2 border-t border-white/10 space-y-2.5">
+        <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center justify-between">
+          <span>Intro Title Hook Card</span>
+          <span className="text-[10px] text-purple-400 font-mono">1.5s 3D Zoom</span>
+        </label>
+
+        <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
+          <span>Enable Intro Title Card</span>
+          <input
+            type="checkbox"
+            checked={!!showIntroCard}
+            onChange={(e) => onToggleIntroCard?.(e.target.checked)}
+            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+          />
+        </label>
+
+        {showIntroCard && (
+          <div className="space-y-2.5 pt-1">
+            <div>
+              <span className="text-[10px] text-gray-400 uppercase font-medium block mb-1">Headline</span>
+              <input
+                type="text"
+                value={introHeadline || ''}
+                onChange={(e) => onChangeIntroHeadline?.(e.target.value)}
+                placeholder="e.g. Introducing SmoothStudio 2.0"
+                className="w-full bg-black/50 border border-white/15 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <span className="text-[10px] text-gray-400 uppercase font-medium block mb-1">Subheadline</span>
+              <input
+                type="text"
+                value={introSubheadline || ''}
+                onChange={(e) => onChangeIntroSubheadline?.(e.target.value)}
+                placeholder="e.g. Cinematic screen demos in seconds"
+                className="w-full bg-black/50 border border-white/15 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 placeholder-gray-500 focus:outline-none"
+              />
+            </div>
+
+            {/* Quick Title Hook Templates */}
+            <div className="flex flex-wrap gap-1 pt-0.5">
+              <button
+                type="button"
+                onClick={() => {
+                  onChangeIntroHeadline?.('Introducing SmoothStudio 2.0');
+                  onChangeIntroSubheadline?.('Cinematic screen demos in seconds');
+                }}
+                className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-gray-400 hover:text-purple-300 transition-colors"
+              >
+                Launch
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onChangeIntroHeadline?.('New Feature Walkthrough');
+                  onChangeIntroSubheadline?.('See what is possible with local hardware acceleration');
+                }}
+                className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-gray-400 hover:text-purple-300 transition-colors"
+              >
+                Feature
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onChangeIntroHeadline?.('Quick Step-by-Step Guide');
+                  onChangeIntroSubheadline?.('Everything you need to know in 60 seconds');
+                }}
+                className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-gray-400 hover:text-purple-300 transition-colors"
+              >
+                Guide
+              </button>
+            </div>
+
+            <p className="text-[10px] text-gray-400 leading-tight">
+              Animate hook title over brand mesh gradient before 3D spring zoom into recording.
+            </p>
+          </div>
+        )}
       </div>
     </aside>
   );

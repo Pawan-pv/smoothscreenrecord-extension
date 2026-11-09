@@ -10,34 +10,43 @@ let hoveredElement: HTMLElement | null = null;
 let blurredElements: Set<HTMLElement> = new Set();
 let textNodeOriginals: Map<Text, string> = new Map();
 
-const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-const REVENUE_REGEX = /(?:[\$€£¥]\s?|\bUSD\s?)[0-9,]+(?:\.[0-9]{2})?(?:\s?(?:k|m|b|billion|million|k))?\b|\b[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{2})?\b/gi;
-const API_KEY_REGEX = /\b(?:sk_live_[0-9a-zA-Z]{24,}|ghp_[0-9a-zA-Z]{36}|AIza[0-9A-Za-z-_]{35}|bearer\s+[a-zA-Z0-9_\-\.]{20,}|[a-zA-Z0-9_-]{32,})\b/gi;
+// Non-global detection patterns (safe for .test() without mutating lastIndex)
+const EMAIL_DETECT = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/i;
+const REVENUE_DETECT = /(?:[\$€£¥]\s?|\bUSD\s?)[0-9,]+(?:\.[0-9]{2})?(?:\s?(?:k|m|b|billion|million|k))?\b|\b[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{2})?\b/i;
+const API_KEY_DETECT = /\b(?:sk_live_[0-9a-zA-Z]{24,}|sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|gh[pousr]_[A-Za-z0-9]{36,}|Bearer\s+[A-Za-z0-9._-]{20,})\b/i;
 
 export function applyAutoRedaction(options: Partial<PrivacyOptions>) {
+  if (!document?.body) return 0;
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   let node: Text | null;
 
   while ((node = walker.nextNode() as Text | null)) {
     if (!node.nodeValue || !node.parentElement) continue;
-    if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(node.parentElement.tagName)) continue;
+    if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT'].includes(node.parentElement.tagName)) continue;
+    if (node.parentElement.getAttribute('data-redacted') === 'true') continue;
 
     let content = node.nodeValue;
     let modified = false;
 
-    if (options.blurEmails && EMAIL_REGEX.test(content)) {
-      content = content.replace(EMAIL_REGEX, '••••••@••••.com');
-      modified = true;
+    if (options.blurEmails) {
+      if (EMAIL_DETECT.test(content)) {
+        content = content.replace(new RegExp(EMAIL_DETECT.source, 'gi'), '••••••@••••.com');
+        modified = true;
+      }
     }
 
-    if (options.blurRevenue && REVENUE_REGEX.test(content)) {
-      content = content.replace(REVENUE_REGEX, '$••,•••');
-      modified = true;
+    if (options.blurRevenue) {
+      if (REVENUE_DETECT.test(content)) {
+        content = content.replace(new RegExp(REVENUE_DETECT.source, 'gi'), '$••,•••');
+        modified = true;
+      }
     }
 
-    if (options.blurApiKeys && API_KEY_REGEX.test(content)) {
-      content = content.replace(API_KEY_REGEX, '••••••••••••••••');
-      modified = true;
+    if (options.blurApiKeys) {
+      if (API_KEY_DETECT.test(content)) {
+        content = content.replace(new RegExp(API_KEY_DETECT.source, 'gi'), '••••••••••••••••');
+        modified = true;
+      }
     }
 
     if (modified) {
@@ -45,6 +54,11 @@ export function applyAutoRedaction(options: Partial<PrivacyOptions>) {
         textNodeOriginals.set(node, node.nodeValue);
       }
       node.nodeValue = content;
+      try {
+        node.parentElement.setAttribute('data-redacted', 'true');
+      } catch {
+        // Ignore if parent no longer exists
+      }
     }
   }
 
@@ -133,7 +147,18 @@ export function resetRedactions(): void {
     el.style.filter = '';
   }
   blurredElements.clear();
+
+  try {
+    document.querySelectorAll('[data-redacted="true"]').forEach((el) => el.removeAttribute('data-redacted'));
+  } catch {
+    // Ignore
+  }
 }
+
+// Backwards/alternate names expected by tooling and tests
+export const redactSensitiveData = applyAutoRedaction;
+export const unredactSensitiveData = resetRedactions;
+export const restoreRedactions = resetRedactions;
 
 // Extension message listener
 if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {

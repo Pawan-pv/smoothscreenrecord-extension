@@ -3,10 +3,13 @@ import {
   AspectRatioType,
   VibePreset,
   ZoomPill,
-  KeystrokeEvent
+  KeystrokeEvent,
+  CaptionBlock,
+  CaptionStyle,
+  CursorTheme
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from '../engine/renderer';
-import { computeCinematicCameraState } from '../engine/spring-physics';
+import { computeCinematicCameraState, SpringCameraSolver } from '../engine/spring-physics';
 import { CursorSplineEngine } from '../engine/cursor-spline';
 import { Play, Pause, RotateCcw } from 'lucide-react';
 
@@ -27,6 +30,14 @@ interface CanvasPreviewProps {
   showHud: boolean;
   followCursor: boolean;
   metadata?: { width: number; height: number };
+  cursorTheme?: CursorTheme;
+  cursorScale?: number;
+  captions?: CaptionBlock[];
+  captionStyle?: CaptionStyle;
+  showCaptions?: boolean;
+  showIntroCard?: boolean;
+  introHeadline?: string;
+  introSubheadline?: string;
   onCanvasClickToAddZoom?: (normalizedX: number, normalizedY: number) => void;
 }
 
@@ -47,10 +58,20 @@ export function CanvasPreview({
   showHud,
   followCursor,
   metadata,
+  cursorTheme,
+  cursorScale,
+  captions,
+  captionStyle,
+  showCaptions,
+  showIntroCard,
+  introHeadline,
+  introSubheadline,
   onCanvasClickToAddZoom
 }: CanvasPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<StudioRenderer>(new StudioRenderer());
+  const springCameraRef = useRef<SpringCameraSolver>(new SpringCameraSolver());
+  const lastTimeMsRef = useRef<number>(currentTimeMs);
 
   // Render preview frame whenever currentTimeMs, preset, or props change
   useEffect(() => {
@@ -65,7 +86,7 @@ export function CanvasPreview({
 
     // Compute continuous, buttery-smooth cinematic camera framing and cursor tracking
     const cursor = cursorEngine.getCursorAt(currentTimeMs);
-    const camera = computeCinematicCameraState(
+    const targetCamera = computeCinematicCameraState(
       currentTimeMs,
       pills,
       cursor,
@@ -73,6 +94,21 @@ export function CanvasPreview({
       metadata?.height || targetH,
       followCursor
     );
+
+    const solver = springCameraRef.current;
+    solver.setTarget(targetCamera);
+
+    const deltaMs = Math.abs(currentTimeMs - lastTimeMsRef.current);
+    // If scrubbing or manual seek across more than 2000ms outside active playback, snap camera
+    if (!isPlaying || deltaMs > 2200) {
+      solver.snapTo(targetCamera);
+    } else {
+      // Physical spring update: maintains continuous spring motion even when playhead skips a silence gap
+      const stepDt = Math.min(0.048, Math.max(0.016, deltaMs / 1000));
+      solver.update(stepDt);
+    }
+    lastTimeMsRef.current = currentTimeMs;
+    const camera = isPlaying ? solver.getState() : targetCamera;
 
     const activePill = pills.find((p) => currentTimeMs >= p.startTime && currentTimeMs <= p.endTime);
 
@@ -89,7 +125,15 @@ export function CanvasPreview({
       showSpotlight,
       showCursor,
       showHud,
-      metadata
+      metadata,
+      cursorTheme,
+      cursorScale,
+      captions,
+      captionStyle,
+      showCaptions,
+      showIntroCard,
+      introHeadline,
+      introSubheadline
     });
   }, [
     currentTimeMs,
@@ -103,7 +147,15 @@ export function CanvasPreview({
     followCursor,
     cursorEngine,
     keystrokes,
-    metadata
+    metadata,
+    cursorTheme,
+    cursorScale,
+    captions,
+    captionStyle,
+    showCaptions,
+    showIntroCard,
+    introHeadline,
+    introSubheadline
   ]);
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {

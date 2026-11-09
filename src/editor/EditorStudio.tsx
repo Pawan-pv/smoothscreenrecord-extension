@@ -1,16 +1,21 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   TelemetryData,
   ZoomPill,
   SilenceSegment,
   AspectRatioType,
-  VibePreset
+  VibePreset,
+  CaptionBlock,
+  CaptionStyle,
+  CursorTheme
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
 import { generateAutoZoomPills } from '../engine/spring-physics';
 import { CursorSplineEngine } from '../engine/cursor-spline';
 import { AudioProcessor } from '../engine/audio-processor';
+import { SfxSynthesizer } from '../engine/sfx-synthesizer';
 import { HardwareMp4Exporter } from '../engine/mp4-exporter';
+import { HardwareGifExporter } from '../engine/gif-exporter';
 import { SopGuideExporter } from '../engine/sop-guide-exporter';
 import { HtmlWidgetExporter } from '../engine/html-widget-exporter';
 import { getRecordingBlob, loadTelemetry } from '../engine/opfs-storage';
@@ -33,6 +38,7 @@ import {
 
 export function EditorStudio() {
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
+  const videoUrlRef = useRef<string | null>(null);
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | HTMLCanvasElement | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
   const [durationMs, setDurationMs] = useState<number>(10000);
@@ -44,27 +50,49 @@ export function EditorStudio() {
   const [preset, setPreset] = useState<VibePreset>(VIBE_PRESETS['linear-dark']);
   const [pills, setPills] = useState<ZoomPill[]>([]);
   const [silences, setSilences] = useState<SilenceSegment[]>([]);
+  const [autoCutSilences, setAutoCutSilences] = useState<boolean>(true);
   const [showSpotlight, setShowSpotlight] = useState<boolean>(true);
   const [showCursor, setShowCursor] = useState<boolean>(true);
   const [showHud, setShowHud] = useState<boolean>(true);
+  const [showIntroCard, setShowIntroCard] = useState<boolean>(false);
+  const [introHeadline, setIntroHeadline] = useState<string>('Introducing SmoothStudio 2.0');
+  const [introSubheadline, setIntroSubheadline] = useState<string>('Cinematic screen demos in seconds');
   const [followCursor, setFollowCursor] = useState<boolean>(true);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+
+  // Cursor & Auto-Captions State
+  const [cursorTheme, setCursorTheme] = useState<CursorTheme>('mac-obsidian');
+  const [cursorScale, setCursorScale] = useState<number>(1.2);
+  const [showCaptions, setShowCaptions] = useState<boolean>(true);
+  const [captionStyle, setCaptionStyle] = useState<CaptionStyle>('tiktok-bold');
+  const [captions, setCaptions] = useState<CaptionBlock[]>([]);
 
   // Export State
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [exportProgress, setExportProgress] = useState<number>(0);
   const [exportComplete, setExportComplete] = useState<boolean>(false);
+
+  // GIF Export State
+  const [isExportingGif, setIsExportingGif] = useState<boolean>(false);
+  const [exportGifProgress, setExportGifProgress] = useState<number>(0);
+  const [exportGifComplete, setExportGifComplete] = useState<boolean>(false);
+
   const [copiedSop, setCopiedSop] = useState<boolean>(false);
   const [isRecordingLive, setIsRecordingLive] = useState<boolean>(false);
 
   // Engines
   const cursorEngineRef = useRef<CursorSplineEngine>(new CursorSplineEngine());
   const audioProcessorRef = useRef<AudioProcessor>(new AudioProcessor());
+  const sfxSynthesizerRef = useRef<SfxSynthesizer>(new SfxSynthesizer(true));
   const captureEngineRef = useRef<ScreenCaptureEngine>(new ScreenCaptureEngine());
   const animationFrameRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
   const lastPlayedSfxTimeRef = useRef<number>(0);
+  const currentTimeRef = useRef<number>(0);
   const demoRendererRef = useRef<((timeMs: number) => void) | null>(null);
+  const handleStopLiveRecordingRef = useRef<((passedTelemetry?: TelemetryData | null) => Promise<void>) | null>(null);
+  const isStoppingRef = useRef<boolean>(false);
+  const telemetryReceivedRef = useRef<boolean>(false);
 
   // 1. Initial Load: Try OPFS / storage or generate interactive demo
   useEffect(() => {
@@ -74,7 +102,7 @@ export function EditorStudio() {
 
       const messageListener = (msg: any) => {
         if (msg.type === 'STUDIO_STOP_CAPTURE') {
-          handleStopLiveRecording(msg.telemetry);
+          handleStopLiveRecordingRef.current?.(msg.telemetry);
         }
       };
       chrome.runtime.onMessage.addListener(messageListener);
@@ -82,6 +110,12 @@ export function EditorStudio() {
         chrome.runtime.onMessage.removeListener(messageListener);
       };
     }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -111,14 +145,92 @@ export function EditorStudio() {
     loadInitial();
   }, []);
 
+  const seedCaptionsFromTelemetry = (data: TelemetryData, durMs: number): CaptionBlock[] => {
+    const seeded: CaptionBlock[] = [];
+    const title = data.metadata?.title || 'Screen Walkthrough';
+
+    const introEnd = Math.min(3200, Math.round(durMs * 0.28));
+    const introText = `Welcome to ${title.length > 28 ? title.slice(0, 28) + '...' : title}`;
+    const introWords = introText.split(' ').map((w, idx, arr) => {
+      const step = (introEnd - 600) / arr.length;
+      return {
+        word: w,
+        startTime: 600 + idx * step,
+        endTime: 600 + (idx + 1) * step
+      };
+    });
+    seeded.push({
+      id: 'cap_intro',
+      startTime: 600,
+      endTime: introEnd,
+      text: introText,
+      words: introWords
+    });
+
+    data.clicks.forEach((c, idx) => {
+      if (c.targetText && c.targetText.trim().length > 2) {
+        const start = Math.max(0, c.t - 300);
+        const end = Math.min(durMs, c.t + 2400);
+        const text = `Interacting with ${c.targetText.trim().slice(0, 32)}`;
+        const words = text.split(' ').map((w, wIdx, arr) => {
+          const step = (end - start) / arr.length;
+          return {
+            word: w,
+            startTime: start + wIdx * step,
+            endTime: start + (wIdx + 1) * step
+          };
+        });
+        seeded.push({
+          id: `cap_click_${idx}`,
+          startTime: start,
+          endTime: end,
+          text,
+          words
+        });
+      }
+    });
+
+    data.keystrokes.forEach((k, idx) => {
+      if (k.combo) {
+        const start = Math.max(0, k.t - 200);
+        const end = Math.min(durMs, k.t + 2200);
+        const text = `Executing shortcut ${k.combo}`;
+        const words = text.split(' ').map((w, wIdx, arr) => {
+          const step = (end - start) / arr.length;
+          return {
+            word: w,
+            startTime: start + wIdx * step,
+            endTime: start + (wIdx + 1) * step
+          };
+        });
+        seeded.push({
+          id: `cap_key_${idx}`,
+          startTime: start,
+          endTime: end,
+          text,
+          words
+        });
+      }
+    });
+
+    return seeded.sort((a, b) => a.startTime - b.startTime);
+  };
+
   const setupLoadedRecording = (blob: Blob, data: TelemetryData) => {
     setVideoBlob(blob);
     setTelemetry(data);
     const dur = data.metadata.durationMs || 10000;
     setDurationMs(dur);
 
+    if (videoUrlRef.current) {
+      URL.revokeObjectURL(videoUrlRef.current);
+      videoUrlRef.current = null;
+    }
+
     const video = document.createElement('video');
-    video.src = URL.createObjectURL(blob);
+    const objectUrl = URL.createObjectURL(blob);
+    videoUrlRef.current = objectUrl;
+    video.src = objectUrl;
     video.muted = true;
     video.playsInline = true;
     video.onloadedmetadata = () => {
@@ -137,14 +249,30 @@ export function EditorStudio() {
     );
     setPills(autoPills);
 
+    if (data.captions && data.captions.length > 0) {
+      setCaptions(data.captions);
+    } else {
+      setCaptions(seedCaptionsFromTelemetry(data, dur));
+    }
+
     // Analyze silences
     audioProcessorRef.current
-      .analyzeSilences(blob, data.clicks, data.keystrokes)
+      .analyzeSilences(blob, data.clicks, data.keystrokes, -42, 1200, dur)
       .then((detected) => setSilences(detected));
   };
 
   // Synthesize a high-res demo recording with mock DOM events and video
   const loadDemoWorkspace = () => {
+    setIsPlaying(false);
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    if (videoUrlRef.current) {
+      URL.revokeObjectURL(videoUrlRef.current);
+      videoUrlRef.current = null;
+    }
+
     const demoCanvas = document.createElement('canvas');
     demoCanvas.width = 1920;
     demoCanvas.height = 1080;
@@ -315,16 +443,72 @@ export function EditorStudio() {
     );
     setPills(autoPills);
 
-    // Mock silences
+    // Mock silences (>1.2s without clicks or typing)
     setSilences([
       {
         id: 'silence_demo_1',
+        startTime: 4800,
+        endTime: 6200,
+        duration: 1400,
+        markedForCut: true
+      },
+      {
+        id: 'silence_demo_2',
         startTime: 7800,
         endTime: 9600,
         duration: 1800,
         markedForCut: true
       }
     ]);
+
+    // Mock viral TikTok/Linear auto-captions
+    const mockCaptions: CaptionBlock[] = [
+      {
+        id: 'cap_1',
+        startTime: 800,
+        endTime: 3600,
+        text: 'Welcome to Acme Cloud Studio dashboard',
+        words: [
+          { word: 'Welcome', startTime: 800, endTime: 1200 },
+          { word: 'to', startTime: 1200, endTime: 1400 },
+          { word: 'Acme', startTime: 1400, endTime: 1800 },
+          { word: 'Cloud', startTime: 1800, endTime: 2200 },
+          { word: 'Studio', startTime: 2200, endTime: 2800 },
+          { word: 'dashboard', startTime: 2800, endTime: 3600 }
+        ]
+      },
+      {
+        id: 'cap_2',
+        startTime: 4000,
+        endTime: 7000,
+        text: 'Checking real-time WebGPU throughput at 60 FPS',
+        words: [
+          { word: 'Checking', startTime: 4000, endTime: 4500 },
+          { word: 'real-time', startTime: 4500, endTime: 5100 },
+          { word: 'WebGPU', startTime: 5100, endTime: 5700 },
+          { word: 'throughput', startTime: 5700, endTime: 6300 },
+          { word: 'at', startTime: 6300, endTime: 6500 },
+          { word: '60 FPS', startTime: 6500, endTime: 7000 }
+        ]
+      },
+      {
+        id: 'cap_3',
+        startTime: 7500,
+        endTime: 11000,
+        text: 'Zero server cost with hardware accelerated local export',
+        words: [
+          { word: 'Zero', startTime: 7500, endTime: 8000 },
+          { word: 'server', startTime: 8000, endTime: 8400 },
+          { word: 'cost', startTime: 8400, endTime: 8800 },
+          { word: 'with', startTime: 8800, endTime: 9100 },
+          { word: 'hardware', startTime: 9100, endTime: 9600 },
+          { word: 'accelerated', startTime: 9600, endTime: 10200 },
+          { word: 'local', startTime: 10200, endTime: 10600 },
+          { word: 'export', startTime: 10600, endTime: 11000 }
+        ]
+      }
+    ];
+    setCaptions(mockCaptions);
   };
 
   // 2. Playback Loop (60 FPS)
@@ -340,45 +524,54 @@ export function EditorStudio() {
       const dt = now - lastTimeRef.current;
       lastTimeRef.current = now;
 
-      setCurrentTimeMs((prev) => {
-        const next = prev + dt;
-        if (next >= durationMs) {
-          setIsPlaying(false);
-          return 0;
+      let next = currentTimeRef.current + dt;
+
+      if (autoCutSilences) {
+        const activeSilence = silences.find(
+          (s) => s.markedForCut && next >= s.startTime && next < s.endTime
+        );
+        if (activeSilence) {
+          next = activeSilence.endTime;
+        }
+      }
+
+      if (next >= durationMs) {
+        setIsPlaying(false);
+        currentTimeRef.current = 0;
+        setCurrentTimeMs(0);
+        // no extra frame scheduled on natural end
+        return;
+      }
+
+      // Procedural Audio SFX Triggering during playback
+      if (soundEnabled && telemetry) {
+        const activeClick = telemetry.clicks.find(
+          (c) => Math.abs(c.t - next) < 25 && next - lastPlayedSfxTimeRef.current > 150
+        );
+        if (activeClick) {
+          lastPlayedSfxTimeRef.current = next;
+          sfxSynthesizerRef.current.playClickPop();
         }
 
-        // Procedural Audio SFX Triggering during playback
-        if (soundEnabled && telemetry) {
-          // Play pop on clicks
-          const activeClick = telemetry.clicks.find(
-            (c) => Math.abs(c.t - next) < 25 && next - lastPlayedSfxTimeRef.current > 150
-          );
-          if (activeClick) {
-            lastPlayedSfxTimeRef.current = next;
-            audioProcessorRef.current.playClickPop();
-          }
-
-          // Play thock on keystrokes
-          const activeKey = telemetry.keystrokes.find(
-            (k) => Math.abs(k.t - next) < 25 && next - lastPlayedSfxTimeRef.current > 150
-          );
-          if (activeKey) {
-            lastPlayedSfxTimeRef.current = next;
-            audioProcessorRef.current.playKeyboardThock();
-          }
-
-          // Play whoosh when camera enters zoom pill
-          const pillEntering = pills.find(
-            (p) => Math.abs(p.startTime - next) < 25 && next - lastPlayedSfxTimeRef.current > 250
-          );
-          if (pillEntering) {
-            lastPlayedSfxTimeRef.current = next;
-            audioProcessorRef.current.playCameraWhoosh();
-          }
+        const activeKey = telemetry.keystrokes.find(
+          (k) => Math.abs(k.t - next) < 25 && next - lastPlayedSfxTimeRef.current > 150
+        );
+        if (activeKey) {
+          lastPlayedSfxTimeRef.current = next;
+          sfxSynthesizerRef.current.playKeyThock();
         }
 
-        return next;
-      });
+        const pillEntering = pills.find(
+          (p) => Math.abs(p.startTime - next) < 25 && next - lastPlayedSfxTimeRef.current > 250
+        );
+        if (pillEntering) {
+          lastPlayedSfxTimeRef.current = next;
+          sfxSynthesizerRef.current.playZoomWhoosh();
+        }
+      }
+
+      currentTimeRef.current = next;
+      setCurrentTimeMs(next);
 
       animationFrameRef.current = requestAnimationFrame(loop);
     };
@@ -387,7 +580,25 @@ export function EditorStudio() {
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isPlaying, durationMs, soundEnabled, telemetry, pills]);
+  }, [isPlaying, durationMs, soundEnabled, telemetry, pills, silences, autoCutSilences]);
+
+  // Timeline Interactions
+  const handleAddPillAtPlayhead = useCallback((targetX = 0.5, targetY = 0.5) => {
+    const playhead = currentTimeRef.current;
+    const newPill: ZoomPill = {
+      id: 'pill_' + Date.now(),
+      startTime: Math.max(0, playhead - 200),
+      endTime: Math.min(durationMs, playhead + 2400),
+      targetX,
+      targetY,
+      targetScale: 1.8,
+      tiltX: targetX > 0.5 ? -4 : 4,
+      tiltY: targetX > 0.5 ? 6 : -6,
+      spotlight: true,
+      label: 'Custom Zoom'
+    };
+    setPills((prev) => [...prev, newPill].sort((a, b) => a.startTime - b.startTime));
+  }, [durationMs]);
 
   // Keyboard shortcuts: Space (play/pause), ArrowLeft/Right (seek), Z (add zoom)
   useEffect(() => {
@@ -411,7 +622,10 @@ export function EditorStudio() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [durationMs]);
+  }, [durationMs, currentTimeMs, handleAddPillAtPlayhead]);
+
+  useEffect(() => { currentTimeRef.current = currentTimeMs; }, [currentTimeMs]);
+  useEffect(() => { sfxSynthesizerRef.current.setEnabled(soundEnabled); }, [soundEnabled]);
 
   // Synchronize HTML5 video element currentTime if source is a real video
   useEffect(() => {
@@ -425,12 +639,22 @@ export function EditorStudio() {
   // Handle Live Screen Recording within the browser tab
   const handleStartLiveRecording = async (sourceTabId?: number) => {
     try {
+      isStoppingRef.current = false;
+      telemetryReceivedRef.current = false;
+      setIsPlaying(false);
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
       setIsRecordingLive(true);
       await captureEngineRef.current.start({
         includeMic: true,
         frameRate: 60,
         onStop: () => {
-          handleStopLiveRecording();
+          setIsRecordingLive(false);
+          if (!isStoppingRef.current) {
+            void handleStopLiveRecordingRef.current?.();
+          }
         }
       });
 
@@ -454,64 +678,92 @@ export function EditorStudio() {
   };
 
   const handleStopLiveRecording = async (passedTelemetry?: TelemetryData | null) => {
-    await captureEngineRef.current.stop();
-    setIsRecordingLive(false);
+    // 1. If already stopping and no new telemetry provided, drop duplicate calls
+    if (isStoppingRef.current && !passedTelemetry) return;
 
-    // Notify background worker recording stopped
-    if (typeof chrome !== 'undefined' && chrome.runtime) {
-      chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' }).catch(() => {});
-    }
-
-    const blob = await getRecordingBlob();
-    if (blob) {
-      // 1. Check if real DOM telemetry was captured by the recorded tab
-      const realTelemetry = passedTelemetry || (await loadTelemetry());
-      if (realTelemetry && realTelemetry.mousePoints && realTelemetry.mousePoints.length > 0) {
-        console.log('[SmoothStudio] Loaded live recording with DOM telemetry:', realTelemetry);
-        setupLoadedRecording(blob, realTelemetry);
+    // 2. If telemetry arrives after the media stream was already stopped, apply it instead of dropping
+    if (passedTelemetry) {
+      telemetryReceivedRef.current = true;
+      const blob = await getRecordingBlob();
+      if (blob && !videoBlob) {
+        setupLoadedRecording(blob, passedTelemetry);
         return;
       }
 
-      // 2. Fullscreen / Window Fallback: If recorded outside Chrome tab, maintain clean full-frame view
-      const actualDuration = Math.max(3000, Date.now() - (realTelemetry?.metadata?.startTime || Date.now() - 10000));
+      setTelemetry(passedTelemetry);
+      cursorEngineRef.current.setData(passedTelemetry.mousePoints || [], passedTelemetry.clicks || []);
+      const dur = passedTelemetry.metadata?.durationMs || durationMs;
+      setDurationMs(dur);
 
-      const fallbackTelemetry: TelemetryData = {
-        metadata: {
-          id: 'live_' + Date.now(),
-          startTime: Date.now() - actualDuration,
-          endTime: Date.now(),
-          durationMs: actualDuration,
-          width: window.innerWidth,
-          height: window.innerHeight,
-          devicePixelRatio: window.devicePixelRatio || 1,
-          title: 'Screen Recording'
-        },
-        mousePoints: [],
-        clicks: [],
-        keystrokes: [],
-        inputEvents: []
-      };
+      const autoPills = generateAutoZoomPills(
+        passedTelemetry.clicks || [],
+        passedTelemetry.inputEvents || [],
+        dur,
+        passedTelemetry.metadata?.width || 1920,
+        passedTelemetry.metadata?.height || 1080
+      );
+      setPills(autoPills);
 
-      setupLoadedRecording(blob, fallbackTelemetry);
+      if (passedTelemetry.captions && passedTelemetry.captions.length > 0) {
+        setCaptions(passedTelemetry.captions);
+      }
+
+      if (blob) {
+        audioProcessorRef.current
+          .analyzeSilences(blob, passedTelemetry.clicks || [], passedTelemetry.keystrokes || [])
+          .then((detected) => setSilences(detected))
+          .catch(() => {});
+      }
+      return;
+    }
+
+    // 3. Stopping from UI: stop capture engine once, process blob, notify only if telemetry not received
+    isStoppingRef.current = true;
+    try {
+      await captureEngineRef.current.stop();
+      setIsRecordingLive(false);
+
+      const blob = await getRecordingBlob();
+      if (blob) {
+        const realTelemetry = await loadTelemetry();
+        if (realTelemetry && realTelemetry.mousePoints && realTelemetry.mousePoints.length > 0) {
+          telemetryReceivedRef.current = true;
+          console.log('[SmoothStudio] Loaded live recording with DOM telemetry:', realTelemetry);
+          setupLoadedRecording(blob, realTelemetry);
+        } else {
+          const actualDuration = Math.max(3000, Date.now() - (realTelemetry?.metadata?.startTime || Date.now() - 10000));
+          const fallbackTelemetry: TelemetryData = {
+            metadata: {
+              id: 'live_' + Date.now(),
+              startTime: Date.now() - actualDuration,
+              endTime: Date.now(),
+              durationMs: actualDuration,
+              width: window.innerWidth,
+              height: window.innerHeight,
+              devicePixelRatio: window.devicePixelRatio || 1,
+              title: 'Screen Recording'
+            },
+            mousePoints: [],
+            clicks: [],
+            keystrokes: [],
+            inputEvents: []
+          };
+          setupLoadedRecording(blob, fallbackTelemetry);
+        }
+      }
+
+      if (!telemetryReceivedRef.current && typeof chrome !== 'undefined' && chrome.runtime) {
+        chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' }).catch(() => {});
+      }
+    } finally {
+      isStoppingRef.current = false;
     }
   };
 
-  // Timeline Interactions
-  const handleAddPillAtPlayhead = (targetX = 0.5, targetY = 0.5) => {
-    const newPill: ZoomPill = {
-      id: 'pill_' + Date.now(),
-      startTime: Math.max(0, currentTimeMs - 200),
-      endTime: Math.min(durationMs, currentTimeMs + 2400),
-      targetX,
-      targetY,
-      targetScale: 1.8,
-      tiltX: targetX > 0.5 ? -4 : 4,
-      tiltY: targetX > 0.5 ? 6 : -6,
-      spotlight: true,
-      label: 'Custom Zoom'
-    };
-    setPills((prev) => [...prev, newPill].sort((a, b) => a.startTime - b.startTime));
-  };
+  // Keep the latest stop handler in the ref so the message listener never uses a stale closure
+  useEffect(() => {
+    handleStopLiveRecordingRef.current = handleStopLiveRecording;
+  });
 
   const handleUpdatePill = (updated: ZoomPill) => {
     setPills((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
@@ -529,7 +781,38 @@ export function EditorStudio() {
     setSilences((prev) => prev.map((s) => (s.id === id ? { ...s, markedForCut: !s.markedForCut } : s)));
   };
 
-  // MULTI-FORMAT ASSET EXPORTS (3 Assets from 1 Recording)
+  // Caption Manipulations
+  const handleAddCaptionAtPlayhead = () => {
+    const start = Math.max(0, currentTimeMs - 100);
+    const end = Math.min(durationMs, currentTimeMs + 2500);
+    const text = 'Highlighting key product interaction';
+    const words = text.split(' ').map((w, idx, arr) => {
+      const step = (end - start) / arr.length;
+      return {
+        word: w,
+        startTime: start + idx * step,
+        endTime: start + (idx + 1) * step
+      };
+    });
+    const newCaption: CaptionBlock = {
+      id: 'cap_' + Date.now(),
+      startTime: start,
+      endTime: end,
+      text,
+      words
+    };
+    setCaptions((prev) => [...prev, newCaption].sort((a, b) => a.startTime - b.startTime));
+  };
+
+  const handleUpdateCaption = (updated: CaptionBlock) => {
+    setCaptions((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+  };
+
+  const handleDeleteCaption = (id: string) => {
+    setCaptions((prev) => prev.filter((c) => c.id !== id));
+  };
+
+  // MULTI-FORMAT ASSET EXPORTS (MP4, GIF, Notion SOP, Interactive HTML)
 
   // 1. Hardware 60fps MP4 Export
   const handleExportMp4 = async () => {
@@ -555,20 +838,78 @@ export function EditorStudio() {
         silences,
         cursorEngine: cursorEngineRef.current,
         keystrokes: telemetry?.keystrokes || [],
-        cutSilences: silences.some((s) => s.markedForCut),
+        cutSilences: autoCutSilences && silences.some((s) => s.markedForCut),
         showSpotlight,
         showCursor,
         showHud,
         metadata: telemetry?.metadata,
+        cursorTheme,
+        cursorScale,
+        captions,
+        captionStyle,
+        showCaptions,
+        showIntroCard,
+        introHeadline,
+        introSubheadline,
         onProgress: (pct) => setExportProgress(pct)
       });
 
       HardwareMp4Exporter.downloadBlob(mp4Blob, `${telemetry?.metadata.title || 'SmoothStudio'}_Cinematic.mp4`);
       setExportComplete(true);
     } catch (err) {
-      console.error('Export failed:', err);
+      console.error('MP4 export failed:', err);
     } finally {
       setIsExporting(false);
+    }
+  };
+
+  // 2. Hardware 20fps GIF Export
+  const handleExportGif = async () => {
+    if (!videoElement) return;
+    setIsExportingGif(true);
+    setExportGifProgress(0);
+    setExportGifComplete(false);
+
+    try {
+      const exporter = new HardwareGifExporter();
+      const gifBlob = await exporter.exportGif({
+        videoSource: videoElement,
+        onRenderCanvasFrame: (timeMs) => {
+          if (demoRendererRef.current) {
+            demoRendererRef.current(timeMs);
+          }
+        },
+        durationMs,
+        aspectRatio,
+        preset,
+        pills,
+        silences,
+        cursorEngine: cursorEngineRef.current,
+        keystrokes: telemetry?.keystrokes || [],
+        cutSilences: autoCutSilences && silences.some((s) => s.markedForCut),
+        showSpotlight,
+        showCursor,
+        showHud,
+        metadata: telemetry?.metadata,
+        cursorTheme,
+        cursorScale,
+        captions,
+        captionStyle,
+        showCaptions,
+        showIntroCard,
+        introHeadline,
+        introSubheadline,
+        fps: 20,
+        maxDimension: 840,
+        onProgress: (pct) => setExportGifProgress(pct)
+      });
+
+      HardwareGifExporter.downloadBlob(gifBlob, `${telemetry?.metadata.title || 'SmoothStudio'}_Loop.gif`);
+      setExportGifComplete(true);
+    } catch (err) {
+      console.error('GIF export failed:', err);
+    } finally {
+      setIsExportingGif(false);
     }
   };
 
@@ -686,10 +1027,35 @@ export function EditorStudio() {
             HTML Widget
           </button>
 
+          {/* Hardware GIF Exporter */}
+          <button
+            onClick={handleExportGif}
+            disabled={isExportingGif || isExporting}
+            className="px-3.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-purple-200 text-xs font-medium flex items-center gap-1.5 border border-purple-500/30 transition-all disabled:opacity-50"
+            title="Export animated lightweight 20fps GIF"
+          >
+            {isExportingGif ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400" />
+                GIF {exportGifProgress}%
+              </>
+            ) : exportGifComplete ? (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                Exported GIF!
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                Export GIF
+              </>
+            )}
+          </button>
+
           {/* Hardware MP4 Exporter */}
           <button
             onClick={handleExportMp4}
-            disabled={isExporting}
+            disabled={isExporting || isExportingGif}
             className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-medium flex items-center gap-2 shadow-lg shadow-purple-600/30 transition-all disabled:opacity-50"
           >
             {isExporting ? (
@@ -731,9 +1097,24 @@ export function EditorStudio() {
           onToggleFollowCursor={setFollowCursor}
           soundEnabled={soundEnabled}
           onToggleSound={setSoundEnabled}
+          autoCutSilences={autoCutSilences}
+          onToggleAutoCutSilences={setAutoCutSilences}
           onUpdatePresetBorderRadius={(r) => setPreset((p) => ({ ...p, borderRadius: r }))}
+          cursorTheme={cursorTheme}
+          onChangeCursorTheme={setCursorTheme}
+          cursorScale={cursorScale}
+          onChangeCursorScale={setCursorScale}
+          showCaptions={showCaptions}
+          onToggleCaptions={setShowCaptions}
+          captionStyle={captionStyle}
+          onChangeCaptionStyle={setCaptionStyle}
+          showIntroCard={showIntroCard}
+          onToggleIntroCard={setShowIntroCard}
+          introHeadline={introHeadline}
+          onChangeIntroHeadline={setIntroHeadline}
+          introSubheadline={introSubheadline}
+          onChangeIntroSubheadline={setIntroSubheadline}
         />
-
         {/* Center Canvas Preview Viewport */}
         <CanvasPreview
           video={videoElement}
@@ -752,7 +1133,15 @@ export function EditorStudio() {
           showHud={showHud}
           followCursor={followCursor}
           metadata={telemetry?.metadata}
+          cursorTheme={cursorTheme}
+          cursorScale={cursorScale}
+          captions={captions}
+          captionStyle={captionStyle}
+          introHeadline={introHeadline}
+          showIntroCard={showIntroCard}
+          introSubheadline={introSubheadline}
           onCanvasClickToAddZoom={handleAddPillAtPlayhead}
+          showCaptions={showCaptions}
         />
       </div>
 
@@ -770,8 +1159,15 @@ export function EditorStudio() {
         silences={silences}
         onToggleSilenceCut={handleToggleSilenceCut}
         onCutAllSilences={handleCutAllSilences}
+        autoCutSilences={autoCutSilences}
+        onToggleAutoCutSilences={setAutoCutSilences}
         keystrokes={telemetry?.keystrokes || []}
+        captions={captions}
+        showCaptions={showCaptions}
+        onAddCaptionAtPlayhead={handleAddCaptionAtPlayhead}
+        onUpdateCaption={handleUpdateCaption}
+        onDeleteCaption={handleDeleteCaption}
       />
-    </div>
-  );
-}
+     </div>
+   );
+ }

@@ -19,6 +19,7 @@ export class ScreenCaptureEngine {
   private lastFrameData: Uint8ClampedArray | null = null;
   private frameDiffInterval: number | null = null;
   private snapshots: { timestamp: number; dataUrl: string }[] = [];
+  private recordingStartTime = 0;
   private onStopHandler: (() => void) | null = null;
 
   constructor() {
@@ -32,12 +33,12 @@ export class ScreenCaptureEngine {
     await initStorage();
     this.chunkCount = 0;
     this.snapshots = [];
+    this.recordingStartTime = performance.now();
     this.onStopHandler = options.onStop || null;
 
     // Prompt user for display capture with native cursor removed
     const displayMediaOptions: DisplayMediaStreamOptions = {
       video: {
-        displaySurface: 'browser',
         frameRate: options.frameRate || 60,
         // Remove OS cursor so we can render our smooth vector cursor with motion blur
         // @ts-expect-error cursor option is supported in modern Chromium
@@ -94,7 +95,7 @@ export class ScreenCaptureEngine {
     const videoTrack = this.mediaStream.getVideoTracks()[0];
     videoTrack.onended = () => {
       if (this.isRecording) {
-        this.stop();
+        this.stop().catch((e) => console.error('[SmoothStudio] stop failed:', e));
       }
     };
 
@@ -116,7 +117,7 @@ export class ScreenCaptureEngine {
     const video = document.createElement('video');
     video.srcObject = this.mediaStream;
     video.muted = true;
-    video.play();
+    video.play().catch(() => {});
 
     this.frameDiffInterval = window.setInterval(() => {
       if (!this.isRecording || !this.frameDiffCtx) return;
@@ -155,7 +156,7 @@ export class ScreenCaptureEngine {
         ctx.drawImage(videoEl, 0, 0);
         const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.85);
         this.snapshots.push({
-          timestamp: performance.now(),
+          timestamp: Math.round(performance.now() - this.recordingStartTime),
           dataUrl
         });
       }

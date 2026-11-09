@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { ZoomPill, SilenceSegment, KeystrokeEvent } from '../types/telemetry';
-import { Scissors, Plus, Trash2, Eye, Box, Sliders } from 'lucide-react';
+import { ZoomPill, SilenceSegment, KeystrokeEvent, CaptionBlock } from '../types/telemetry';
+import { Scissors, Plus, Trash2, Eye, Box, Sliders, Subtitles } from 'lucide-react';
 
 interface MagneticTimelineProps {
   durationMs: number;
@@ -15,7 +15,14 @@ interface MagneticTimelineProps {
   silences: SilenceSegment[];
   onToggleSilenceCut: (id: string) => void;
   onCutAllSilences: () => void;
+  autoCutSilences?: boolean;
+  onToggleAutoCutSilences?: (val: boolean) => void;
   keystrokes: KeystrokeEvent[];
+  captions?: CaptionBlock[];
+  showCaptions?: boolean;
+  onAddCaptionAtPlayhead?: () => void;
+  onUpdateCaption?: (caption: CaptionBlock) => void;
+  onDeleteCaption?: (id: string) => void;
 }
 
 export function MagneticTimeline({
@@ -31,11 +38,20 @@ export function MagneticTimeline({
   silences,
   onToggleSilenceCut,
   onCutAllSilences,
-  keystrokes
+  autoCutSilences = true,
+  onToggleAutoCutSilences,
+  keystrokes,
+  captions = [],
+  showCaptions = false,
+  onAddCaptionAtPlayhead,
+  onUpdateCaption,
+  onDeleteCaption
 }: MagneticTimelineProps) {
   const timelineRef = useRef<HTMLDivElement>(null);
   const [selectedPillId, setSelectedPillId] = useState<string | null>(null);
+  const [selectedCaptionId, setSelectedCaptionId] = useState<string | null>(null);
   const [resizingPill, setResizingPill] = useState<{ id: string; edge: 'start' | 'end' } | null>(null);
+  const [resizingCaption, setResizingCaption] = useState<{ id: string; edge: 'start' | 'end' } | null>(null);
   const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
 
   const handleMouseDownResize = (e: React.MouseEvent, pillId: string, edge: 'start' | 'end') => {
@@ -43,9 +59,14 @@ export function MagneticTimeline({
     setResizingPill({ id: pillId, edge });
   };
 
-  // Continuous scrubbing and pill resizing effect
+  const handleMouseDownResizeCaption = (e: React.MouseEvent, captionId: string, edge: 'start' | 'end') => {
+    e.stopPropagation();
+    setResizingCaption({ id: captionId, edge });
+  };
+
+  // Continuous scrubbing, pill resizing, and caption resizing effect
   useEffect(() => {
-    if (!resizingPill && !isScrubbing) return;
+    if (!resizingPill && !resizingCaption && !isScrubbing) return;
 
     const handleMouseMove = (e: MouseEvent) => {
       if (!timelineRef.current || durationMs <= 0) return;
@@ -71,10 +92,24 @@ export function MagneticTimeline({
           onUpdatePill({ ...targetPill, endTime: nextEnd });
         }
       }
+
+      if (resizingCaption) {
+        const targetCaption = captions.find((c) => c.id === resizingCaption.id);
+        if (!targetCaption) return;
+
+        if (resizingCaption.edge === 'start') {
+          const nextStart = Math.min(targetCaption.endTime - 400, Math.max(0, targetTimeMs));
+          onUpdateCaption?.({ ...targetCaption, startTime: nextStart });
+        } else {
+          const nextEnd = Math.max(targetCaption.startTime + 400, Math.min(durationMs, targetTimeMs));
+          onUpdateCaption?.({ ...targetCaption, endTime: nextEnd });
+        }
+      }
     };
 
     const handleMouseUp = () => {
       setResizingPill(null);
+      setResizingCaption(null);
       setIsScrubbing(false);
     };
 
@@ -84,9 +119,10 @@ export function MagneticTimeline({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [resizingPill, isScrubbing, durationMs, pills, onUpdatePill, onSeek]);
+  }, [resizingPill, resizingCaption, isScrubbing, durationMs, pills, captions, onUpdatePill, onUpdateCaption, onSeek]);
 
   const selectedPill = pills.find((p) => p.id === selectedPillId);
+  const selectedCaption = captions.find((c) => c.id === selectedCaptionId);
 
   const handleTimelineMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!timelineRef.current || durationMs <= 0) return;
@@ -131,15 +167,41 @@ export function MagneticTimeline({
             Add Zoom Pill
           </button>
 
-          {silences.length > 0 && (
+          {showCaptions && onAddCaptionAtPlayhead && (
             <button
-              onClick={onCutAllSilences}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/20 transition-colors"
-              title="Auto-tighten timeline by removing pauses > 1.2s"
+              onClick={onAddCaptionAtPlayhead}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 transition-colors"
             >
-              <Scissors className="w-3.5 h-3.5" />
-              1-Click Remove Silences ({silences.length} pauses)
+              <Subtitles className="w-3.5 h-3.5" />
+              Add Caption Block
             </button>
+          )}
+
+          {silences.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              {onToggleAutoCutSilences && (
+                <button
+                  onClick={() => onToggleAutoCutSilences(!autoCutSilences)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium transition-colors ${
+                    autoCutSilences
+                      ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40 shadow-sm shadow-amber-500/20'
+                      : 'bg-white/5 hover:bg-white/10 text-gray-400 border-white/10'
+                  }`}
+                  title="Toggle automatic silence skipping during playback & export"
+                >
+                  <Scissors className="w-3.5 h-3.5" />
+                  Auto-Cut Silences: {autoCutSilences ? 'ON' : 'OFF'}
+                </button>
+              )}
+
+              <button
+                onClick={onCutAllSilences}
+                className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/20 transition-colors"
+                title="Mark all detected silences (> 1.2s) for cutting"
+              >
+                Cut All ({silences.length})
+              </button>
+            </div>
           )}
         </div>
 
@@ -203,16 +265,57 @@ export function MagneticTimeline({
             </button>
           </div>
         )}
+
+        {selectedCaption && (
+          <div className="flex items-center gap-3 bg-amber-500/10 px-3 py-1 rounded-lg border border-amber-500/20 text-gray-300">
+            <span className="text-[11px] font-semibold text-amber-300 flex items-center gap-1">
+              <Subtitles className="w-3 h-3" />
+              Caption:
+            </span>
+            <input
+              type="text"
+              value={selectedCaption.text}
+              onChange={(e) => {
+                const newText = e.target.value;
+                const dur = selectedCaption.endTime - selectedCaption.startTime;
+                const words = newText.split(' ').map((w, idx, arr) => ({
+                  word: w,
+                  startTime: selectedCaption.startTime + (idx / Math.max(1, arr.length)) * dur,
+                  endTime: selectedCaption.startTime + ((idx + 1) / Math.max(1, arr.length)) * dur
+                }));
+                onUpdateCaption?.({ ...selectedCaption, text: newText, words });
+              }}
+              className="bg-black/50 border border-amber-500/30 rounded px-2 py-0.5 text-xs text-white w-48 focus:outline-none focus:border-amber-400 font-sans"
+              placeholder="Edit subtitle text..."
+            />
+            {onDeleteCaption && (
+              <button
+                onClick={() => {
+                  onDeleteCaption(selectedCaption.id);
+                  setSelectedCaptionId(null);
+                }}
+                className="p-1 hover:text-red-400 transition-colors"
+                title="Delete Caption Block"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Main Multi-Track Magnetic Timeline */}
       <div
         ref={timelineRef}
-        onMouseDown={handleTimelineMouseDown}
-        className="relative h-24 bg-[#0B0C10] rounded-xl border border-white/10 overflow-hidden cursor-pointer"
+        onMouseDown={(e) => {
+          handleTimelineMouseDown(e);
+          setSelectedPillId(null);
+          setSelectedCaptionId(null);
+        }}
+        className={`relative ${showCaptions ? 'h-36' : 'h-24'} bg-[#0B0C10] rounded-xl border border-white/10 overflow-hidden cursor-pointer transition-all`}
       >
-        {/* Track 1: Audio Waveform & Silences */}
-        <div className="absolute top-0 left-0 right-0 h-10 border-b border-white/5 flex items-center px-2">
+        {/* Track 1: Audio Waveform & Silences & Keystrokes */}
+        <div className={`absolute top-0 left-0 right-0 ${showCaptions ? 'h-8' : 'h-10'} border-b border-white/5 flex items-center px-2`}>
           {/* Simulated Waveform bars */}
           <div className="w-full h-5 flex items-center gap-[2px] opacity-40">
             {Array.from({ length: 80 }).map((_, i) => (
@@ -224,10 +327,11 @@ export function MagneticTimeline({
             ))}
           </div>
 
-          {/* Shaded Red Silence Blocks */}
+          {/* Subtle Red/Amber Hatched Silence Regions */}
           {silences.map((silence) => {
             const left = getPercent(silence.startTime);
-            const width = getPercent(silence.endTime) - left;
+            const width = Math.max(1.2, getPercent(silence.endTime) - left);
+            const isCutActive = silence.markedForCut && autoCutSilences;
             return (
               <div
                 key={silence.id}
@@ -235,16 +339,24 @@ export function MagneticTimeline({
                   e.stopPropagation();
                   onToggleSilenceCut(silence.id);
                 }}
-                className={`absolute top-0 bottom-0 flex items-center justify-center transition-all ${
-                  silence.markedForCut
-                    ? 'bg-red-500/25 border-x border-red-500/50'
-                    : 'bg-white/5 border-x border-white/10 opacity-50'
+                className={`absolute top-0 bottom-0 flex items-center justify-center transition-all cursor-pointer group/silence ${
+                  isCutActive
+                    ? 'border-x border-dashed border-amber-400/70 hover:brightness-125'
+                    : 'border-x border-white/10 opacity-40 hover:opacity-80'
                 }`}
-                style={{ left: `${left}%`, width: `${width}%` }}
-                title={`Silence pause (${(silence.duration / 1000).toFixed(1)}s) - Click to toggle cut`}
+                style={{
+                  left: `${left}%`,
+                  width: `${width}%`,
+                  backgroundImage: isCutActive
+                    ? 'repeating-linear-gradient(-45deg, rgba(239, 68, 68, 0.35), rgba(239, 68, 68, 0.35) 6px, rgba(245, 158, 11, 0.22) 6px, rgba(245, 158, 11, 0.22) 12px)'
+                    : 'repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.06) 6px, rgba(255, 255, 255, 0.02) 6px, rgba(255, 255, 255, 0.02) 12px)'
+                }}
+                title={`Silence gap (${(silence.duration / 1000).toFixed(1)}s) - Click to ${isCutActive ? 'keep' : 'cut'}`}
               >
-                <span className="text-[9px] text-red-300 font-mono font-medium truncate px-1">
-                  {silence.markedForCut ? '✂ Cut' : 'Keep'}
+                <span className={`text-[9px] font-mono font-medium truncate px-1 flex items-center gap-1 ${
+                  isCutActive ? 'text-amber-200 bg-black/60 rounded px-1 py-0.5 border border-amber-500/30' : 'text-gray-400'
+                }`}>
+                  {isCutActive ? `✂ ${(silence.duration / 1000).toFixed(1)}s` : 'Keep'}
                 </span>
               </div>
             );
@@ -265,8 +377,62 @@ export function MagneticTimeline({
           })}
         </div>
 
-        {/* Track 2: Zoom Pills (Magnetic Blocks) */}
-        <div className="absolute bottom-0 left-0 right-0 h-14 flex items-center px-2">
+        {/* Track 2 (Conditional): Auto-Captions Subtitle Track */}
+        {showCaptions && (
+          <div className="absolute top-[32px] left-0 right-0 h-10 border-b border-white/5 flex items-center px-2">
+            {captions.map((cap) => {
+              const left = getPercent(cap.startTime);
+              const width = Math.max(2, getPercent(cap.endTime) - left);
+              const isSelected = cap.id === selectedCaptionId;
+
+              return (
+                <div
+                  key={cap.id}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedCaptionId(cap.id);
+                    setSelectedPillId(null);
+                  }}
+                  className={`group absolute h-7 rounded-md flex items-center justify-between px-2 cursor-pointer transition-all shadow-sm ${
+                    isSelected
+                      ? 'bg-gradient-to-r from-amber-500 to-yellow-500 text-black font-semibold border-2 border-white ring-2 ring-amber-400/40 z-10'
+                      : 'bg-amber-500/25 hover:bg-amber-500/40 border border-amber-400/30 text-amber-200'
+                  }`}
+                  style={{ left: `${left}%`, width: `${width}%` }}
+                >
+                  {/* Left Drag Resize Handle */}
+                  <div
+                    onMouseDown={(e) => handleMouseDownResizeCaption(e, cap.id, 'start')}
+                    className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 bg-white/40 hover:bg-white rounded-l-md transition-opacity"
+                    title="Drag to adjust caption start"
+                  />
+
+                  <div className="flex items-center gap-1.5 truncate">
+                    <Subtitles className="w-3 h-3 shrink-0" />
+                    <span className="text-[10px] truncate max-w-[180px]">
+                      {cap.text}
+                    </span>
+                  </div>
+
+                  <span className="text-[8px] font-mono opacity-80 ml-1 shrink-0">
+                    {((cap.endTime - cap.startTime) / 1000).toFixed(1)}s
+                  </span>
+
+                  {/* Right Drag Resize Handle */}
+                  <div
+                    onMouseDown={(e) => handleMouseDownResizeCaption(e, cap.id, 'end')}
+                    className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 bg-white/40 hover:bg-white rounded-r-md transition-opacity"
+                    title="Drag to adjust caption end"
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Track 3: Zoom Pills (Magnetic Blocks) */}
+        <div className={`absolute bottom-0 left-0 right-0 ${showCaptions ? 'h-12' : 'h-14'} flex items-center px-2`}>
           {pills.map((pill) => {
             const left = getPercent(pill.startTime);
             const width = Math.max(2, getPercent(pill.endTime) - left);
@@ -275,9 +441,11 @@ export function MagneticTimeline({
             return (
               <div
                 key={pill.id}
+                onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   setSelectedPillId(pill.id);
+                  setSelectedCaptionId(null);
                 }}
                 className={`group absolute h-9 rounded-lg flex items-center justify-between px-2 cursor-pointer transition-all shadow-md ${
                   isSelected

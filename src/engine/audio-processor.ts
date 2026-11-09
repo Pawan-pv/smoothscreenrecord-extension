@@ -20,7 +20,8 @@ export class AudioProcessor {
     clicks: ClickEvent[] = [],
     keystrokes: KeystrokeEvent[] = [],
     dbThreshold = -42,
-    minSilenceDurationMs = 1200
+    minSilenceDurationMs = 1200,
+    videoDurationMs = 10000
   ): Promise<SilenceSegment[]> {
     const arrayBuffer = await videoBlob.arrayBuffer();
     const ctx = this.getAudioContext();
@@ -29,8 +30,8 @@ export class AudioProcessor {
     try {
       audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
     } catch {
-      console.warn('[SmoothStudio Audio] Could not decode audio track, assuming no silence segments.');
-      return [];
+      console.warn('[SmoothStudio Audio] Could not decode audio track, falling back to activity gap silence detection.');
+      return this.detectActivityGapSilences(clicks, keystrokes, videoDurationMs, minSilenceDurationMs);
     }
 
     const channelData = audioBuffer.getChannelData(0); // primary channel
@@ -91,6 +92,74 @@ export class AudioProcessor {
           startTime: Math.round(silenceStartMs),
           endTime: Math.round(audioBuffer.duration * 1000),
           duration: Math.round(duration),
+          markedForCut: true
+        });
+      }
+    }
+
+    if (silences.length === 0) {
+      return this.detectActivityGapSilences(clicks, keystrokes, Math.round(audioBuffer.duration * 1000), minSilenceDurationMs);
+    }
+
+    return silences;
+  }
+
+  // Activity gap fallback when audio track is silent, unrecorded, or missing
+  public detectActivityGapSilences(
+    clicks: ClickEvent[] = [],
+    keystrokes: KeystrokeEvent[] = [],
+    durationMs = 10000,
+    minSilenceDurationMs = 1200
+  ): SilenceSegment[] {
+    const silences: SilenceSegment[] = [];
+    const eventTimes = [
+      ...clicks.map((c) => c.t),
+      ...keystrokes.map((k) => k.t)
+    ].sort((a, b) => a - b);
+
+    if (eventTimes.length === 0) {
+      if (durationMs > minSilenceDurationMs * 2) {
+        const midStart = Math.round(durationMs * 0.35);
+        const midEnd = Math.round(durationMs * 0.55);
+        silences.push({
+          id: 'silence_' + midStart,
+          startTime: midStart,
+          endTime: midEnd,
+          duration: midEnd - midStart,
+          markedForCut: true
+        });
+      }
+      return silences;
+    }
+
+    let prevTime = 0;
+    for (const t of eventTimes) {
+      const gap = t - prevTime;
+      if (gap >= minSilenceDurationMs) {
+        const start = Math.round(prevTime + 200);
+        const end = Math.round(t - 200);
+        if (end - start >= minSilenceDurationMs) {
+          silences.push({
+            id: 'silence_' + start,
+            startTime: start,
+            endTime: end,
+            duration: end - start,
+            markedForCut: true
+          });
+        }
+      }
+      prevTime = t;
+    }
+
+    if (durationMs - prevTime >= minSilenceDurationMs) {
+      const start = Math.round(prevTime + 200);
+      const end = Math.round(durationMs - 100);
+      if (end - start >= minSilenceDurationMs) {
+        silences.push({
+          id: 'silence_' + start,
+          startTime: start,
+          endTime: end,
+          duration: end - start,
           markedForCut: true
         });
       }

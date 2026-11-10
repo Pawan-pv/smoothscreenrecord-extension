@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "build:content": "bun build src/content/dom-tracker.ts --target=browser --format=iife --outfile=dist/content/dom-tracker.js --minify && bun build src/content/privacy-redactor.ts --target=browser --format=iife --outfile=dist/content/privacy-redactor.js --minify",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },

@@ -32,10 +32,14 @@ export interface GifExportOptions {
   cursorScale?: number;
   captions?: CaptionBlock[];
   captionStyle?: CaptionStyle;
+  captionBackdrop?: number;
   showCaptions?: boolean;
   showIntroCard?: boolean;
   introHeadline?: string;
   introSubheadline?: string;
+  showOutroCard?: boolean;
+  outroHeadline?: string;
+  outroCtaText?: string;
   fps?: number; // defaults to 20fps for optimal GIF size/smoothness
   maxDimension?: number; // defaults to 800px width
   onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
@@ -157,10 +161,14 @@ export class HardwareGifExporter {
       cursorScale,
       captions,
       captionStyle,
+      captionBackdrop,
       showCaptions,
       showIntroCard,
       introHeadline,
       introSubheadline,
+      showOutroCard,
+      outroHeadline,
+      outroCtaText,
       fps = 20,
       maxDimension = 840,
       onProgress
@@ -183,7 +191,18 @@ export class HardwareGifExporter {
     // Build timeline timestamps
     const frameIntervalMs = 1000 / fps;
     const timestamps: number[] = [];
-    const cutIntervals = cutSilences ? silences.filter((s) => s.markedForCut) : [];
+    // When the Outro CTA card is enabled, clamp cut windows so the final 1.5s
+    // (the outro animation) is never skipped in the exported GIF.
+    const cutIntervals = cutSilences
+      ? silences
+          .filter((s) => s.markedForCut)
+          .map((s) =>
+            showOutroCard
+              ? { ...s, endTime: Math.min(s.endTime, Math.max(s.startTime, durationMs - 1500)) }
+              : s
+          )
+          .filter((s) => s.endTime > s.startTime)
+      : [];
 
     for (let t = 0; t < durationMs; t += frameIntervalMs) {
       const inCut = cutIntervals.some((c) => t >= c.startTime && t <= c.endTime);
@@ -247,6 +266,7 @@ export class HardwareGifExporter {
         canvas: exportCanvas,
         video: videoSource,
         currentTimeMs: currentMs,
+        durationMs,
         camera,
         activePill,
         cursorEngine,
@@ -261,10 +281,14 @@ export class HardwareGifExporter {
         cursorScale,
         captions,
         captionStyle,
+        captionBackdrop,
         showCaptions,
        showIntroCard,
        introHeadline,
-       introSubheadline
+       introSubheadline,
+       showOutroCard,
+       outroHeadline,
+       outroCtaText
       });
 
       // Downscale to target GIF resolution

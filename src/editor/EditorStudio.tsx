@@ -23,6 +23,8 @@ import { ScreenCaptureEngine } from '../engine/screen-recorder';
 import { CanvasPreview } from './CanvasPreview';
 import { MagneticTimeline } from './MagneticTimeline';
 import { VibePresetsPanel } from './VibePresetsPanel';
+import { DiagnosticsDoctor } from './DiagnosticsDoctor';
+import { ToastContainer, ToastItem } from './ToastNotification';
 import {
   Video,
   Download,
@@ -33,7 +35,8 @@ import {
   Loader2,
   CheckCircle2,
   Play,
-  Pause
+  Pause,
+  Activity
 } from 'lucide-react';
 
 export function EditorStudio() {
@@ -43,6 +46,20 @@ export function EditorStudio() {
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
   const [durationMs, setDurationMs] = useState<number>(10000);
   const [currentTimeMs, setCurrentTimeMs] = useState<number>(0);
+  const [showDoctor, setShowDoctor] = useState<boolean>(false);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+
+  const showToast = useCallback((toast: Omit<ToastItem, 'id'>) => {
+    const id = `toast_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    setToasts((prev) => [...prev, { ...toast, id }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 4500);
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
 
   // Settings & Timeline state
@@ -57,6 +74,9 @@ export function EditorStudio() {
   const [showIntroCard, setShowIntroCard] = useState<boolean>(false);
   const [introHeadline, setIntroHeadline] = useState<string>('Introducing SmoothStudio 2.0');
   const [introSubheadline, setIntroSubheadline] = useState<string>('Cinematic screen demos in seconds');
+  const [showOutroCard, setShowOutroCard] = useState<boolean>(false);
+  const [outroHeadline, setOutroHeadline] = useState<string>('Ready to ship better demos?');
+  const [outroCtaText, setOutroCtaText] = useState<string>('Try SmoothStudio Free →');
   const [followCursor, setFollowCursor] = useState<boolean>(true);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
 
@@ -65,6 +85,7 @@ export function EditorStudio() {
   const [cursorScale, setCursorScale] = useState<number>(1.2);
   const [showCaptions, setShowCaptions] = useState<boolean>(true);
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>('tiktok-bold');
+  const [captionBackdrop, setCaptionBackdrop] = useState<number>(70);
   const [captions, setCaptions] = useState<CaptionBlock[]>([]);
 
   // Export State
@@ -87,7 +108,9 @@ export function EditorStudio() {
   const captureEngineRef = useRef<ScreenCaptureEngine>(new ScreenCaptureEngine());
   const animationFrameRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
-  const lastPlayedSfxTimeRef = useRef<number>(0);
+  // Deduplicates procedural SFX so a single click/keystroke/zoom event never
+  // fires more than once across adjacent animation frames.
+  const firedSfxRef = useRef<Set<string>>(new Set());
   const currentTimeRef = useRef<number>(0);
   const demoRendererRef = useRef<((timeMs: number) => void) | null>(null);
   const handleStopLiveRecordingRef = useRef<((passedTelemetry?: TelemetryData | null) => Promise<void>) | null>(null);
@@ -100,6 +123,16 @@ export function EditorStudio() {
     if (typeof chrome !== 'undefined' && chrome.runtime) {
       chrome.runtime.sendMessage({ type: 'REGISTER_EDITOR_TAB' }).catch(() => {});
 
+      // Connect persistent keepalive port to prevent MV3 service worker dormancy
+      let keepalivePort: chrome.runtime.Port | null = null;
+      let pingInterval: any = null;
+      try {
+        keepalivePort = chrome.runtime.connect({ name: 'smoothstudio-keepalive' });
+        pingInterval = setInterval(() => {
+          try { keepalivePort?.postMessage('ping'); } catch {}
+        }, 15000);
+      } catch {}
+
       const messageListener = (msg: any) => {
         if (msg.type === 'STUDIO_STOP_CAPTURE') {
           handleStopLiveRecordingRef.current?.(msg.telemetry);
@@ -107,14 +140,48 @@ export function EditorStudio() {
       };
       chrome.runtime.onMessage.addListener(messageListener);
       return () => {
+        if (pingInterval) clearInterval(pingInterval);
+        try { keepalivePort?.disconnect(); } catch {}
         chrome.runtime.onMessage.removeListener(messageListener);
       };
     }
   }, []);
 
+  // Global Error Trap & Flight Doctor Keyboard Shortcut (Ctrl+Shift+D)
+  useEffect(() => {
+    const onUnhandled = (e: PromiseRejectionEvent) => {
+      const msg = e.reason?.message || String(e.reason || 'Unhandled error');
+      showToast({ type: 'error', title: 'Runtime Alert', message: msg });
+    };
+    const onError = (e: ErrorEvent) => {
+      showToast({ type: 'error', title: 'Script Error', message: e.message });
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+        e.preventDefault();
+        setShowDoctor((d) => !d);
+      }
+    };
+    window.addEventListener('unhandledrejection', onUnhandled);
+    window.addEventListener('error', onError);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('unhandledrejection', onUnhandled);
+      window.removeEventListener('error', onError);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showToast]);
+
   useEffect(() => {
     return () => {
       if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
+    };
+  }, []);
+
+  // Release the shared Web Audio context when the studio unmounts
+  useEffect(() => {
+    return () => {
+      sfxSynthesizerRef.current.dispose();
     };
   }, []);
 
@@ -217,6 +284,7 @@ export function EditorStudio() {
   };
 
   const setupLoadedRecording = (blob: Blob, data: TelemetryData) => {
+    firedSfxRef.current.clear();
     setVideoBlob(blob);
     setTelemetry(data);
     const dur = data.metadata.durationMs || 10000;
@@ -263,6 +331,7 @@ export function EditorStudio() {
 
   // Synthesize a high-res demo recording with mock DOM events and video
   const loadDemoWorkspace = () => {
+    firedSfxRef.current.clear();
     setIsPlaying(false);
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
@@ -531,7 +600,14 @@ export function EditorStudio() {
           (s) => s.markedForCut && next >= s.startTime && next < s.endTime
         );
         if (activeSilence) {
-          next = activeSilence.endTime;
+          // Never skip across the Outro CTA window: clamp the jump so the final
+          // 1.5s always plays in full when the outro card is enabled.
+          const clampEnd = showOutroCard
+            ? Math.min(activeSilence.endTime, Math.max(activeSilence.startTime, durationMs - 1500))
+            : activeSilence.endTime;
+          if (clampEnd > next) {
+            next = clampEnd;
+          }
         }
       }
 
@@ -539,33 +615,30 @@ export function EditorStudio() {
         setIsPlaying(false);
         currentTimeRef.current = 0;
         setCurrentTimeMs(0);
+        firedSfxRef.current.clear();
         // no extra frame scheduled on natural end
         return;
       }
 
-      // Procedural Audio SFX Triggering during playback
-      if (soundEnabled && telemetry) {
-        const activeClick = telemetry.clicks.find(
-          (c) => Math.abs(c.t - next) < 25 && next - lastPlayedSfxTimeRef.current > 150
-        );
-        if (activeClick) {
-          lastPlayedSfxTimeRef.current = next;
+      // Procedural Audio SFX Triggering during playback.
+      // The rAF loop only runs while playing, and each event is deduplicated by
+      // its timestamp so adjacent frames never double-trigger the same sound.
+      if (isPlaying && soundEnabled && telemetry) {
+        const activeClick = telemetry.clicks.find((c) => Math.abs(c.t - next) < 25);
+        if (activeClick && !firedSfxRef.current.has(`click_${activeClick.t}`)) {
+          firedSfxRef.current.add(`click_${activeClick.t}`);
           sfxSynthesizerRef.current.playClickPop();
         }
 
-        const activeKey = telemetry.keystrokes.find(
-          (k) => Math.abs(k.t - next) < 25 && next - lastPlayedSfxTimeRef.current > 150
-        );
-        if (activeKey) {
-          lastPlayedSfxTimeRef.current = next;
+        const activeKey = telemetry.keystrokes.find((k) => Math.abs(k.t - next) < 25);
+        if (activeKey && !firedSfxRef.current.has(`key_${activeKey.t}`)) {
+          firedSfxRef.current.add(`key_${activeKey.t}`);
           sfxSynthesizerRef.current.playKeyThock();
         }
 
-        const pillEntering = pills.find(
-          (p) => Math.abs(p.startTime - next) < 25 && next - lastPlayedSfxTimeRef.current > 250
-        );
-        if (pillEntering) {
-          lastPlayedSfxTimeRef.current = next;
+        const pillEntering = pills.find((p) => Math.abs(p.startTime - next) < 25);
+        if (pillEntering && !firedSfxRef.current.has(`pill_${pillEntering.id}`)) {
+          firedSfxRef.current.add(`pill_${pillEntering.id}`);
           sfxSynthesizerRef.current.playZoomWhoosh();
         }
       }
@@ -580,7 +653,7 @@ export function EditorStudio() {
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isPlaying, durationMs, soundEnabled, telemetry, pills, silences, autoCutSilences]);
+  }, [isPlaying, durationMs, soundEnabled, telemetry, pills, silences, autoCutSilences, showOutroCard]);
 
   // Timeline Interactions
   const handleAddPillAtPlayhead = useCallback((targetX = 0.5, targetY = 0.5) => {
@@ -610,9 +683,11 @@ export function EditorStudio() {
         setIsPlaying((p) => !p);
       } else if (e.code === 'ArrowLeft') {
         e.preventDefault();
+        firedSfxRef.current.clear();
         setCurrentTimeMs((t) => Math.max(0, t - 1000));
       } else if (e.code === 'ArrowRight') {
         e.preventDefault();
+        firedSfxRef.current.clear();
         setCurrentTimeMs((t) => Math.min(durationMs, t + 1000));
       } else if (e.code === 'KeyZ' && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
         if (!e.metaKey && !e.ctrlKey) {
@@ -671,9 +746,14 @@ export function EditorStudio() {
           focusTarget: Boolean(sourceTabId)
         }).catch(() => {});
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Capture canceled or rejected:', err);
       setIsRecordingLive(false);
+      showToast({
+        type: 'warning',
+        title: 'Recording Not Started',
+        message: err?.name === 'NotAllowedError' ? 'Display capture permission was dismissed or denied.' : (err?.message || 'Capture could not start.')
+      });
     }
   };
 
@@ -773,6 +853,12 @@ export function EditorStudio() {
     setPills((prev) => prev.filter((p) => p.id !== id));
   };
 
+  // Timeline seek: reset SFX dedup so re-scrubbing can re-arm event triggers
+  const handleSeek = (timeMs: number) => {
+    firedSfxRef.current.clear();
+    setCurrentTimeMs(timeMs);
+  };
+
   const handleCutAllSilences = () => {
     setSilences((prev) => prev.map((s) => ({ ...s, markedForCut: true })));
   };
@@ -847,17 +933,23 @@ export function EditorStudio() {
         cursorScale,
         captions,
         captionStyle,
+        captionBackdrop,
         showCaptions,
         showIntroCard,
         introHeadline,
         introSubheadline,
+        showOutroCard,
+        outroHeadline,
+        outroCtaText,
         onProgress: (pct) => setExportProgress(pct)
       });
 
       HardwareMp4Exporter.downloadBlob(mp4Blob, `${telemetry?.metadata.title || 'SmoothStudio'}_Cinematic.mp4`);
       setExportComplete(true);
-    } catch (err) {
+      showToast({ type: 'success', title: 'MP4 Exported', message: 'Hardware encoded 4K/60fps video downloaded.' });
+    } catch (err: any) {
       console.error('MP4 export failed:', err);
+      showToast({ type: 'error', title: 'MP4 Export Failed', message: err?.message || 'VideoEncoder error' });
     } finally {
       setIsExporting(false);
     }
@@ -895,10 +987,14 @@ export function EditorStudio() {
         cursorScale,
         captions,
         captionStyle,
+        captionBackdrop,
         showCaptions,
         showIntroCard,
         introHeadline,
         introSubheadline,
+        showOutroCard,
+        outroHeadline,
+        outroCtaText,
         fps: 20,
         maxDimension: 840,
         onProgress: (pct) => setExportGifProgress(pct)
@@ -906,8 +1002,10 @@ export function EditorStudio() {
 
       HardwareGifExporter.downloadBlob(gifBlob, `${telemetry?.metadata.title || 'SmoothStudio'}_Loop.gif`);
       setExportGifComplete(true);
-    } catch (err) {
+      showToast({ type: 'success', title: 'GIF Exported', message: 'Looping animated GIF downloaded.' });
+    } catch (err: any) {
       console.error('GIF export failed:', err);
+      showToast({ type: 'error', title: 'GIF Export Failed', message: err?.message || 'GIF encoder error' });
     } finally {
       setIsExportingGif(false);
     }
@@ -918,6 +1016,7 @@ export function EditorStudio() {
     if (!telemetry) return;
     const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots());
     SopGuideExporter.downloadMarkdown(md, `${telemetry.metadata.title || 'SOP'}_Guide.md`);
+    showToast({ type: 'success', title: 'SOP Guide Exported', message: 'Markdown guide downloaded.' });
   };
 
   const handleCopySopGuide = async () => {
@@ -926,6 +1025,7 @@ export function EditorStudio() {
       const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots());
       await navigator.clipboard.writeText(md);
       setCopiedSop(true);
+      showToast({ type: 'success', title: 'SOP Copied', message: 'Markdown documentation copied to clipboard.' });
       setTimeout(() => setCopiedSop(false), 2200);
     } catch {
       handleExportSopGuide();
@@ -940,6 +1040,7 @@ export function EditorStudio() {
       captureEngineRef.current.getSnapshots()
     );
     HtmlWidgetExporter.downloadWidget(html, `${telemetry.metadata.title || 'Walkthrough'}_Interactive.html`);
+    showToast({ type: 'success', title: 'HTML Widget Exported', message: 'Interactive walkthrough downloaded.' });
   };
 
   return (
@@ -986,6 +1087,15 @@ export function EditorStudio() {
           >
             <Sparkles className="w-3.5 h-3.5 text-purple-400" />
             Reload Demo
+          </button>
+
+          <button
+            onClick={() => setShowDoctor(true)}
+            className="px-3 py-1.5 rounded-lg bg-purple-600/10 hover:bg-purple-600/20 text-purple-300 text-xs font-medium flex items-center gap-1.5 border border-purple-500/20 transition-colors"
+            title="Flight Doctor & Live Diagnostics (Ctrl+Shift+D)"
+          >
+            <Activity className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
+            Flight Doctor
           </button>
         </div>
 
@@ -1108,12 +1218,20 @@ export function EditorStudio() {
           onToggleCaptions={setShowCaptions}
           captionStyle={captionStyle}
           onChangeCaptionStyle={setCaptionStyle}
+          captionBackdrop={captionBackdrop}
+          onChangeCaptionBackdrop={setCaptionBackdrop}
           showIntroCard={showIntroCard}
           onToggleIntroCard={setShowIntroCard}
           introHeadline={introHeadline}
           onChangeIntroHeadline={setIntroHeadline}
           introSubheadline={introSubheadline}
           onChangeIntroSubheadline={setIntroSubheadline}
+          showOutroCard={showOutroCard}
+          onToggleOutroCard={setShowOutroCard}
+          outroHeadline={outroHeadline}
+          onChangeOutroHeadline={setOutroHeadline}
+          outroCtaText={outroCtaText}
+          onChangeOutroCtaText={setOutroCtaText}
         />
         {/* Center Canvas Preview Viewport */}
         <CanvasPreview
@@ -1122,7 +1240,10 @@ export function EditorStudio() {
           durationMs={durationMs}
           isPlaying={isPlaying}
           onTogglePlay={() => setIsPlaying((p) => !p)}
-          onRestart={() => setCurrentTimeMs(0)}
+          onRestart={() => {
+            firedSfxRef.current.clear();
+            setCurrentTimeMs(0);
+          }}
           pills={pills}
           cursorEngine={cursorEngineRef.current}
           keystrokes={telemetry?.keystrokes || []}
@@ -1137,9 +1258,13 @@ export function EditorStudio() {
           cursorScale={cursorScale}
           captions={captions}
           captionStyle={captionStyle}
+          captionBackdrop={captionBackdrop}
           introHeadline={introHeadline}
           showIntroCard={showIntroCard}
           introSubheadline={introSubheadline}
+          showOutroCard={showOutroCard}
+          outroHeadline={outroHeadline}
+          outroCtaText={outroCtaText}
           onCanvasClickToAddZoom={handleAddPillAtPlayhead}
           showCaptions={showCaptions}
         />
@@ -1151,7 +1276,7 @@ export function EditorStudio() {
         currentTimeMs={currentTimeMs}
         isPlaying={isPlaying}
         onTogglePlay={() => setIsPlaying((p) => !p)}
-        onSeek={setCurrentTimeMs}
+        onSeek={handleSeek}
         pills={pills}
         onUpdatePill={handleUpdatePill}
         onDeletePill={handleDeletePill}
@@ -1168,6 +1293,18 @@ export function EditorStudio() {
         onUpdateCaption={handleUpdateCaption}
         onDeleteCaption={handleDeleteCaption}
       />
+
+      {/* Flight Doctor Diagnostics Modal */}
+      <DiagnosticsDoctor
+        isOpen={showDoctor}
+        onClose={() => setShowDoctor(false)}
+        telemetry={telemetry}
+        durationMs={durationMs}
+        videoBlob={videoBlob}
+      />
+
+      {/* Real-Time Toast Notifications */}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
      </div>
    );
  }

@@ -37,12 +37,20 @@ interface VibePresetsPanelProps {
   onToggleCaptions: (val: boolean) => void;
   captionStyle: CaptionStyle;
   onChangeCaptionStyle: (style: CaptionStyle) => void;
+  captionBackdrop: number;
+  onChangeCaptionBackdrop: (val: number) => void;
   showIntroCard?: boolean;
   onToggleIntroCard?: (val: boolean) => void;
   introHeadline?: string;
   onChangeIntroHeadline?: (val: string) => void;
   introSubheadline?: string;
   onChangeIntroSubheadline?: (val: string) => void;
+  showOutroCard?: boolean;
+  onToggleOutroCard?: (val: boolean) => void;
+  outroHeadline?: string;
+  onChangeOutroHeadline?: (val: string) => void;
+  outroCtaText?: string;
+  onChangeOutroCtaText?: (val: string) => void;
 }
 
 export function VibePresetsPanel({
@@ -72,12 +80,20 @@ export function VibePresetsPanel({
   onToggleCaptions,
   captionStyle,
   onChangeCaptionStyle,
+  captionBackdrop,
+  onChangeCaptionBackdrop,
   showIntroCard,
   onToggleIntroCard,
   introHeadline,
   onChangeIntroHeadline,
   introSubheadline,
-  onChangeIntroSubheadline
+  onChangeIntroSubheadline,
+  showOutroCard,
+  onToggleOutroCard,
+  outroHeadline,
+  onChangeOutroHeadline,
+  outroCtaText,
+  onChangeOutroCtaText
 }: VibePresetsPanelProps) {
   const handleMatchBrand = () => {
     if (!metadata?.brandColors) return;
@@ -300,6 +316,7 @@ export function VibePresetsPanel({
         </div>
 
         {showCaptions && (
+          <>
           <div className="grid grid-cols-2 gap-1.5 text-[10px]">
             <button
               onClick={() => onChangeCaptionStyle('tiktok-bold')}
@@ -342,6 +359,25 @@ export function VibePresetsPanel({
               Classic Sub
             </button>
           </div>
+
+          <div className="pt-1 space-y-1">
+            {/* Caption Backdrop Opacity / Blur */}
+            <div className="flex items-center justify-between text-[10px] text-gray-400">
+              <span>Backdrop Opacity / Blur</span>
+              <span className="font-mono text-amber-300">{captionBackdrop}%</span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              value={captionBackdrop}
+              onChange={(e) => onChangeCaptionBackdrop(parseInt(e.target.value))}
+              className="w-full accent-amber-500"
+              title="Caption pill backdrop blur and opacity"
+            />
+          </div>
+          </>
         )}
       </div>
 
@@ -495,6 +531,88 @@ export function VibePresetsPanel({
 
             <p className="text-[10px] text-gray-400 leading-tight">
               Animate hook title over brand mesh gradient before 3D spring zoom into recording.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Built-In Outro CTA Title Hook Cards */}
+      <div className="pt-2 border-t border-white/10 space-y-2.5">
+        <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center justify-between">
+          <span>Outro CTA Card</span>
+          <span className="text-[10px] text-pink-400 font-mono">Final 1.5s 3D Zoom</span>
+        </label>
+
+        <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
+          <span>Enable Outro CTA Card</span>
+          <input
+            type="checkbox"
+            checked={!!showOutroCard}
+            onChange={(e) => onToggleOutroCard?.(e.target.checked)}
+            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+          />
+        </label>
+
+        {showOutroCard && (
+          <div className="space-y-2.5 pt-1">
+            <div>
+              <span className="text-[10px] text-gray-400 uppercase font-medium block mb-1">Outro Headline</span>
+              <input
+                type="text"
+                value={outroHeadline || ''}
+                onChange={(e) => onChangeOutroHeadline?.(e.target.value)}
+                placeholder="e.g. Ready to ship better demos?"
+                className="w-full bg-black/50 border border-white/15 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <span className="text-[10px] text-gray-400 uppercase font-medium block mb-1">Outro CTA Badge / URL</span>
+              <input
+                type="text"
+                value={outroCtaText || ''}
+                onChange={(e) => onChangeOutroCtaText?.(e.target.value)}
+                placeholder="e.g. Try SmoothStudio Free →"
+                className="w-full bg-black/50 border border-white/15 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 placeholder-gray-500 focus:outline-none"
+              />
+            </div>
+
+            {/* Quick Outro CTA Templates */}
+            <div className="flex flex-wrap gap-1 pt-0.5">
+              <button
+                type="button"
+                onClick={() => {
+                  onChangeOutroHeadline?.('Ready to ship better demos?');
+                  onChangeOutroCtaText?.('Try SmoothStudio Free →');
+                }}
+                className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-gray-400 hover:text-purple-300 transition-colors"
+              >
+                Free Trial
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onChangeOutroHeadline?.('Want the full walkthrough?');
+                  onChangeOutroCtaText?.('Read the Docs →');
+                }}
+                className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-gray-400 hover:text-purple-300 transition-colors"
+              >
+                Docs
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onChangeOutroHeadline?.('Built with SmoothStudio');
+                  onChangeOutroCtaText?.('smoothstudio.app');
+                }}
+                className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-gray-400 hover:text-purple-300 transition-colors"
+              >
+                URL
+              </button>
+            </div>
+
+            <p className="text-[10px] text-gray-400 leading-tight">
+              Final 1.5s: recording zooms out in 3D while the CTA card and glowing button animate in.
             </p>
           </div>
         )}

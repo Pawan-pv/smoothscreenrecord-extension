@@ -17,6 +17,18 @@ export class SfxSynthesizer {
     return this.enabled;
   }
 
+  // Release the shared AudioContext. Safe to call multiple times.
+  public dispose(): void {
+    try {
+      if (this.audioCtx) {
+        void this.audioCtx.close();
+        this.audioCtx = null;
+      }
+    } catch {
+      // Context already closed
+    }
+  }
+
   private getAudioContext(): AudioContext | null {
     if (!this.enabled) return null;
     try {

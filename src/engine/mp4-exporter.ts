@@ -33,10 +33,14 @@ export interface ExportOptions {
   cursorScale?: number;
   captions?: CaptionBlock[];
   captionStyle?: CaptionStyle;
+  captionBackdrop?: number;
   showCaptions?: boolean;
   showIntroCard?: boolean;
   introHeadline?: string;
   introSubheadline?: string;
+  showOutroCard?: boolean;
+  outroHeadline?: string;
+  outroCtaText?: string;
   onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
 }
 
@@ -78,8 +82,19 @@ export class HardwareMp4Exporter {
     const fps = 60;
     const frameIntervalMs = 1000 / fps;
 
-    // Filter cut silences if requested
-    const activeCutSilences = cutSilences ? silences.filter((s) => s.markedForCut) : [];
+    // Filter cut silences if requested.
+    // When the Outro CTA card is enabled, clamp cut windows so the final 1.5s
+    // (the outro animation) is never skipped in the exported video.
+    const activeCutSilences = cutSilences
+      ? silences
+          .filter((s) => s.markedForCut)
+          .map((s) =>
+            options.showOutroCard
+              ? { ...s, endTime: Math.min(s.endTime, Math.max(s.startTime, durationMs - 1500)) }
+              : s
+          )
+          .filter((s) => s.endTime > s.startTime)
+      : [];
 
     // Build timeline frames to render (skipping cut silences)
     const timelineTimestamps: number[] = [];
@@ -105,6 +120,7 @@ export class HardwareMp4Exporter {
           outW,
           outH,
           fps,
+          durationMs,
           totalFrames,
           timelineTimestamps,
           pills,
@@ -120,10 +136,14 @@ export class HardwareMp4Exporter {
           cursorScale: options.cursorScale,
           captions: options.captions,
           captionStyle: options.captionStyle,
+          captionBackdrop: options.captionBackdrop,
           showCaptions: options.showCaptions,
            showIntroCard: options.showIntroCard,
            introHeadline: options.introHeadline,
            introSubheadline: options.introSubheadline,
+           showOutroCard: options.showOutroCard,
+           outroHeadline: options.outroHeadline,
+           outroCtaText: options.outroCtaText,
           onProgress
         });
       } catch (err) {
@@ -136,6 +156,7 @@ export class HardwareMp4Exporter {
       video,
       onRenderCanvasFrame,
       exportCanvas,
+      durationMs,
       timelineTimestamps,
       pills,
       preset,
@@ -150,10 +171,14 @@ export class HardwareMp4Exporter {
       cursorScale: options.cursorScale,
       captions: options.captions,
       captionStyle: options.captionStyle,
+      captionBackdrop: options.captionBackdrop,
       showCaptions: options.showCaptions,
       showIntroCard: options.showIntroCard,
       introHeadline: options.introHeadline,
       introSubheadline: options.introSubheadline,
+      showOutroCard: options.showOutroCard,
+      outroHeadline: options.outroHeadline,
+      outroCtaText: options.outroCtaText,
       onProgress
     });
   }
@@ -165,6 +190,7 @@ export class HardwareMp4Exporter {
     outW: number;
     outH: number;
     fps: number;
+    durationMs: number;
     totalFrames: number;
     timelineTimestamps: number[];
     pills: ZoomPill[];
@@ -180,10 +206,14 @@ export class HardwareMp4Exporter {
     cursorScale?: number;
     captions?: CaptionBlock[];
     captionStyle?: CaptionStyle;
+    captionBackdrop?: number;
     showCaptions?: boolean;
     showIntroCard?: boolean;
     introHeadline?: string;
     introSubheadline?: string;
+    showOutroCard?: boolean;
+    outroHeadline?: string;
+    outroCtaText?: string;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
   }): Promise<Blob> {
     const {
@@ -193,6 +223,7 @@ export class HardwareMp4Exporter {
       outW,
       outH,
       fps,
+      durationMs,
       totalFrames,
       timelineTimestamps,
       pills,
@@ -208,10 +239,14 @@ export class HardwareMp4Exporter {
       cursorScale,
       captions,
       captionStyle,
+      captionBackdrop,
       showCaptions,
       showIntroCard,
       introHeadline,
       introSubheadline,
+      showOutroCard,
+      outroHeadline,
+      outroCtaText,
       onProgress
     } = params;
 
@@ -301,6 +336,7 @@ export class HardwareMp4Exporter {
         canvas: exportCanvas,
         video,
         currentTimeMs: currentMs,
+        durationMs,
         camera,
         activePill,
         cursorEngine,
@@ -315,10 +351,14 @@ export class HardwareMp4Exporter {
         cursorScale,
         captions,
         captionStyle,
+        captionBackdrop,
         showCaptions,
         showIntroCard,
         introHeadline,
-        introSubheadline
+        introSubheadline,
+        showOutroCard,
+        outroHeadline,
+        outroCtaText
       });
 
       // Encode frame
@@ -385,6 +425,7 @@ export class HardwareMp4Exporter {
     video: HTMLVideoElement | HTMLCanvasElement;
     onRenderCanvasFrame?: (timeMs: number) => void;
     exportCanvas: HTMLCanvasElement;
+    durationMs: number;
     timelineTimestamps: number[];
     pills: ZoomPill[];
     preset: VibePreset;
@@ -399,16 +440,21 @@ export class HardwareMp4Exporter {
     cursorScale?: number;
     captions?: CaptionBlock[];
     captionStyle?: CaptionStyle;
+    captionBackdrop?: number;
     showCaptions?: boolean;
     showIntroCard?: boolean;
     introHeadline?: string;
     introSubheadline?: string;
+    showOutroCard?: boolean;
+    outroHeadline?: string;
+    outroCtaText?: string;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
   }): Promise<Blob> {
     const {
       video,
       onRenderCanvasFrame,
       exportCanvas,
+      durationMs,
       timelineTimestamps,
       pills,
       preset,
@@ -423,10 +469,14 @@ export class HardwareMp4Exporter {
       cursorScale,
       captions,
       captionStyle,
+      captionBackdrop,
       showCaptions,
       showIntroCard,
       introHeadline,
       introSubheadline,
+      showOutroCard,
+      outroHeadline,
+      outroCtaText,
       onProgress
     } = params;
 
@@ -482,6 +532,7 @@ export class HardwareMp4Exporter {
         canvas: exportCanvas,
         video,
         currentTimeMs: currentMs,
+        durationMs,
         camera,
         activePill,
         cursorEngine,
@@ -496,10 +547,14 @@ export class HardwareMp4Exporter {
         cursorScale,
         captions,
         captionStyle,
+        captionBackdrop,
         showCaptions,
         showIntroCard,
         introHeadline,
-        introSubheadline
+        introSubheadline,
+        showOutroCard,
+        outroHeadline,
+        outroCtaText
       });
 
       if (f % 10 === 0) {

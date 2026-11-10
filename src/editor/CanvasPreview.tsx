@@ -34,10 +34,14 @@ interface CanvasPreviewProps {
   cursorScale?: number;
   captions?: CaptionBlock[];
   captionStyle?: CaptionStyle;
+  captionBackdrop?: number;
   showCaptions?: boolean;
   showIntroCard?: boolean;
   introHeadline?: string;
   introSubheadline?: string;
+  showOutroCard?: boolean;
+  outroHeadline?: string;
+  outroCtaText?: string;
   onCanvasClickToAddZoom?: (normalizedX: number, normalizedY: number) => void;
 }
 
@@ -62,10 +66,14 @@ export function CanvasPreview({
   cursorScale,
   captions,
   captionStyle,
+  captionBackdrop,
   showCaptions,
   showIntroCard,
   introHeadline,
   introSubheadline,
+  showOutroCard,
+  outroHeadline,
+  outroCtaText,
   onCanvasClickToAddZoom
 }: CanvasPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -99,11 +107,13 @@ export function CanvasPreview({
     solver.setTarget(targetCamera);
 
     const deltaMs = Math.abs(currentTimeMs - lastTimeMsRef.current);
-    // If scrubbing or manual seek across more than 2000ms outside active playback, snap camera
-    if (!isPlaying || deltaMs > 2200) {
+    if (!isPlaying) {
+      // Paused / scrubbing: snap instantly so the framing tracks the playhead exactly
       solver.snapTo(targetCamera);
     } else {
-      // Physical spring update: maintains continuous spring motion even when playhead skips a silence gap
+      // Playing: always advance the physical spring with the clamped frame step.
+      // This keeps the camera continuous even across long silence skips (>2.2s),
+      // where the playhead jumps but the spring smoothly catches up instead of snapping.
       const stepDt = Math.min(0.048, Math.max(0.016, deltaMs / 1000));
       solver.update(stepDt);
     }
@@ -130,10 +140,15 @@ export function CanvasPreview({
       cursorScale,
       captions,
       captionStyle,
+      captionBackdrop,
       showCaptions,
       showIntroCard,
       introHeadline,
-      introSubheadline
+      introSubheadline,
+      durationMs,
+      showOutroCard,
+      outroHeadline,
+      outroCtaText
     });
   }, [
     currentTimeMs,
@@ -152,10 +167,15 @@ export function CanvasPreview({
     cursorScale,
     captions,
     captionStyle,
+    captionBackdrop,
     showCaptions,
     showIntroCard,
     introHeadline,
-    introSubheadline
+    introSubheadline,
+    durationMs,
+    showOutroCard,
+    outroHeadline,
+    outroCtaText
   ]);
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {

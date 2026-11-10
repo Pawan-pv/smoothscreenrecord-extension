@@ -11,6 +11,33 @@ import {
 import { CameraState } from './spring-physics';
 import { CursorSplineEngine, InterpolatedCursor } from './cursor-spline';
 
+// Ken Perlin's quintic smootherstep: zero 1st & 2nd derivatives at both ends
+function smootherstep(t: number): number {
+  const c = Math.max(0, Math.min(1, t));
+  return c * c * c * (c * (c * 6 - 15) + 10);
+}
+
+// Reused scratch canvas for the caption frosted-glass backdrop.
+// Lazily created and only resized when the pill grows, so 60fps playback and
+// export never allocate a new canvas (or trigger DOM/GC churn) per frame.
+let captionBlurCanvas: HTMLCanvasElement | null = null;
+let captionBlurCtx: CanvasRenderingContext2D | null = null;
+
+function getCaptionBlurContext(width: number, height: number): CanvasRenderingContext2D | null {
+  if (typeof document === 'undefined') return null;
+  if (!captionBlurCanvas) {
+    captionBlurCanvas = document.createElement('canvas');
+  }
+  if (captionBlurCanvas.width < width || captionBlurCanvas.height < height) {
+    captionBlurCanvas.width = Math.ceil(width);
+    captionBlurCanvas.height = Math.ceil(height);
+  }
+  if (!captionBlurCtx) {
+    captionBlurCtx = captionBlurCanvas.getContext('2d');
+  }
+  return captionBlurCtx;
+}
+
 export const VIBE_PRESETS: Record<VibePresetId, VibePreset> = {
   'linear-dark': {
     id: 'linear-dark',
@@ -92,10 +119,15 @@ export interface RenderFrameOptions {
   cursorScale?: number;
   captions?: CaptionBlock[];
   captionStyle?: CaptionStyle;
+  captionBackdrop?: number; // 0..100 backdrop blur / opacity for the caption pill
   showCaptions?: boolean;
   showIntroCard?: boolean;
   introHeadline?: string;
   introSubheadline?: string;
+  durationMs?: number;
+  showOutroCard?: boolean;
+  outroHeadline?: string;
+  outroCtaText?: string;
 }
 
 export function getAspectDimensions(aspect: AspectRatioType, targetWidth = 1920): { width: number; height: number } {
@@ -143,10 +175,15 @@ export class StudioRenderer {
       cursorScale,
       captions,
       captionStyle,
+      captionBackdrop = 70,
       showCaptions,
       showIntroCard,
       introHeadline,
-      introSubheadline
+      introSubheadline,
+      durationMs = 0,
+      showOutroCard,
+      outroHeadline,
+      outroCtaText
     } = options;
 
     const ctx = canvas.getContext('2d');
@@ -158,7 +195,7 @@ export class StudioRenderer {
     // 1. Draw Animated Procedural Mesh Gradient Background
     this.drawMeshGradientBackground(ctx, canvasW, canvasH, preset, currentTimeMs);
 
-    // Calculate Intro Transition Factors & 3D Spring Zoom
+    // Calculate Intro / Outro Transition Factors & 3D Spring Zoom
     let introCardAlpha = 0;
     let introCardScale = 1.0;
     let windowIntroAlpha = 1.0;
@@ -169,16 +206,14 @@ export class StudioRenderer {
     if (showIntroCard && currentTimeMs < 1500) {
       if (currentTimeMs < 1000) {
         // First 1000ms: Title hook card is fully visible with entrance spring pop
-        const enterProgress = Math.min(1, currentTimeMs / 320);
-        const enterEase = enterProgress * enterProgress * enterProgress * (enterProgress * (enterProgress * 6 - 15) + 10);
+        const enterEase = smootherstep(currentTimeMs / 320);
         introCardAlpha = enterEase;
         introCardScale = 0.88 + 0.12 * enterEase;
         windowIntroAlpha = 0;
         windowIntroScale = 0.72;
       } else {
         // 1000ms to 1500ms: Smooth 3D spring zoom transition from title card into screen recording!
-        const transProgress = Math.min(1, Math.max(0, (currentTimeMs - 1000) / 500));
-        const ease = transProgress * transProgress * transProgress * (transProgress * (transProgress * 6 - 15) + 10);
+        const ease = smootherstep((currentTimeMs - 1000) / 500);
         introCardAlpha = Math.max(0, 1 - ease);
         introCardScale = 1.0 + 0.12 * ease; // Card blooms gently outward as it dissolves
 
@@ -188,6 +223,41 @@ export class StudioRenderer {
         windowIntroTiltY = (1 - ease) * -12;
       }
     }
+
+    // Outro CTA: during the final 1.5s the recording zooms out in 3D while the CTA card animates in
+    let outroCardAlpha = 0;
+    let outroCardScale = 1.0;
+    let windowOutroAlpha = 1.0;
+    let windowOutroScale = 1.0;
+    let windowOutroTiltX = 0;
+    let windowOutroTiltY = 0;
+
+    if (showOutroCard && durationMs > 0 && currentTimeMs >= durationMs - 1500) {
+      const elapsed = currentTimeMs - (durationMs - 1500);
+      if (elapsed < 1000) {
+        // First 1000ms: CTA card springs in while the recording gently zooms out
+        const ease = smootherstep(elapsed / 320);
+        outroCardAlpha = ease;
+        outroCardScale = 0.88 + 0.12 * ease;
+        windowOutroScale = 1 - 0.28 * ease;
+        windowOutroTiltX = -6 * ease;
+        windowOutroTiltY = 9 * ease;
+      } else {
+        // Final 500ms: hold the CTA card while the recording recedes and fades away
+        const ease = smootherstep((elapsed - 1000) / 500);
+        outroCardAlpha = 1;
+        outroCardScale = 1.0 + 0.06 * ease;
+        windowOutroAlpha = 1 - ease;
+        windowOutroScale = 0.72 - 0.08 * ease;
+        windowOutroTiltX = -6 + 6 * ease;
+        windowOutroTiltY = 9 - 9 * ease;
+      }
+    }
+
+    const windowAlpha = windowIntroAlpha * windowOutroAlpha;
+    const windowScale = windowIntroScale * windowOutroScale;
+    const windowTiltX = windowIntroTiltX + windowOutroTiltX;
+    const windowTiltY = windowIntroTiltY + windowOutroTiltY;
 
     // 2. Calculate Window Dimensions with Studio Padding
     const paddingX = canvasW * 0.08;
@@ -224,23 +294,23 @@ export class StudioRenderer {
     }
 
     // 4. Render Window Framing with 3D Isometric Transform and Diffused Shadow (if visible)
-    if (windowIntroAlpha > 0.001) {
+    if (windowAlpha > 0.001) {
       ctx.save();
-      ctx.globalAlpha = windowIntroAlpha;
+      ctx.globalAlpha = windowAlpha;
 
       // Pivot center of the window
       const centerX = windowX + windowW / 2;
       const centerY = windowY + windowH / 2;
       ctx.translate(centerX, centerY);
 
-      // Apply Intro 3D Spring Zoom scale
-      if (windowIntroScale < 0.999) {
-        ctx.scale(windowIntroScale, windowIntroScale);
+      // Apply Intro / Outro 3D Spring Zoom scale
+      if (windowScale < 0.999) {
+        ctx.scale(windowScale, windowScale);
       }
 
       // Apply 3D isometric perspective tilt via shear & scale matrix
-      const effectiveTiltX = camera.tiltX + windowIntroTiltX;
-      const effectiveTiltY = camera.tiltY + windowIntroTiltY;
+      const effectiveTiltX = camera.tiltX + windowTiltX;
+      const effectiveTiltY = camera.tiltY + windowTiltY;
       if (Math.abs(effectiveTiltX) > 0.1 || Math.abs(effectiveTiltY) > 0.1) {
         const radY = (effectiveTiltY * Math.PI) / 180;
         const radX = (effectiveTiltX * Math.PI) / 180;
@@ -345,7 +415,7 @@ export class StudioRenderer {
 
       // 8. Render Animated Word-by-Word Captions
       if (showCaptions && captions && captions.length > 0) {
-        this.drawAnimatedCaptions(ctx, windowW, windowH, captions, currentTimeMs, captionStyle || 'tiktok-bold');
+        this.drawAnimatedCaptions(ctx, windowW, windowH, captions, currentTimeMs, captionStyle || 'tiktok-bold', captionBackdrop);
       }
 
       // Subtle window inner border for crisp Apple-like finish
@@ -372,7 +442,21 @@ export class StudioRenderer {
       );
     }
 
-    // 9. Render 3D Glassmorphic Keystroke HUD at bottom
+    // 10. Render Outro CTA Title Card over the brand mesh gradient during the final 1.5s
+    if (showOutroCard && outroCardAlpha > 0.001) {
+      this.drawOutroCtaCard(
+        ctx,
+        canvasW,
+        canvasH,
+        outroHeadline || 'Ready to ship better demos?',
+        outroCtaText || 'Try SmoothStudio Free',
+        outroCardAlpha,
+        outroCardScale,
+        preset
+      );
+    }
+
+    // 11. Render 3D Glassmorphic Keystroke HUD at bottom
     if (showHud) {
       this.drawKeystrokeHud(ctx, canvasW, canvasH, keystrokes, currentTimeMs, preset);
     }
@@ -519,7 +603,8 @@ export class StudioRenderer {
     windowH: number,
     captions: CaptionBlock[],
     timeMs: number,
-    style: CaptionStyle
+    style: CaptionStyle,
+    backdrop: number = 70
   ) {
     const active = captions.find((c) => timeMs >= c.startTime && timeMs <= c.endTime);
     if (!active) return;
@@ -529,6 +614,12 @@ export class StudioRenderer {
     const isTikTok = style === 'tiktok-bold';
     const isKeynote = style === 'apple-keynote';
     const isMinimal = style === 'minimal-pill';
+
+    // User-controlled backdrop: 0% = barely-there frosted tint, 100% = heavy blur + near-opaque pill
+    const backdropLevel = Math.max(0, Math.min(100, backdrop));
+    const backdropAlpha = 0.25 + (backdropLevel / 100) * 0.65;
+    const backdropBlurPx = (backdropLevel / 100) * 16;
+    const borderAlpha = 0.10 + (backdropLevel / 100) * 0.38;
 
     const baseFontSize = isTikTok ? Math.max(18, Math.min(26, Math.round(windowW * 0.022)))
       : isKeynote ? Math.max(16, Math.min(22, Math.round(windowW * 0.019)))
@@ -596,49 +687,25 @@ export class StudioRenderer {
     const badgeX = (windowW - badgeW) / 2;
     const badgeY = windowH - badgeH - 36;
 
-    // Draw caption container pill with frosted glass blur & high-contrast shadow
+    // Draw caption container pill: dynamic backdrop blur + frosted tint + contrast border
+    const pillRadius = isTikTok ? 14 : isKeynote || isMinimal ? 9999 : 8;
+
     ctx.save();
     ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
     ctx.shadowBlur = 24;
     ctx.shadowOffsetY = 8;
-
-    if (isTikTok) {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.88)';
-      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 14);
-      ctx.fill();
-
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
-      ctx.lineWidth = 1.5;
-      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 14);
-      ctx.stroke();
-    } else if (isKeynote) {
-      // Frosted Glassmorphic Apple Keynote Pill
-      const pillGrad = ctx.createLinearGradient(badgeX, badgeY, badgeX, badgeY + badgeH);
-      pillGrad.addColorStop(0, 'rgba(24, 30, 44, 0.82)');
-      pillGrad.addColorStop(1, 'rgba(15, 20, 30, 0.88)');
-      ctx.fillStyle = pillGrad;
-      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 9999);
-      ctx.fill();
-
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
-      ctx.lineWidth = 1.2;
-      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 9999);
-      ctx.stroke();
-    } else if (isMinimal) {
-      ctx.fillStyle = 'rgba(15, 17, 23, 0.85)';
-      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 9999);
-      ctx.fill();
-
-      ctx.strokeStyle = 'rgba(139, 92, 246, 0.4)';
-      ctx.lineWidth = 1;
-      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 9999);
-      ctx.stroke();
-    } else {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-      this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, 8);
-      ctx.fill();
-    }
+    this.fillCaptionPill(ctx, badgeX, badgeY, badgeW, badgeH, pillRadius, style, backdropAlpha, backdropBlurPx);
     ctx.restore();
+
+    const borderColor = isMinimal
+      ? `rgba(139, 92, 246, ${Math.min(1, borderAlpha + 0.18)})`
+      : isKeynote
+        ? `rgba(125, 211, 252, ${Math.min(1, borderAlpha + 0.08)})`
+        : `rgba(255, 255, 255, ${borderAlpha})`;
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = 1.5;
+    this.roundRect(ctx, badgeX, badgeY, badgeW, badgeH, pillRadius);
+    ctx.stroke();
 
     // Render individual words across lines with active word highlight & micro-pop
     lines.forEach((line, lineIdx) => {
@@ -689,6 +756,55 @@ export class StudioRenderer {
       });
     });
 
+    ctx.restore();
+  }
+
+  // Caption pill backdrop: blurred copy of the already-rendered frame + frosted tint overlay
+  private fillCaptionPill(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    radius: number,
+    style: CaptionStyle,
+    alpha: number,
+    blurPx: number
+  ) {
+    ctx.save();
+    this.roundRect(ctx, x, y, w, h, radius);
+    ctx.clip();
+
+    // Real frosted glass: blur the canvas region sitting behind the pill, then draw it back clipped
+    if (blurPx >= 1 && 'filter' in ctx) {
+      try {
+        const m = ctx.getTransform();
+        const tl = m.transformPoint(new DOMPoint(x, y));
+        const br = m.transformPoint(new DOMPoint(x + w, y + h));
+        const sx = Math.max(0, Math.floor(Math.min(tl.x, br.x)));
+        const sy = Math.max(0, Math.floor(Math.min(tl.y, br.y)));
+        const sw = Math.min(ctx.canvas.width - sx, Math.ceil(Math.abs(br.x - tl.x)));
+        const sh = Math.min(ctx.canvas.height - sy, Math.ceil(Math.abs(br.y - tl.y)));
+
+        if (sw > 1 && sh > 1) {
+          const bctx = getCaptionBlurContext(sw, sh);
+          if (bctx && captionBlurCanvas) {
+            bctx.clearRect(0, 0, sw, sh);
+            bctx.filter = `blur(${blurPx}px)`;
+            bctx.drawImage(ctx.canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+            bctx.filter = 'none';
+            ctx.drawImage(captionBlurCanvas, 0, 0, sw, sh, x, y, w, h);
+          }
+        }
+      } catch {
+        // Fallback: flat frosted tint only
+      }
+    }
+
+    // Frosted tint overlay (per-style tint keeps each caption vibe distinct)
+    const tint = style === 'apple-keynote' ? '15, 20, 30' : style === 'minimal-pill' ? '15, 17, 23' : '0, 0, 0';
+    ctx.fillStyle = `rgba(${tint}, ${alpha})`;
+    ctx.fillRect(x, y, w, h);
     ctx.restore();
   }
 
@@ -790,6 +906,121 @@ export class StudioRenderer {
       ctx.fillText(subheadline, 0, cardY + cardH * 0.76);
       ctx.restore();
     }
+
+    ctx.restore();
+  }
+
+  // Outro CTA hook card: headline + glowing gradient CTA pill over the brand mesh gradient
+  private drawOutroCtaCard(
+    ctx: CanvasRenderingContext2D,
+    canvasW: number,
+    canvasH: number,
+    headline: string,
+    ctaText: string,
+    alpha: number,
+    scale: number,
+    preset: VibePreset
+  ) {
+    if (alpha <= 0.001) return;
+
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.translate(canvasW / 2, canvasH / 2);
+    ctx.scale(scale, scale);
+
+    const cardW = Math.min(canvasW * 0.72, 780);
+    const cardH = Math.min(canvasH * 0.46, 320);
+    const cardX = -cardW / 2;
+    const cardY = -cardH / 2;
+
+    // Card shadow + glass background
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.75)';
+    ctx.shadowBlur = 48;
+    ctx.shadowOffsetY = 20;
+    const cardGrad = ctx.createLinearGradient(cardX, cardY, cardX + cardW, cardY + cardH);
+    cardGrad.addColorStop(0, 'rgba(20, 24, 35, 0.88)');
+    cardGrad.addColorStop(1, 'rgba(11, 13, 20, 0.94)');
+    ctx.fillStyle = cardGrad;
+    this.roundRect(ctx, cardX, cardY, cardW, cardH, 24);
+    ctx.fill();
+    ctx.restore();
+
+    // Glass bevel border with brand accent
+    ctx.save();
+    const borderGrad = ctx.createLinearGradient(cardX, cardY, cardX + cardW, cardY + cardH);
+    borderGrad.addColorStop(0, 'rgba(255, 255, 255, 0.28)');
+    borderGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.1)');
+    borderGrad.addColorStop(1, 'rgba(236, 72, 153, 0.4)');
+    ctx.strokeStyle = borderGrad;
+    ctx.lineWidth = 1.5;
+    this.roundRect(ctx, cardX, cardY, cardW, cardH, 24);
+    ctx.stroke();
+    ctx.restore();
+
+    // Eyebrow
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 11px Inter, sans-serif';
+    ctx.fillStyle = '#C084FC';
+    ctx.fillText('THANKS FOR WATCHING', 0, cardY + 38);
+    ctx.restore();
+
+    // Outro Headline
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const headlineFontSize = Math.max(26, Math.min(46, Math.round(cardW * 0.054)));
+    ctx.font = `bold ${headlineFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+    ctx.shadowBlur = 18;
+    ctx.shadowOffsetY = 4;
+    ctx.fillText(headline || 'Ready to ship better demos?', 0, cardY + cardH * 0.44);
+    ctx.restore();
+
+    // Glowing gradient CTA pill badge
+    const cta = ctaText || 'Try SmoothStudio Free';
+    ctx.save();
+    ctx.font = '700 15px Inter, sans-serif';
+    const ctaMetrics = ctx.measureText(cta);
+    const ctaPadX = 24;
+    const ctaW = ctaMetrics.width + ctaPadX * 2;
+    const ctaH = 46;
+    const ctaX = -ctaW / 2;
+    const ctaY = cardY + cardH * 0.64;
+
+    // Outer glow
+    ctx.shadowColor = 'rgba(139, 92, 246, 0.8)';
+    ctx.shadowBlur = 28;
+    const ctaGrad = ctx.createLinearGradient(ctaX, ctaY, ctaX + ctaW, ctaY + ctaH);
+    ctaGrad.addColorStop(0, '#8B5CF6');
+    ctaGrad.addColorStop(0.5, '#6366F1');
+    ctaGrad.addColorStop(1, '#EC4899');
+    ctx.fillStyle = ctaGrad;
+    this.roundRect(ctx, ctaX, ctaY, ctaW, ctaH, 9999);
+    ctx.fill();
+    ctx.restore();
+
+    // CTA top highlight bevel
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.lineWidth = 1;
+    this.roundRect(ctx, ctaX, ctaY, ctaW, ctaH, 9999);
+    ctx.stroke();
+    ctx.restore();
+
+    // CTA label
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 15px Inter, sans-serif';
+    ctx.fillStyle = '#FFFFFF';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+    ctx.shadowBlur = 6;
+    ctx.fillText(cta, 0, ctaY + ctaH / 2 + 1);
+    ctx.restore();
 
     ctx.restore();
   }

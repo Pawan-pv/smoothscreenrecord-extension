@@ -142,13 +142,18 @@ export function EditorStudio() {
   useEffect(() => {
     // Register editor tab with service worker and listen for background stop capture
     if (typeof chrome !== 'undefined' && chrome.runtime) {
-      chrome.runtime.sendMessage({ type: 'REGISTER_EDITOR_TAB' }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'REGISTER_EDITOR_TAB' }, () => {
+        void chrome.runtime?.lastError;
+      });
 
       // Connect persistent keepalive port to prevent MV3 service worker dormancy
       let keepalivePort: chrome.runtime.Port | null = null;
       let pingInterval: any = null;
       try {
         keepalivePort = chrome.runtime.connect({ name: 'smoothstudio-keepalive' });
+        keepalivePort.onDisconnect.addListener(() => {
+          void chrome.runtime?.lastError;
+        });
         pingInterval = setInterval(() => {
           try { keepalivePort?.postMessage('ping'); } catch {}
         }, 15000);
@@ -929,11 +934,16 @@ export function EditorStudio() {
 
       // Notify service worker to initiate 120Hz DOM tracking on target tab
       if (typeof chrome !== 'undefined' && chrome.runtime) {
-        chrome.runtime.sendMessage({
-          type: 'START_STUDIO_RECORDING',
-          tabId: sourceTabId,
-          focusTarget: Boolean(sourceTabId)
-        }).catch(() => {});
+        chrome.runtime.sendMessage(
+          {
+            type: 'START_STUDIO_RECORDING',
+            tabId: sourceTabId,
+            focusTarget: Boolean(sourceTabId)
+          },
+          () => {
+            void chrome.runtime?.lastError;
+          }
+        );
       }
     } catch (err: any) {
       console.warn('Capture canceled or rejected:', err);
@@ -970,7 +980,10 @@ export function EditorStudio() {
       if (!tel && typeof chrome !== 'undefined' && chrome.runtime) {
         try {
           await new Promise<void>((resolve) => {
-            chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' }, () => resolve());
+            chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' }, () => {
+              void chrome.runtime?.lastError;
+              resolve();
+            });
             setTimeout(resolve, 600);
           });
           tel = latestTelemetryRef.current || (await loadTelemetry());

@@ -112,12 +112,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       activeEditorTabId: editorTabId,
       quality
     }).then(() => {
-      // Broadcast START_TELEMETRY to target tab and active tabs
+      // Broadcast START_TELEMETRY to target tab and active web page tabs (http/https only)
       chrome.tabs.query({}, (tabs) => {
         for (const tab of tabs) {
           if (tab.id && (tab.id === recordingTabId || tab.active)) {
+            // Guard: Content scripts only run on http/https web pages. Never dispatch to chrome:// or extension pages.
+            if (!tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) {
+              continue;
+            }
             chrome.tabs.sendMessage(tab.id, { type: 'START_TELEMETRY' }, () => {
-              if (chrome.runtime?.lastError) {}
+              void chrome.runtime?.lastError;
             });
           }
         }
@@ -220,9 +224,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (['APPLY_PRIVACY_OPTIONS', 'START_PICKER', 'STOP_PICKER', 'RESET_PRIVACY'].includes(message.type)) {
     chrome.tabs.query({}, (tabs) => {
       for (const tab of tabs) {
-        if (tab.id) {
+        if (tab.id && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
           chrome.tabs.sendMessage(tab.id, message, () => {
-            if (chrome.runtime?.lastError) {}
+            void chrome.runtime?.lastError;
           });
         }
       }

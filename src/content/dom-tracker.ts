@@ -274,7 +274,9 @@ function injectRecordingHud() {
     stopBtn.onclick = (e) => {
       e.stopPropagation();
       if (typeof chrome !== 'undefined' && chrome.runtime) {
-        chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' });
+        chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' }, () => {
+          void chrome.runtime?.lastError;
+        });
       }
     };
   }

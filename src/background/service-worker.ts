@@ -146,6 +146,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const collectAndFinish = (tabId: number | null) => {
         if (tabId) {
           chrome.tabs.sendMessage(tabId, { type: 'STOP_TELEMETRY' }, (response) => {
+            if (chrome.runtime?.lastError) {
+              // Target tab might have navigated away or closed; consume error safely
+            }
             const telemetryData = response?.data || null;
             if (telemetryData) {
               chrome.storage.local.set({

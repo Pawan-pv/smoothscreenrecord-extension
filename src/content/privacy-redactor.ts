@@ -11,9 +11,26 @@ let blurredElements: Set<HTMLElement> = new Set();
 let textNodeOriginals: Map<Text, string> = new Map();
 
 // Non-global detection patterns (safe for .test() without mutating lastIndex)
-const EMAIL_DETECT = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/i;
-const REVENUE_DETECT = /(?:[\$€£¥]\s?|\bUSD\s?)[0-9,]+(?:\.[0-9]{2})?(?:\s?(?:k|m|b|billion|million|k))?\b|\b[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{2})?\b/i;
-const API_KEY_DETECT = /\b(?:sk_live_[0-9a-zA-Z]{24,}|sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|gh[pousr]_[A-Za-z0-9]{36,}|Bearer\s+[A-Za-z0-9._-]{20,})\b/i;
+export const EMAIL_DETECT = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/i;
+export const REVENUE_DETECT = /(?:[\$€£¥]\s?|\bUSD\s?)[0-9,]+(?:\.[0-9]{2})?(?:\s?(?:k|m|b|billion|million|k))?\b|\b[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{2})?\b/i;
+export const API_KEY_DETECT = /\b(?:sk_live_[0-9a-zA-Z]{24,}|sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{35}|gh[pousr]_[A-Za-z0-9]{36,}|Bearer\s+[A-Za-z0-9._-]{20,})\b/i;
+
+export function redactTextString(
+  text: string,
+  options: Partial<PrivacyOptions> = { blurEmails: true, blurRevenue: true, blurApiKeys: true }
+): string {
+  let content = text;
+  if (options.blurEmails && EMAIL_DETECT.test(content)) {
+    content = content.replace(new RegExp(EMAIL_DETECT.source, 'gi'), '••••••@••••.com');
+  }
+  if (options.blurRevenue && REVENUE_DETECT.test(content)) {
+    content = content.replace(new RegExp(REVENUE_DETECT.source, 'gi'), '$••,•••');
+  }
+  if (options.blurApiKeys && API_KEY_DETECT.test(content)) {
+    content = content.replace(new RegExp(API_KEY_DETECT.source, 'gi'), '••••••••••••••••');
+  }
+  return content;
+}
 
 export function applyAutoRedaction(options: Partial<PrivacyOptions>) {
   if (!document?.body) return 0;

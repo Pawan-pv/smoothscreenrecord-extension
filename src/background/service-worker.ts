@@ -4,13 +4,15 @@ interface SessionState {
   activeRecordingTabId: number | null;
   activeEditorTabId: number | null;
   isRecording: boolean;
+  quality?: string;
 }
 
 // Memory cache of session state (synced with storage.session to survive worker sleep)
 let state: SessionState = {
   activeRecordingTabId: null,
   activeEditorTabId: null,
-  isRecording: false
+  isRecording: false,
+  quality: '1080p'
 };
 
 // Safe storage access (session storage in MV3, fallback to local)
@@ -23,11 +25,12 @@ const getStorageArea = () => {
 
 async function loadSessionState(): Promise<SessionState> {
   try {
-    const data: Record<string, any> = await getStorageArea().get(['activeRecordingTabId', 'activeEditorTabId', 'isRecording']);
+    const data: Record<string, any> = await getStorageArea().get(['activeRecordingTabId', 'activeEditorTabId', 'isRecording', 'quality']);
     state = {
       activeRecordingTabId: typeof data.activeRecordingTabId === 'number' ? data.activeRecordingTabId : (data.activeRecordingTabId === null ? null : state.activeRecordingTabId),
       activeEditorTabId: typeof data.activeEditorTabId === 'number' ? data.activeEditorTabId : (data.activeEditorTabId === null ? null : state.activeEditorTabId),
-      isRecording: Boolean(data.isRecording)
+      isRecording: Boolean(data.isRecording),
+      quality: typeof data.quality === 'string' ? data.quality : '1080p'
     };
   } catch (err) {
     console.warn('[SmoothStudio SW] Failed to load session state:', err);
@@ -62,6 +65,18 @@ chrome.runtime.onConnect.addListener((port) => {
         port.postMessage('pong');
       }
     });
+  } else if (port.name === 'smoothstudio-stream') {
+    port.onDisconnect.addListener(() => {
+      // Channel teardown / crash recovery flush to storage.local
+      chrome.storage.local.set({
+        crashRecoveryMarker: {
+          timestamp: Date.now(),
+          portName: 'smoothstudio-stream',
+          reason: 'client_stream_disconnected',
+          recovered: false
+        }
+      });
+    });
   }
 });
 
@@ -83,17 +98,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   // 3. Start Studio Recording
-  if (message.type === 'START_STUDIO_RECORDING') {
+  if (message.type === 'START_STUDIO_RECORDING' || message.type === 'START_RECORDING') {
     const recordingTabId = message.tabId || state.activeRecordingTabId;
     let editorTabId = message.editorTabId || state.activeEditorTabId;
     if (sender.tab?.id && sender.tab.id !== recordingTabId) {
       editorTabId = sender.tab.id;
     }
+    const quality = message.payload?.quality || message.quality || '1080p';
 
     persistSessionState({
       isRecording: true,
       activeRecordingTabId: recordingTabId,
-      activeEditorTabId: editorTabId
+      activeEditorTabId: editorTabId,
+      quality
     }).then(() => {
       // Broadcast START_TELEMETRY to target tab and active tabs
       chrome.tabs.query({}, (tabs) => {
@@ -111,7 +128,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         chrome.tabs.update(recordingTabId, { active: true }).catch(() => {});
       }
 
-      sendResponse({ status: 'recording_started', activeRecordingTabId: recordingTabId });
+      sendResponse({ status: 'recording_started', activeRecordingTabId: recordingTabId, quality });
     });
     return true;
   }

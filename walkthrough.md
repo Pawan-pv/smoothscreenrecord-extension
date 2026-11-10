@@ -59,7 +59,7 @@ The extension now features a **Two-Tier Testing Architecture**:
 ### Issue 5: Dual Conflicting Playwright Packages
 - **Symptom**: Running `npx playwright test` threw `Error: Playwright Test did not expect test.describe() to be called here.`
 - **Root Cause**: `package.json` had both `"@playwright/test": "1.50.0"` and `"playwright": "^1.65.0"`. When `npx playwright test` ran the 1.65.0 CLI, the test file imported `@playwright/test` (1.50.0), causing `TestTypeImpl` to register against a mismatched runner instance.
-- **Fix**: Removed the redundant `"playwright": "^1.65.0"` and purged extraneous `node_modules/playwright` so that `@playwright/test@1.50.0` provides the unified runner and core library.
+- **Fix**: Synchronized both `"@playwright/test"` and `"playwright"` to the exact same version (`1.65.0`), allowing npm/bun to deduplicate modules cleanly so the CLI runner and the test file import from the exact same package instance.
 
 ### Issue 6: Popup Element Visibility & Tab Query Optimization
 - **Symptom**: Stage 4 encountered a 5000ms timeout on `page.waitForSelector('button')`.
@@ -72,9 +72,9 @@ The extension now features a **Two-Tier Testing Architecture**:
 
 ### A. End-to-End Suite (`npx playwright test`)
 Run Command: `npx playwright test`
-- **Runner**: Playwright Test 1.50.0
+- **Runner**: Playwright Test 1.65.0
 - **Browser**: Chromium 1254 (Headless New with Unpacked MV3 Extension)
-- **Results**: **9 / 9 passed (29.0s)**
+- **Results**: **9 / 9 passed (1.2m)**
 
 | Stage | Test Name | Result | Duration | Notes |
 |---|---|---|---|---|

@@ -5,3 +5,4 @@ dist/
 .playwright-extension-profile/
 tests/run-audit.mjs
 tests/artifacts/
+coverage/

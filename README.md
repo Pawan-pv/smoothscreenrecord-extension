@@ -33,17 +33,32 @@ This project is configured with **Bun** for ultra-fast installs and compilation.
 bun install
 ```
 
-### 2. Start Studio Workspace (Dev Mode)
+### 2. Fast TDD Testing Loop (< 100ms)
+Run Vitest with our headless Chrome API mock harness (`happy-dom`):
 ```bash
-bun run dev
+bun run test         # Single headless pass (34/34 tests in ~320ms)
+bun run test:watch   # Red-Green-Refactor interactive watch mode
+bun run test:coverage # V8 branch/statement coverage report
 ```
-Open [http://localhost:5173/](http://localhost:5173/) to explore the Studio Editor with interactive demo telemetry, 3D tilts, spotlight dimming, and export features.
 
-### 3. Build Extension for Chrome
+### 3. Dual-Mode Development & Hot-Reloading
+- **Mode A: Instant Web HMR (React Fast Refresh)**
+  ```bash
+  bun run dev
+  ```
+  Open [http://localhost:5173/editor.html](http://localhost:5173/editor.html) to edit Studio UI, timeline, and canvas components with sub-50ms React Fast Refresh without extension runtime crashes.
+
+- **Mode B: Automated Unpacked Extension Watcher**
+  ```bash
+  bun run dev:extension
+  ```
+  Rebuilds on file change, auto-compiles content script IIFEs, and broadcasts reload events to Chrome over WebSocket (`ws://localhost:8989`), automatically triggering `chrome.runtime.reload()` and `chrome.tabs.reload()`.
+
+### 4. Build & Autonomous Live Extension Audit
 ```bash
-bun run build
+bun run build        # Production package build (Vite + Bun standalone IIFEs)
+bun run test:live    # 16-stage Playwright autonomous Chromium audit
 ```
-The compiled, production-ready extension is emitted to the [`dist/`](dist/) folder in ~2 seconds.
 
 ---
 

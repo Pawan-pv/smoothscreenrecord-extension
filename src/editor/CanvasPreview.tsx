@@ -80,17 +80,20 @@ export function CanvasPreview({
   const rendererRef = useRef<StudioRenderer>(new StudioRenderer());
   const springCameraRef = useRef<SpringCameraSolver>(new SpringCameraSolver());
   const lastTimeMsRef = useRef<number>(currentTimeMs);
+  const { width: targetWidth, height: targetHeight } = getAspectDimensions(aspectRatio, 1920);
 
   // Render preview frame whenever currentTimeMs, preset, or props change
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !video) return;
+    if (!canvas) return;
 
     const { width: targetW, height: targetH } = getAspectDimensions(aspectRatio, 1920);
     if (canvas.width !== targetW || canvas.height !== targetH) {
       canvas.width = targetW;
       canvas.height = targetH;
     }
+
+    if (!video) return;
 
     // Compute continuous, buttery-smooth cinematic camera framing and cursor tracking
     const cursor = cursorEngine.getCursorAt(currentTimeMs);
@@ -219,6 +222,8 @@ export function CanvasPreview({
       <div className="relative max-w-full max-h-full flex items-center justify-center shadow-2xl rounded-2xl overflow-hidden group">
         <canvas
           ref={canvasRef}
+          width={targetWidth}
+          height={targetHeight}
           onClick={handleCanvasClick}
           className="max-h-[68vh] max-w-full object-contain cursor-crosshair rounded-2xl"
           title="Click anywhere on preview to create a custom Zoom Focus at that point"

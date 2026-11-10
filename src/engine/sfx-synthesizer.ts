@@ -453,4 +453,5 @@ export class SfxSynthesizer {
   }
 }
 
+export const sfxSynthesizer = new SfxSynthesizer();
 export default SfxSynthesizer;

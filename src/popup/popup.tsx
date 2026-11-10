@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { Video, Mic, EyeOff, Shield, Sparkles, Sliders, ExternalLink } from 'lucide-react';
+import { ensureDevChromeMocks } from '../engine/dev-environment';
 import '../index.css';
+
+ensureDevChromeMocks();
 
 export function PopupApp() {
   const [isRecording, setIsRecording] = useState(false);

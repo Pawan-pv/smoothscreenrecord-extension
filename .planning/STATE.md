@@ -62,3 +62,16 @@
     * "Toggle RAM Fallback Buffer": dynamically swaps disk-heavy OPFS recording to raw system memory arrays with active UI badge and memory estimation
     * "Downgrade Encoder Stream": swaps hardware-accelerated H.264 MP4 export to direct zero-transcode client-side WebM download
   - Verified with `bun run build` and `bun run test:live` scoring 16/16 tests passing in 26.30s with zero runtime console errors
+- [x] Phase 11: Two-Loop TDD & Automated Hot-Reloading Infrastructure:
+  - Fast TDD Inner Loop: Installed Vitest 5.1 + HappyDOM + @testing-library/react with custom type-safe Chrome API mock harness (`tests/mocks/chrome-mock.ts`)
+  - 33/33 unit tests passing in ~320ms across 6 suites:
+    * `spring-physics.test.ts` (11 tests, Euler integration, settling threshold, quintic smootherstep camera framing)
+    * `cursor-spline.test.ts` (5 tests, Catmull-Rom smoothing, instantaneous velocity calculation, telemetry clamping)
+    * `privacy-redactor.test.ts` (5 tests, PII regex detection, TreeWalker DOM node replacements, password field blurring)
+    * `diagnostic-channel.test.ts` (4 tests, singleton event bus, active degradation caching, mode swapping)
+    * `sfx-synthesizer.test.ts` (4 tests, procedural Web Audio initialization, safety fallbacks)
+    * `service-worker.test.ts` (4 tests, MV3 session storage persistence, keepalive port ping-pong, message routing)
+  - Dual-Mode Hot-Reloading Loop:
+    * Mode A (Vite Web HMR): conditional dev mock environment (`src/engine/dev-environment.ts`) allowing instant sub-50ms React Fast Refresh for `editor.html` and `popup.html` at `http://localhost:5173`
+    * Mode B (Unpacked Extension Auto-Reloader): Vite plugin (`plugins/vite-plugin-extension-reloader.ts`) broadcasting on ws://localhost:8989 with live IIFE compilation on content script save and auto `chrome.runtime.reload()`
+  - Full Verification: 33/33 Vitest unit tests passing + zero TypeScript compilation errors (`tsc --noEmit`) + production build passing + 16/16 Playwright live audit checks passing in 33.97s

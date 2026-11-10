@@ -2,6 +2,7 @@ import { defineConfig, Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 import { execSync } from 'child_process';
+import { extensionReloaderPlugin } from './plugins/vite-plugin-extension-reloader.ts';
 
 function bundleContentScriptsPlugin(): Plugin {
   return {
@@ -16,7 +17,7 @@ function bundleContentScriptsPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), bundleContentScriptsPlugin()],
+  plugins: [react(), bundleContentScriptsPlugin(), extensionReloaderPlugin()],
   build: {
     outDir: 'dist',
     emptyOutDir: true,

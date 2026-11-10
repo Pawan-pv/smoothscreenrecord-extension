@@ -14,6 +14,7 @@ export function PopupApp() {
   useEffect(() => {
     if (typeof chrome !== 'undefined' && chrome.runtime) {
       chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATUS' }, (res) => {
+        if (chrome.runtime?.lastError) return;
         if (res && res.isRecording) {
           setIsRecording(true);
         }
@@ -28,15 +29,18 @@ export function PopupApp() {
 
     if (typeof chrome !== 'undefined' && chrome.tabs) {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]?.id) {
-          chrome.tabs.sendMessage(tabs[0].id, {
+        const tab = tabs[0];
+        if (tab?.id && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
+          chrome.tabs.sendMessage(tab.id, {
             type: 'APPLY_PRIVACY_OPTIONS',
             options: {
               blurEmails: key === 'emails' ? val : blurEmails,
               blurRevenue: key === 'revenue' ? val : blurRevenue,
               blurApiKeys: key === 'keys' ? val : blurApiKeys
             }
-          }).catch(() => {});
+          }, () => {
+            if (chrome.runtime?.lastError) {}
+          });
         }
       });
     }
@@ -48,10 +52,13 @@ export function PopupApp() {
 
     if (typeof chrome !== 'undefined' && chrome.tabs) {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]?.id) {
-          chrome.tabs.sendMessage(tabs[0].id, {
+        const tab = tabs[0];
+        if (tab?.id && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
+          chrome.tabs.sendMessage(tab.id, {
             type: nextState ? 'START_PICKER' : 'STOP_PICKER'
-          }).catch(() => {});
+          }, () => {
+            if (chrome.runtime?.lastError) {}
+          });
         }
       });
     }
@@ -63,12 +70,14 @@ export function PopupApp() {
         const activeTab = tabs[0];
         const activeTabId = activeTab?.id;
 
-        // Apply privacy settings first
-        if (activeTabId) {
+        // Apply privacy settings first if on a web page
+        if (activeTabId && activeTab?.url && (activeTab.url.startsWith('http://') || activeTab.url.startsWith('https://'))) {
           chrome.tabs.sendMessage(activeTabId, {
             type: 'APPLY_PRIVACY_OPTIONS',
             options: { blurEmails, blurRevenue, blurApiKeys }
-          }).catch(() => {});
+          }, () => {
+            if (chrome.runtime?.lastError) {}
+          });
         }
 
         // Open studio tab with live recording prompt and sourceTab id
@@ -120,7 +129,9 @@ export function PopupApp() {
           <button
             onClick={() => {
               if (typeof chrome !== 'undefined' && chrome.runtime) {
-                chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' });
+                chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' }, () => {
+                  if (chrome.runtime?.lastError) {}
+                });
                 setIsRecording(false);
               }
             }}

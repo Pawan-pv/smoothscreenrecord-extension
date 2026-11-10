@@ -199,6 +199,11 @@ export function EditorStudio() {
   }, []);
 
   useEffect(() => {
+    // Immediately load demo workspace so canvas is active on initial render
+    if (typeof window !== 'undefined' && !window.location.search.includes('record=true')) {
+      loadDemoWorkspace();
+    }
+
     async function loadInitial() {
       if (typeof window !== 'undefined' && window.location.search.includes('record=true')) {
         const urlParams = new URLSearchParams(window.location.search);
@@ -212,14 +217,15 @@ export function EditorStudio() {
         return;
       }
 
-      const storedTelemetry = await loadTelemetry();
-      const storedBlob = await getRecordingBlob();
+      try {
+        const storedTelemetry = await loadTelemetry();
+        const storedBlob = await getRecordingBlob();
 
-      if (storedBlob && storedTelemetry) {
-        setupLoadedRecording(storedBlob, storedTelemetry);
-      } else {
-        // Generate interactive demo workspace so the editor is immediately playable
-        loadDemoWorkspace();
+        if (storedBlob && storedTelemetry) {
+          setupLoadedRecording(storedBlob, storedTelemetry);
+        }
+      } catch (err) {
+        console.warn('[SmoothStudio] Failed to load stored recording:', err);
       }
     }
     loadInitial();

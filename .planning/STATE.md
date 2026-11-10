@@ -26,3 +26,12 @@
   - Unified `handleStopLiveRecording` across UI, native bar, and popup triggers
   - Resolved Chrome WebM duration `Infinity` / `NaN` timeline freeze bug with measured duration fallback
   - Wrapped audio/silence analysis in top-level `try/catch` with fallback to activity gaps
+- [x] Phase 8: Autonomous Live Testing & Extension Verification Engine:
+  - CDP-based Playwright test orchestrator launching Chrome with `--load-extension`
+  - Automated verification of MV3 Service Worker registration, heartbeat PING, and message routing
+  - Injected DOM tracker and Privacy Redactor audit on live target page (email, revenue, API key blurring)
+  - Popup UI launcher inspection and active control validation
+  - Editor Studio 1920x1080 canvas mounting and 60 FPS spring physics camera playback
+  - Flight Doctor modal automated test suite passing all 5 subsystems (WebCodecs, Web Audio, OPFS, Worker, Canvas)
+  - Multi-asset export verification (SOP Markdown Guide, Interactive HTML Widget)
+  - 14/14 automated checks passing cleanly with zero errors in ~10s via `npm run test:live`

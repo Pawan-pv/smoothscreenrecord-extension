@@ -93,7 +93,14 @@ export function CanvasPreview({
       canvas.height = targetH;
     }
 
-    if (!video) return;
+    if (!video) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = preset.gradientColors?.[0] || '#0F1117';
+        ctx.fillRect(0, 0, targetW, targetH);
+      }
+      return;
+    }
 
     // Compute continuous, buttery-smooth cinematic camera framing and cursor tracking
     const cursor = cursorEngine.getCursorAt(currentTimeMs);

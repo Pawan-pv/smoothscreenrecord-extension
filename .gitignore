@@ -6,3 +6,4 @@ dist/
 tests/run-audit.mjs
 tests/artifacts/
 coverage/
+test-results/

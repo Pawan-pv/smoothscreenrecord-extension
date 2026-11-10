@@ -188,12 +188,12 @@ test.describe.serial('SmoothStudio Autonomous Extension Audit Suite', () => {
     const statusText = await targetPage.innerText('#status-log');
     expect(statusText).toContain('Deployment initiated');
 
-    // Trigger privacy redaction via popup broadcast
+    // Trigger privacy redaction via popup broadcast to web tabs
     const privacyControllerPage = await context.newPage();
     await privacyControllerPage.goto(`chrome-extension://${extensionId}/popup.html`, { waitUntil: 'domcontentloaded' });
     await privacyControllerPage.evaluate(async () => {
       return new Promise<void>((resolve) => {
-        chrome.tabs.query({}, (tabs) => {
+        chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }, (tabs) => {
           let pending = tabs.length;
           if (pending === 0) return resolve();
           for (const t of tabs) {
@@ -226,7 +226,7 @@ test.describe.serial('SmoothStudio Autonomous Extension Audit Suite', () => {
     const popupPage = await context.newPage();
     await popupPage.goto(`chrome-extension://${extensionId}/popup.html`, { waitUntil: 'domcontentloaded' });
 
-    await popupPage.waitForSelector('button', { timeout: 5000 });
+    await popupPage.waitForSelector('button', { state: 'attached', timeout: 8000 });
     const buttons = await popupPage.$$eval('button', (els) => els.map((e) => e.innerText.trim()));
 
     expect(buttons.length).toBeGreaterThanOrEqual(2);

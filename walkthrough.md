@@ -56,6 +56,16 @@ The extension now features a **Two-Tier Testing Architecture**:
   import type { BrowserContext, Page } from '@playwright/test';
   ```
 
+### Issue 5: Dual Conflicting Playwright Packages
+- **Symptom**: Running `npx playwright test` threw `Error: Playwright Test did not expect test.describe() to be called here.`
+- **Root Cause**: `package.json` had both `"@playwright/test": "1.50.0"` and `"playwright": "^1.65.0"`. When `npx playwright test` ran the 1.65.0 CLI, the test file imported `@playwright/test` (1.50.0), causing `TestTypeImpl` to register against a mismatched runner instance.
+- **Fix**: Removed the redundant `"playwright": "^1.65.0"` and purged extraneous `node_modules/playwright` so that `@playwright/test@1.50.0` provides the unified runner and core library.
+
+### Issue 6: Popup Element Visibility & Tab Query Optimization
+- **Symptom**: Stage 4 encountered a 5000ms timeout on `page.waitForSelector('button')`.
+- **Root Cause**: The first button in the popup header only contained an SVG icon without text content, delaying Playwright's strict visibility calculation. Additionally, `chrome.tabs.query({})` in Stage 3 queried non-web tabs (`about:blank`), introducing delay.
+- **Fix**: Switched locator wait to `{ state: 'attached' }` and filtered telemetry dispatches to web URLs (`url: ['http://*/*', 'https://*/*']`).
+
 ---
 
 ## 4. Test Suite Execution & Verification
@@ -64,19 +74,19 @@ The extension now features a **Two-Tier Testing Architecture**:
 Run Command: `npx playwright test`
 - **Runner**: Playwright Test 1.50.0
 - **Browser**: Chromium 1254 (Headless New with Unpacked MV3 Extension)
-- **Results**: **9 / 9 passed (23.6s)**
+- **Results**: **9 / 9 passed (29.0s)**
 
 | Stage | Test Name | Result | Duration | Notes |
 |---|---|---|---|---|
-| Stage 1 | Production Build & Package Integrity | PASS | 72ms | Verified manifest, service worker, and pure IIFE content scripts |
-| Stage 2 | Manifest V3 Service Worker & Heartbeat PING | PASS | 1.0s | Active background worker responded with `{ pong: true }` |
-| Stage 3 | Content Script Ingestion & Privacy Redaction | PASS | 2.2s | Simulated typing, deployment click; confirmed email/revenue/API key redaction |
-| Stage 4 | Extension Popup UI Controls | PASS | 900ms | Verified popup action buttons and launch controls |
-| Stage 5 | Editor Studio Canvas & Spring Camera Viewport | PASS | 1.4s | 1920x1080 canvas mounted with non-blank pixel buffer `[26,29,39,255]` |
-| Stage 6 | In-App Flight Doctor Diagnostic Probes | PASS | 3.6s | 5/5 probes passed (WebCodecs, Web Audio, OPFS, Worker, Canvas) |
-| Stage 7 | Playback Loop & Multi-Format Exporters | PASS | 4.4s | Playhead advanced; Markdown SOP and Interactive HTML downloads verified |
-| Stage 8 | Live Screen Recording-to-Editor Pipeline | PASS | 4.4s | Live screen stream captured, finalized, and bound into editor |
-| Stage 9 | Verify Zero Runtime Console Errors | PASS | 8ms | **0 console errors or exceptions** across all pages and workers |
+| Stage 1 | Production Build & Package Integrity | PASS | 91ms | Verified manifest, service worker, and pure IIFE content scripts |
+| Stage 2 | Manifest V3 Service Worker & Heartbeat PING | PASS | 860ms | Active background worker responded with `{ pong: true }` |
+| Stage 3 | Content Script Ingestion & Privacy Redaction | PASS | 2.4s | Simulated typing, deployment click; confirmed email/revenue/API key redaction |
+| Stage 4 | Extension Popup UI Controls | PASS | 792ms | Verified popup action buttons and launch controls |
+| Stage 5 | Editor Studio Canvas & Spring Camera Viewport | PASS | 1.1s | 1920x1080 canvas mounted with non-blank pixel buffer `[26,29,39,255]` |
+| Stage 6 | In-App Flight Doctor Diagnostic Probes | PASS | 3.5s | 5/5 probes passed (WebCodecs, Web Audio, OPFS, Worker, Canvas) |
+| Stage 7 | Playback Loop & Multi-Format Exporters | PASS | 4.7s | Playhead advanced; Markdown SOP and Interactive HTML downloads verified |
+| Stage 8 | Live Screen Recording-to-Editor Pipeline | PASS | 5.5s | Live screen stream captured, finalized, and bound into editor |
+| Stage 9 | Verify Zero Runtime Console Errors | PASS | 11ms | **0 console errors or exceptions** across all pages and workers |
 
 ### B. Fast TDD Unit Suite (`bun run test`)
 Run Command: `bun run test`

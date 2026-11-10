@@ -41,7 +41,9 @@ import {
 
 export function EditorStudio() {
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
-  const videoUrlRef = useRef<string | null>(null);
+  const prevBlobUrlRef = useRef<string | null>(null);
+  const currentBlobUrlRef = useRef<string | null>(null);
+  const latestTelemetryRef = useRef<TelemetryData | null>(null);
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | HTMLCanvasElement | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
   const [durationMs, setDurationMs] = useState<number>(10000);
@@ -113,7 +115,7 @@ export function EditorStudio() {
   const firedSfxRef = useRef<Set<string>>(new Set());
   const currentTimeRef = useRef<number>(0);
   const demoRendererRef = useRef<((timeMs: number) => void) | null>(null);
-  const handleStopLiveRecordingRef = useRef<((passedTelemetry?: TelemetryData | null) => Promise<void>) | null>(null);
+  const handleStopLiveRecordingRef = useRef<((passedTelemetry?: TelemetryData | null, passedBlob?: Blob | null) => Promise<void>) | null>(null);
   const isStoppingRef = useRef<boolean>(false);
   const telemetryReceivedRef = useRef<boolean>(false);
 
@@ -135,6 +137,7 @@ export function EditorStudio() {
 
       const messageListener = (msg: any) => {
         if (msg.type === 'STUDIO_STOP_CAPTURE') {
+          console.log('[SmoothStudio] Received STUDIO_STOP_CAPTURE message from service worker:', msg.telemetry);
           handleStopLiveRecordingRef.current?.(msg.telemetry);
         }
       };
@@ -172,9 +175,19 @@ export function EditorStudio() {
     };
   }, [showToast]);
 
+  // Safe blob URL cleanup on window unload (never revoke active blob on React component re-renders)
   useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (currentBlobUrlRef.current) {
+        URL.revokeObjectURL(currentBlobUrlRef.current);
+      }
+      if (prevBlobUrlRef.current) {
+        URL.revokeObjectURL(prevBlobUrlRef.current);
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
     return () => {
-      if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, []);
 
@@ -283,50 +296,94 @@ export function EditorStudio() {
     return seeded.sort((a, b) => a.startTime - b.startTime);
   };
 
-  const setupLoadedRecording = (blob: Blob, data: TelemetryData) => {
+  const setupLoadedRecording = (blob: Blob, data: TelemetryData, measuredDurationMs?: number) => {
     firedSfxRef.current.clear();
     setVideoBlob(blob);
     setTelemetry(data);
-    const dur = data.metadata.durationMs || 10000;
-    setDurationMs(dur);
 
-    if (videoUrlRef.current) {
-      URL.revokeObjectURL(videoUrlRef.current);
-      videoUrlRef.current = null;
+    // Compute safe, finite duration fallback
+    const safeDuration = (measuredDurationMs && measuredDurationMs > 0)
+      ? measuredDurationMs
+      : (data.metadata?.durationMs && data.metadata.durationMs > 0 ? data.metadata.durationMs : 10000);
+    setDurationMs(safeDuration);
+
+    // Revoke previous object URL if any, preserving the currently active one
+    const newObjectUrl = URL.createObjectURL(blob);
+    if (prevBlobUrlRef.current && prevBlobUrlRef.current !== newObjectUrl) {
+      URL.revokeObjectURL(prevBlobUrlRef.current);
     }
+    prevBlobUrlRef.current = currentBlobUrlRef.current;
+    currentBlobUrlRef.current = newObjectUrl;
 
     const video = document.createElement('video');
-    const objectUrl = URL.createObjectURL(blob);
-    videoUrlRef.current = objectUrl;
-    video.src = objectUrl;
+    video.src = newObjectUrl;
     video.muted = true;
     video.playsInline = true;
+    video.preload = 'auto';
+
     video.onloadedmetadata = () => {
+      let resolvedDur = safeDuration;
+      // Guard against Chrome MediaRecorder WebM bug where video.duration === Infinity or NaN
+      if (Number.isFinite(video.duration) && video.duration > 0) {
+        resolvedDur = Math.round(video.duration * 1000);
+      } else {
+        // Chrome WebM duration bug workaround: seek near end and reset to 0 to force duration calculation
+        try {
+          video.currentTime = 1e101;
+          video.ontimeupdate = () => {
+            video.ontimeupdate = null;
+            video.currentTime = 0;
+          };
+        } catch {}
+      }
+      console.log('[SmoothStudio] Video element metadata loaded. Duration:', resolvedDur, 'Dimensions:', video.videoWidth, 'x', video.videoHeight);
+      setDurationMs(resolvedDur);
       setVideoElement(video);
     };
 
-    cursorEngineRef.current.setData(data.mousePoints, data.clicks);
+    video.onerror = (err) => {
+      console.error('[SmoothStudio] Video element failed to load recording blob URL:', newObjectUrl, err);
+      showToast({
+        type: 'error',
+        title: 'Video Stream Error',
+        message: 'Could not decode recorded WebM video stream in browser.'
+      });
+    };
+
+    // Fallback: if onloadedmetadata hasn't fired after 250ms, ensure videoElement is set
+    setTimeout(() => {
+      setVideoElement((curr) => curr || video);
+    }, 300);
+
+    cursorEngineRef.current.setData(data.mousePoints || [], data.clicks || []);
 
     // Auto-generate smart zoom pills based on DOM bounding boxes & clicks
     const autoPills = generateAutoZoomPills(
-      data.clicks,
-      data.inputEvents,
-      dur,
-      data.metadata.width,
-      data.metadata.height
+      data.clicks || [],
+      data.inputEvents || [],
+      safeDuration,
+      data.metadata?.width || 1920,
+      data.metadata?.height || 1080
     );
     setPills(autoPills);
 
     if (data.captions && data.captions.length > 0) {
       setCaptions(data.captions);
     } else {
-      setCaptions(seedCaptionsFromTelemetry(data, dur));
+      setCaptions(seedCaptionsFromTelemetry(data, safeDuration));
     }
 
-    // Analyze silences
-    audioProcessorRef.current
-      .analyzeSilences(blob, data.clicks, data.keystrokes, -42, 1200, dur)
-      .then((detected) => setSilences(detected));
+    // Analyze silences safely wrapped in try/catch
+    try {
+      audioProcessorRef.current
+        .analyzeSilences(blob, data.clicks || [], data.keystrokes || [], -42, 1200, safeDuration)
+        .then((detected) => setSilences(detected))
+        .catch((err) => {
+          console.warn('[SmoothStudio] Silence analysis error caught in setupLoadedRecording:', err);
+        });
+    } catch (err) {
+      console.warn('[SmoothStudio] Audio processor initiation error caught:', err);
+    }
   };
 
   // Synthesize a high-res demo recording with mock DOM events and video
@@ -337,9 +394,13 @@ export function EditorStudio() {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     }
-    if (videoUrlRef.current) {
-      URL.revokeObjectURL(videoUrlRef.current);
-      videoUrlRef.current = null;
+    if (prevBlobUrlRef.current) {
+      URL.revokeObjectURL(prevBlobUrlRef.current);
+      prevBlobUrlRef.current = null;
+    }
+    if (currentBlobUrlRef.current) {
+      URL.revokeObjectURL(currentBlobUrlRef.current);
+      currentBlobUrlRef.current = null;
     }
 
     const demoCanvas = document.createElement('canvas');
@@ -593,6 +654,7 @@ export function EditorStudio() {
       const dt = now - lastTimeRef.current;
       lastTimeRef.current = now;
 
+      const safeDur = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000;
       let next = currentTimeRef.current + dt;
 
       if (autoCutSilences) {
@@ -603,7 +665,7 @@ export function EditorStudio() {
           // Never skip across the Outro CTA window: clamp the jump so the final
           // 1.5s always plays in full when the outro card is enabled.
           const clampEnd = showOutroCard
-            ? Math.min(activeSilence.endTime, Math.max(activeSilence.startTime, durationMs - 1500))
+            ? Math.min(activeSilence.endTime, Math.max(activeSilence.startTime, safeDur - 1500))
             : activeSilence.endTime;
           if (clampEnd > next) {
             next = clampEnd;
@@ -611,7 +673,7 @@ export function EditorStudio() {
         }
       }
 
-      if (next >= durationMs) {
+      if (next >= safeDur) {
         setIsPlaying(false);
         currentTimeRef.current = 0;
         setCurrentTimeMs(0);
@@ -725,10 +787,11 @@ export function EditorStudio() {
       await captureEngineRef.current.start({
         includeMic: true,
         frameRate: 60,
-        onStop: () => {
+        onStop: (stoppedBlob) => {
+          console.log('[SmoothStudio] captureEngine onStop triggered with blob size:', stoppedBlob?.size);
           setIsRecordingLive(false);
           if (!isStoppingRef.current) {
-            void handleStopLiveRecordingRef.current?.();
+            void handleStopLiveRecordingRef.current?.(null, stoppedBlob);
           }
         }
       });
@@ -757,86 +820,85 @@ export function EditorStudio() {
     }
   };
 
-  const handleStopLiveRecording = async (passedTelemetry?: TelemetryData | null) => {
-    // 1. If already stopping and no new telemetry provided, drop duplicate calls
-    if (isStoppingRef.current && !passedTelemetry) return;
-
-    // 2. If telemetry arrives after the media stream was already stopped, apply it instead of dropping
+  const handleStopLiveRecording = async (passedTelemetry?: TelemetryData | null, passedBlob?: Blob | null) => {
     if (passedTelemetry) {
-      telemetryReceivedRef.current = true;
-      const blob = await getRecordingBlob();
-      if (blob && !videoBlob) {
-        setupLoadedRecording(blob, passedTelemetry);
-        return;
-      }
-
-      setTelemetry(passedTelemetry);
-      cursorEngineRef.current.setData(passedTelemetry.mousePoints || [], passedTelemetry.clicks || []);
-      const dur = passedTelemetry.metadata?.durationMs || durationMs;
-      setDurationMs(dur);
-
-      const autoPills = generateAutoZoomPills(
-        passedTelemetry.clicks || [],
-        passedTelemetry.inputEvents || [],
-        dur,
-        passedTelemetry.metadata?.width || 1920,
-        passedTelemetry.metadata?.height || 1080
-      );
-      setPills(autoPills);
-
-      if (passedTelemetry.captions && passedTelemetry.captions.length > 0) {
-        setCaptions(passedTelemetry.captions);
-      }
-
-      if (blob) {
-        audioProcessorRef.current
-          .analyzeSilences(blob, passedTelemetry.clicks || [], passedTelemetry.keystrokes || [])
-          .then((detected) => setSilences(detected))
-          .catch(() => {});
-      }
-      return;
+      latestTelemetryRef.current = passedTelemetry;
     }
 
-    // 3. Stopping from UI: stop capture engine once, process blob, notify only if telemetry not received
+    // If already in-flight stopping, do not run concurrent pass
+    if (isStoppingRef.current) {
+      return;
+    }
     isStoppingRef.current = true;
-    try {
-      await captureEngineRef.current.stop();
-      setIsRecordingLive(false);
+    setIsRecordingLive(false);
 
-      const blob = await getRecordingBlob();
-      if (blob) {
-        const realTelemetry = await loadTelemetry();
-        if (realTelemetry && realTelemetry.mousePoints && realTelemetry.mousePoints.length > 0) {
-          telemetryReceivedRef.current = true;
-          console.log('[SmoothStudio] Loaded live recording with DOM telemetry:', realTelemetry);
-          setupLoadedRecording(blob, realTelemetry);
-        } else {
-          const actualDuration = Math.max(3000, Date.now() - (realTelemetry?.metadata?.startTime || Date.now() - 10000));
-          const fallbackTelemetry: TelemetryData = {
+    try {
+      // 1. Ensure capture engine stops and gives us the finalized blob
+      let blob = passedBlob || (await captureEngineRef.current.stop());
+      if (!blob) {
+        blob = captureEngineRef.current.getLastBlob() || (await getRecordingBlob());
+      }
+
+      // 2. Obtain telemetry: priority passedTelemetry -> latestTelemetryRef -> loadTelemetry() -> service worker query
+      let tel = latestTelemetryRef.current || (await loadTelemetry());
+      if (!tel && typeof chrome !== 'undefined' && chrome.runtime) {
+        try {
+          await new Promise<void>((resolve) => {
+            chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' }, () => resolve());
+            setTimeout(resolve, 600);
+          });
+          tel = latestTelemetryRef.current || (await loadTelemetry());
+        } catch {}
+      }
+
+      const measuredDur = captureEngineRef.current.getDurationMs() || 10000;
+
+      // 3. Prepare complete telemetry with metadata
+      const finalTelemetry: TelemetryData = (tel && tel.mousePoints && tel.mousePoints.length > 0)
+        ? tel
+        : {
             metadata: {
               id: 'live_' + Date.now(),
-              startTime: Date.now() - actualDuration,
+              startTime: Date.now() - measuredDur,
               endTime: Date.now(),
-              durationMs: actualDuration,
+              durationMs: measuredDur,
               width: window.innerWidth,
               height: window.innerHeight,
               devicePixelRatio: window.devicePixelRatio || 1,
-              title: 'Screen Recording'
+              title: tel?.metadata?.title || 'Screen Recording'
             },
-            mousePoints: [],
-            clicks: [],
-            keystrokes: [],
-            inputEvents: []
+            mousePoints: tel?.mousePoints || [],
+            clicks: tel?.clicks || [],
+            keystrokes: tel?.keystrokes || [],
+            inputEvents: tel?.inputEvents || []
           };
-          setupLoadedRecording(blob, fallbackTelemetry);
-        }
-      }
 
-      if (!telemetryReceivedRef.current && typeof chrome !== 'undefined' && chrome.runtime) {
-        chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' }).catch(() => {});
+      if (blob && blob.size > 0) {
+        console.log('[SmoothStudio] Recording stopped successfully. Finalizing editor with blob size:', blob.size, 'duration:', measuredDur);
+        setupLoadedRecording(blob, finalTelemetry, measuredDur);
+        showToast({
+          type: 'success',
+          title: 'Recording Loaded',
+          message: `Screen recording loaded with smart zoom pills (${(measuredDur / 1000).toFixed(1)}s).`
+        });
+      } else {
+        console.warn('[SmoothStudio] Finished recording but no video frames were captured.');
+        showToast({
+          type: 'warning',
+          title: 'Empty Recording',
+          message: 'The screen recording stream produced zero bytes.'
+        });
       }
+    } catch (err: any) {
+      console.error('[SmoothStudio] Error during stop processing:', err);
+      showToast({
+        type: 'error',
+        title: 'Stop Recording Failed',
+        message: err?.message || 'Error loading recording into editor.'
+      });
     } finally {
       isStoppingRef.current = false;
+      latestTelemetryRef.current = null;
     }
   };
 

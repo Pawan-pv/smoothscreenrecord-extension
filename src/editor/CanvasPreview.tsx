@@ -145,7 +145,7 @@ export function CanvasPreview({
       showIntroCard,
       introHeadline,
       introSubheadline,
-      durationMs,
+      durationMs: Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000,
       showOutroCard,
       outroHeadline,
       outroCtaText

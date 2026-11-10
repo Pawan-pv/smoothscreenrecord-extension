@@ -1,11 +1,10 @@
-import { initStorage, appendVideoChunk, finalizeVideo, saveTelemetry } from './opfs-storage';
-import { TelemetryData, ClickEvent } from '../types/telemetry';
+import { initStorage, appendVideoChunk, finalizeVideo, getRecordingBlob } from './opfs-storage';
 
 export interface RecorderOptions {
   includeMic: boolean;
   frameRate?: number;
   onChunkSaved?: (chunkIndex: number) => void;
-  onStop?: () => void;
+  onStop?: (blob: Blob | null) => void;
 }
 
 export class ScreenCaptureEngine {
@@ -20,7 +19,10 @@ export class ScreenCaptureEngine {
   private frameDiffInterval: number | null = null;
   private snapshots: { timestamp: number; dataUrl: string }[] = [];
   private recordingStartTime = 0;
-  private onStopHandler: (() => void) | null = null;
+  private recordingDurationMs = 0;
+  private onStopHandler: ((blob: Blob | null) => void) | null = null;
+  private lastBlob: Blob | null = null;
+  private stopPromise: Promise<Blob | null> | null = null;
 
   constructor() {
     this.frameDiffCanvas = document.createElement('canvas');
@@ -33,6 +35,9 @@ export class ScreenCaptureEngine {
     await initStorage();
     this.chunkCount = 0;
     this.snapshots = [];
+    this.lastBlob = null;
+    this.stopPromise = null;
+    this.recordingDurationMs = 0;
     this.recordingStartTime = performance.now();
     this.onStopHandler = options.onStop || null;
 
@@ -91,13 +96,16 @@ export class ScreenCaptureEngine {
       }
     };
 
-    // If user stops sharing via browser chrome bar
+    // If user stops sharing via browser chrome native bar
     const videoTrack = this.mediaStream.getVideoTracks()[0];
-    videoTrack.onended = () => {
-      if (this.isRecording) {
-        this.stop().catch((e) => console.error('[SmoothStudio] stop failed:', e));
-      }
-    };
+    if (videoTrack) {
+      videoTrack.onended = () => {
+        if (this.isRecording) {
+          console.log('[SmoothStudio CaptureEngine] VideoTrack ended by user. Finalizing stop...');
+          this.stop().catch((e) => console.error('[SmoothStudio] stop failed on videoTrack ended:', e));
+        }
+      };
+    }
 
     // Start streaming chunks to disk every 1000ms
     this.mediaRecorder.start(1000);
@@ -169,9 +177,23 @@ export class ScreenCaptureEngine {
     return this.snapshots;
   }
 
-  public async stop(): Promise<void> {
-    if (!this.isRecording) return;
+  public async stop(): Promise<Blob | null> {
+    // If a stop operation is already in-flight, return the same promise
+    if (this.stopPromise) {
+      return this.stopPromise;
+    }
+    // If already stopped, return the cached finalized blob
+    if (!this.isRecording) {
+      return this.lastBlob;
+    }
+
+    this.stopPromise = this._executeStop();
+    return this.stopPromise;
+  }
+
+  private async _executeStop(): Promise<Blob | null> {
     this.isRecording = false;
+    this.recordingDurationMs = Math.max(500, Math.round(performance.now() - this.recordingStartTime));
 
     if (this.frameDiffInterval) {
       clearInterval(this.frameDiffInterval);
@@ -182,24 +204,46 @@ export class ScreenCaptureEngine {
       await new Promise<void>((resolve) => {
         if (!this.mediaRecorder) return resolve();
         this.mediaRecorder.onstop = () => resolve();
-        this.mediaRecorder.stop();
+        try {
+          this.mediaRecorder.stop();
+        } catch {
+          resolve();
+        }
       });
     }
 
-    // Stop all media tracks
-    this.mediaStream?.getTracks().forEach((track) => track.stop());
-    this.audioStream?.getTracks().forEach((track) => track.stop());
+    // Stop all media tracks safely
+    this.mediaStream?.getTracks().forEach((track) => {
+      try { track.stop(); } catch {}
+    });
+    this.audioStream?.getTracks().forEach((track) => {
+      try { track.stop(); } catch {}
+    });
 
     await finalizeVideo();
-    console.log('[SmoothStudio CaptureEngine] Recording finished and saved.');
+    console.log(`[SmoothStudio CaptureEngine] Recording finished in ${this.recordingDurationMs}ms and saved.`);
+
+    const blob = await getRecordingBlob();
+    this.lastBlob = blob;
 
     if (this.onStopHandler) {
       try {
-        this.onStopHandler();
+        this.onStopHandler(blob);
       } catch (err) {
         console.error('[SmoothStudio] onStopHandler error:', err);
       }
     }
+
+    this.stopPromise = null;
+    return blob;
+  }
+
+  public getLastBlob(): Blob | null {
+    return this.lastBlob;
+  }
+
+  public getDurationMs(): number {
+    return this.recordingDurationMs;
   }
 
   public getActiveStream(): MediaStream | null {

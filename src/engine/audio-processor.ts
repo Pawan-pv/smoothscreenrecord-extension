@@ -23,85 +23,98 @@ export class AudioProcessor {
     minSilenceDurationMs = 1200,
     videoDurationMs = 10000
   ): Promise<SilenceSegment[]> {
-    const arrayBuffer = await videoBlob.arrayBuffer();
-    const ctx = this.getAudioContext();
-
-    let audioBuffer: AudioBuffer;
     try {
-      audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
-    } catch {
-      console.warn('[SmoothStudio Audio] Could not decode audio track, falling back to activity gap silence detection.');
+      if (!videoBlob || videoBlob.size === 0) {
+        return this.detectActivityGapSilences(clicks, keystrokes, videoDurationMs, minSilenceDurationMs);
+      }
+
+      const arrayBuffer = await videoBlob.arrayBuffer();
+      if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+        return this.detectActivityGapSilences(clicks, keystrokes, videoDurationMs, minSilenceDurationMs);
+      }
+
+      const ctx = this.getAudioContext();
+
+      let audioBuffer: AudioBuffer;
+      try {
+        audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+      } catch {
+        console.warn('[SmoothStudio Audio] Could not decode audio track, falling back to activity gap silence detection.');
+        return this.detectActivityGapSilences(clicks, keystrokes, videoDurationMs, minSilenceDurationMs);
+      }
+
+      const channelData = audioBuffer.getChannelData(0); // primary channel
+      const sampleRate = audioBuffer.sampleRate;
+      const windowSize = Math.floor(sampleRate * 0.05); // 50ms window
+      const totalWindows = Math.floor(channelData.length / windowSize);
+
+      const silences: SilenceSegment[] = [];
+      let silenceStartMs: number | null = null;
+
+      for (let w = 0; w < totalWindows; w++) {
+        const startIdx = w * windowSize;
+        let sumSquares = 0;
+
+        for (let i = 0; i < windowSize; i++) {
+          const val = channelData[startIdx + i];
+          sumSquares += val * val;
+        }
+
+        const rms = Math.sqrt(sumSquares / windowSize);
+        const db = rms > 0.00001 ? 20 * Math.log10(rms) : -100;
+        const currentMs = (w * windowSize * 1000) / sampleRate;
+
+        if (db < dbThreshold) {
+          if (silenceStartMs === null) {
+            silenceStartMs = currentMs;
+          }
+        } else {
+          if (silenceStartMs !== null) {
+            const duration = currentMs - silenceStartMs;
+            if (duration >= minSilenceDurationMs) {
+              // Check if user was clicking or typing during this pause
+              const hasActivity =
+                clicks.some((c) => c.t >= silenceStartMs! && c.t <= currentMs) ||
+                keystrokes.some((k) => k.t >= silenceStartMs! && k.t <= currentMs);
+
+              if (!hasActivity) {
+                silences.push({
+                  id: 'silence_' + Math.round(silenceStartMs),
+                  startTime: Math.round(silenceStartMs),
+                  endTime: Math.round(currentMs),
+                  duration: Math.round(duration),
+                  markedForCut: true
+                });
+              }
+            }
+            silenceStartMs = null;
+          }
+        }
+      }
+
+      // Flush trailing silence
+      if (silenceStartMs !== null) {
+        const duration = (audioBuffer.duration * 1000) - silenceStartMs;
+        if (duration >= minSilenceDurationMs) {
+          silences.push({
+            id: 'silence_' + Math.round(silenceStartMs),
+            startTime: Math.round(silenceStartMs),
+            endTime: Math.round(audioBuffer.duration * 1000),
+            duration: Math.round(duration),
+            markedForCut: true
+          });
+        }
+      }
+
+      if (silences.length === 0) {
+        return this.detectActivityGapSilences(clicks, keystrokes, Math.round(audioBuffer.duration * 1000), minSilenceDurationMs);
+      }
+
+      return silences;
+    } catch (err) {
+      console.warn('[SmoothStudio Audio] Silence analysis exception caught, falling back to activity gaps:', err);
       return this.detectActivityGapSilences(clicks, keystrokes, videoDurationMs, minSilenceDurationMs);
     }
-
-    const channelData = audioBuffer.getChannelData(0); // primary channel
-    const sampleRate = audioBuffer.sampleRate;
-    const windowSize = Math.floor(sampleRate * 0.05); // 50ms window
-    const totalWindows = Math.floor(channelData.length / windowSize);
-
-    const silences: SilenceSegment[] = [];
-    let silenceStartMs: number | null = null;
-
-    for (let w = 0; w < totalWindows; w++) {
-      const startIdx = w * windowSize;
-      let sumSquares = 0;
-
-      for (let i = 0; i < windowSize; i++) {
-        const val = channelData[startIdx + i];
-        sumSquares += val * val;
-      }
-
-      const rms = Math.sqrt(sumSquares / windowSize);
-      const db = rms > 0.00001 ? 20 * Math.log10(rms) : -100;
-      const currentMs = (w * windowSize * 1000) / sampleRate;
-
-      if (db < dbThreshold) {
-        if (silenceStartMs === null) {
-          silenceStartMs = currentMs;
-        }
-      } else {
-        if (silenceStartMs !== null) {
-          const duration = currentMs - silenceStartMs;
-          if (duration >= minSilenceDurationMs) {
-            // Check if user was clicking or typing during this pause
-            const hasActivity =
-              clicks.some((c) => c.t >= silenceStartMs! && c.t <= currentMs) ||
-              keystrokes.some((k) => k.t >= silenceStartMs! && k.t <= currentMs);
-
-            if (!hasActivity) {
-              silences.push({
-                id: 'silence_' + Math.round(silenceStartMs),
-                startTime: Math.round(silenceStartMs),
-                endTime: Math.round(currentMs),
-                duration: Math.round(duration),
-                markedForCut: true
-              });
-            }
-          }
-          silenceStartMs = null;
-        }
-      }
-    }
-
-    // Flush trailing silence
-    if (silenceStartMs !== null) {
-      const duration = (audioBuffer.duration * 1000) - silenceStartMs;
-      if (duration >= minSilenceDurationMs) {
-        silences.push({
-          id: 'silence_' + Math.round(silenceStartMs),
-          startTime: Math.round(silenceStartMs),
-          endTime: Math.round(audioBuffer.duration * 1000),
-          duration: Math.round(duration),
-          markedForCut: true
-        });
-      }
-    }
-
-    if (silences.length === 0) {
-      return this.detectActivityGapSilences(clicks, keystrokes, Math.round(audioBuffer.duration * 1000), minSilenceDurationMs);
-    }
-
-    return silences;
   }
 
   // Activity gap fallback when audio track is silent, unrecorded, or missing

@@ -64,14 +64,22 @@
   - Verified with `bun run build` and `bun run test:live` scoring 16/16 tests passing in 26.30s with zero runtime console errors
 - [x] Phase 11: Two-Loop TDD & Automated Hot-Reloading Infrastructure:
   - Fast TDD Inner Loop: Installed Vitest 5.1 + HappyDOM + @testing-library/react with custom type-safe Chrome API mock harness (`tests/mocks/chrome-mock.ts`)
-  - 33/33 unit tests passing in ~320ms across 6 suites:
-    * `spring-physics.test.ts` (11 tests, Euler integration, settling threshold, quintic smootherstep camera framing)
+  - 67/67 unit tests passing across 10 suites:
+    * `auto-zoom.test.ts` (10 tests, click coordinate bounds, dynamic viewport scaling, indicator bounding box, anticipatory pre-framing)
+    * `cursor-smoother.test.ts` (7 tests, Catmull-Rom inertial gliding, click snapping, directional dampening)
+    * `frame-composer.test.ts` (10 tests, multi-aspect ratio 16:9/9:16/1:1, card drop shadows, canvas padding constraints)
+    * `recorder-orchestrator.test.ts` (6 tests, session lifecycle, telemetry coordination, error boundary recovery)
+    * `spring-physics.test.ts` (7 tests, kinematic accumulation, damping precision, harmonic settling)
     * `cursor-spline.test.ts` (5 tests, Catmull-Rom smoothing, instantaneous velocity calculation, telemetry clamping)
-    * `privacy-redactor.test.ts` (5 tests, PII regex detection, TreeWalker DOM node replacements, password field blurring)
+    * `privacy-redactor.test.ts` (7 tests, PII regex detection, TreeWalker DOM node replacements, password field blurring)
     * `diagnostic-channel.test.ts` (4 tests, singleton event bus, active degradation caching, mode swapping)
     * `sfx-synthesizer.test.ts` (4 tests, procedural Web Audio initialization, safety fallbacks)
-    * `service-worker.test.ts` (4 tests, MV3 session storage persistence, keepalive port ping-pong, message routing)
+    * `service-worker.test.ts` (7 tests, MV3 session storage persistence, keepalive port ping-pong, message routing)
+  - Messaging Hardening:
+    * Resolved Chrome MV3 `Unchecked runtime.lastError: Could not establish connection. Receiving end does not exist`
+    * Added HTTP/HTTPS protocol validation before broadcasting telemetry commands to tabs
+    * Wrapped all `chrome.runtime.sendMessage` and `chrome.tabs.sendMessage` callbacks in `EditorStudio.tsx` and `dom-tracker.ts` with error-draining checks (`void chrome.runtime?.lastError`)
   - Dual-Mode Hot-Reloading Loop:
     * Mode A (Vite Web HMR): conditional dev mock environment (`src/engine/dev-environment.ts`) allowing instant sub-50ms React Fast Refresh for `editor.html` and `popup.html` at `http://localhost:5173`
     * Mode B (Unpacked Extension Auto-Reloader): Vite plugin (`plugins/vite-plugin-extension-reloader.ts`) broadcasting on ws://localhost:8989 with live IIFE compilation on content script save and auto `chrome.runtime.reload()`
-  - Full Verification: 33/33 Vitest unit tests passing + zero TypeScript compilation errors (`tsc --noEmit`) + production build passing + 16/16 Playwright live audit checks passing in 33.97s
+  - Full Verification: 67/67 Vitest unit tests passing + zero TypeScript compilation errors (`tsc --noEmit`) + production build passing + 16/16 Playwright live audit checks passing in 37.23s

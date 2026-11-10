@@ -74,19 +74,33 @@ The extension now features a **Two-Tier Testing Architecture**:
 Run Command: `npx playwright test`
 - **Runner**: Playwright Test 1.65.0
 - **Browser**: Chromium 1254 (Headless New with Unpacked MV3 Extension)
-- **Results**: **9 / 9 passed (1.2m)**
+- **Results**: **18 / 18 passed across 2 suites (38.4s)**
 
+#### Suite 1: Full Extension Audit (`tests/e2e/extension-audit.spec.ts`)
 | Stage | Test Name | Result | Duration | Notes |
 |---|---|---|---|---|
-| Stage 1 | Production Build & Package Integrity | PASS | 91ms | Verified manifest, service worker, and pure IIFE content scripts |
-| Stage 2 | Manifest V3 Service Worker & Heartbeat PING | PASS | 860ms | Active background worker responded with `{ pong: true }` |
-| Stage 3 | Content Script Ingestion & Privacy Redaction | PASS | 2.4s | Simulated typing, deployment click; confirmed email/revenue/API key redaction |
-| Stage 4 | Extension Popup UI Controls | PASS | 792ms | Verified popup action buttons and launch controls |
-| Stage 5 | Editor Studio Canvas & Spring Camera Viewport | PASS | 1.1s | 1920x1080 canvas mounted with non-blank pixel buffer `[26,29,39,255]` |
-| Stage 6 | In-App Flight Doctor Diagnostic Probes | PASS | 3.5s | 5/5 probes passed (WebCodecs, Web Audio, OPFS, Worker, Canvas) |
-| Stage 7 | Playback Loop & Multi-Format Exporters | PASS | 4.7s | Playhead advanced; Markdown SOP and Interactive HTML downloads verified |
-| Stage 8 | Live Screen Recording-to-Editor Pipeline | PASS | 5.5s | Live screen stream captured, finalized, and bound into editor |
-| Stage 9 | Verify Zero Runtime Console Errors | PASS | 11ms | **0 console errors or exceptions** across all pages and workers |
+| Stage 1 | Production Build & Package Integrity | PASS | 32ms | Verified manifest, service worker, and pure IIFE content scripts |
+| Stage 2 | Manifest V3 Service Worker & Heartbeat PING | PASS | 710ms | Active background worker responded with `{ pong: true }` |
+| Stage 3 | Content Script Ingestion & Privacy Redaction | PASS | 2.0s | Simulated typing, deployment click; confirmed email/revenue/API key redaction |
+| Stage 4 | Extension Popup UI Controls | PASS | 3.0s | Verified popup action buttons and launch controls |
+| Stage 5 | Editor Studio Canvas & Spring Camera Viewport | PASS | 3.1s | 1920x1080 canvas mounted with non-blank pixel buffer `[26,29,39,255]` |
+| Stage 6 | In-App Flight Doctor Diagnostic Probes | PASS | 2.6s | 5/5 probes passed (WebCodecs, Web Audio, OPFS, Worker, Canvas) |
+| Stage 7 | Playback Loop & Multi-Format Exporters | PASS | 4.5s | Playhead advanced; Markdown SOP and Interactive HTML downloads verified |
+| Stage 8 | Live Screen Recording-to-Editor Pipeline | PASS | 4.3s | Live screen stream captured, finalized, and bound into editor |
+| Stage 9 | Verify Zero Runtime Console Errors | PASS | 41ms | **0 console errors or exceptions** across all pages and workers |
+
+#### Suite 2: Popup & Service Worker Interactive Suite (`tests/e2e/popup-interactive.spec.ts`)
+| # | Test Name | Result | Duration | Notes |
+|---|---|---|---|---|
+| 1 | Startup Lifecycle & Default Schema Persistence | PASS | 3.0s | Verified default schema (`isRecording: false`) in `chrome.storage.session` |
+| 2 | Keepalive Port Ping-Pong Heartbeat | PASS | 672ms | Long-lived port connection `'smoothstudio-keepalive'` replied with `'pong'` |
+| 3 | Stream Port Disconnect Crash Recovery Marker | PASS | 995ms | Disconnecting `'smoothstudio-stream'` flushes crash marker to `storage.local` |
+| 4 | START & STOP Studio Recording State Machine | PASS | 902ms | State transitions smoothly from `isRecording: false` -> `true` -> `false` |
+| 5 | Interactive Audio & Privacy Shield Toggle Controls | PASS | 2.3s | Checked/unchecked Mic, Emails, Revenue, Keys toggles with reactive updates |
+| 6 | Interactive Element Picker Toggle | PASS | 1.3s | Toggled picker button; verified text & styling changes to active state and back |
+| 7 | Studio Workspace Navigation Links | PASS | 1.0s | Header icon and footer text button both navigate to `editor.html` |
+| 8 | Start Studio Recording Button Integration | PASS | 754ms | Verified `Start Studio Recording` launches `editor.html?record=true` |
+| 9 | Verify Zero Runtime Console Errors | PASS | 7ms | **0 console errors or unhandled exceptions** across all popup interactions |
 
 ### B. Fast TDD Unit Suite (`bun run test`)
 Run Command: `bun run test`

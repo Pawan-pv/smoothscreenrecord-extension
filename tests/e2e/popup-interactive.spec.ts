@@ -395,7 +395,69 @@ test.describe.serial('SmoothStudio Popup & Service Worker Interactive Suite', ()
     await popupPage.close().catch(() => {});
   });
 
-  test('9. Verify Zero Runtime Console Errors Across All Interactive Flows', async () => {
+  test('9. Popup UI: Stop Recording State & State Machine Transition', async () => {
+    const probePage = await context.newPage();
+    await probePage.goto(`chrome-extension://${extensionId}/popup.html`, { waitUntil: 'domcontentloaded' });
+
+    // Set service worker to recording state
+    await probePage.evaluate(async () => {
+      return new Promise<void>((resolve) => {
+        chrome.runtime.sendMessage({ type: 'START_STUDIO_RECORDING' }, () => resolve());
+      });
+    });
+
+    // Reopen popup to reflect recording state
+    await probePage.reload({ waitUntil: 'domcontentloaded' });
+    await probePage.waitForTimeout(300);
+
+    // Verify Stop button is active and visible
+    const stopBtn = probePage.locator('button:has-text("Stop Recording & Open Studio")');
+    await stopBtn.waitFor({ state: 'attached' });
+    expect(await stopBtn.isVisible()).toBe(true);
+
+    // Click Stop Recording
+    await stopBtn.click();
+    await probePage.waitForTimeout(400);
+
+    // Verify service worker state transitioned back to isRecording: false
+    const statusRes = await probePage.evaluate(async () => {
+      return new Promise<any>((resolve) => {
+        chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATUS' }, (res) => resolve(res));
+      });
+    });
+    expect(statusRes?.isRecording).toBe(false);
+
+    await probePage.close();
+  });
+
+  test('10. Real-time message passing: Popup Privacy Toggle broadcasts to live content script', async () => {
+    const targetPage = await context.newPage();
+    await targetPage.goto(`http://127.0.0.1:${FIXTURE_PORT}/test-target.html`, { waitUntil: 'domcontentloaded' });
+    await targetPage.waitForTimeout(600);
+
+    // Ensure content script is running and target text is initially unredacted
+    const originalEmail = await targetPage.innerText('#user-email');
+    expect(originalEmail).toBe('ceo@enterprise-saas.com');
+
+    // Open popup in parallel and toggle email privacy
+    const popupPage = await context.newPage();
+    await popupPage.goto(`chrome-extension://${extensionId}/popup.html`, { waitUntil: 'domcontentloaded' });
+
+    const emailCheckbox = popupPage.locator('label.flex.items-center.justify-between input[type="checkbox"]').first();
+    await emailCheckbox.uncheck({ force: true });
+    await popupPage.waitForTimeout(200);
+    await emailCheckbox.check({ force: true });
+    await popupPage.waitForTimeout(400);
+
+    // Target page DOM should be redacted via real-time message forwarding
+    const redactedEmail = await targetPage.innerText('#user-email');
+    expect(redactedEmail).toContain('•');
+
+    await popupPage.close();
+    await targetPage.close();
+  });
+
+  test('11. Verify Zero Runtime Console Errors Across All Interactive Flows', async () => {
     expect(capturedErrors, `Captured runtime console errors:\n${capturedErrors.join('\n')}`).toEqual([]);
   });
 });

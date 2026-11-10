@@ -30,19 +30,32 @@ export function PopupApp() {
     if (key === 'revenue') setBlurRevenue(val);
     if (key === 'keys') setBlurApiKeys(val);
 
+    const options = {
+      blurEmails: key === 'emails' ? val : blurEmails,
+      blurRevenue: key === 'revenue' ? val : blurRevenue,
+      blurApiKeys: key === 'keys' ? val : blurApiKeys
+    };
+
+    // Forward via service worker to broadcast to all matching web tabs
+    if (typeof chrome !== 'undefined' && chrome.runtime) {
+      chrome.runtime.sendMessage({
+        type: 'APPLY_PRIVACY_OPTIONS',
+        options
+      }, () => {
+        void chrome.runtime?.lastError;
+      });
+    }
+
+    // Also send directly to the active tab if on a web page
     if (typeof chrome !== 'undefined' && chrome.tabs) {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         const tab = tabs[0];
         if (tab?.id && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
           chrome.tabs.sendMessage(tab.id, {
             type: 'APPLY_PRIVACY_OPTIONS',
-            options: {
-              blurEmails: key === 'emails' ? val : blurEmails,
-              blurRevenue: key === 'revenue' ? val : blurRevenue,
-              blurApiKeys: key === 'keys' ? val : blurApiKeys
-            }
+            options
           }, () => {
-            if (chrome.runtime?.lastError) {}
+            void chrome.runtime?.lastError;
           });
         }
       });
@@ -53,14 +66,26 @@ export function PopupApp() {
     const nextState = !pickerActive;
     setPickerActive(nextState);
 
+    const msgType = nextState ? 'START_PICKER' : 'STOP_PICKER';
+
+    // Forward via service worker to broadcast to all matching web tabs
+    if (typeof chrome !== 'undefined' && chrome.runtime) {
+      chrome.runtime.sendMessage({
+        type: msgType
+      }, () => {
+        void chrome.runtime?.lastError;
+      });
+    }
+
+    // Also send directly to the active tab if on a web page
     if (typeof chrome !== 'undefined' && chrome.tabs) {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         const tab = tabs[0];
         if (tab?.id && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
           chrome.tabs.sendMessage(tab.id, {
-            type: nextState ? 'START_PICKER' : 'STOP_PICKER'
+            type: msgType
           }, () => {
-            if (chrome.runtime?.lastError) {}
+            void chrome.runtime?.lastError;
           });
         }
       });

@@ -23,6 +23,7 @@ export class ScreenCaptureEngine {
   private onStopHandler: ((blob: Blob | null) => void) | null = null;
   private lastBlob: Blob | null = null;
   private stopPromise: Promise<Blob | null> | null = null;
+  private pendingWrites: Promise<void>[] = [];
 
   constructor() {
     this.frameDiffCanvas = document.createElement('canvas');
@@ -52,7 +53,16 @@ export class ScreenCaptureEngine {
       audio: true
     };
 
-    this.mediaStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
+    try {
+      this.mediaStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
+    } catch (err) {
+      console.warn('[SmoothStudio] getDisplayMedia with audio failed, falling back to video only:', err);
+      this.mediaStream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          frameRate: options.frameRate || 60
+        }
+      });
+    }
 
     // Optional microphone capture
     if (options.includeMic) {
@@ -88,11 +98,14 @@ export class ScreenCaptureEngine {
       videoBitsPerSecond: 16_000_000 // 16 Mbps for high fidelity 1080p/4K
     });
 
-    this.mediaRecorder.ondataavailable = async (e) => {
+    this.pendingWrites = [];
+    this.mediaRecorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) {
         this.chunkCount++;
-        await appendVideoChunk(e.data);
-        options.onChunkSaved?.(this.chunkCount);
+        const p = appendVideoChunk(e.data).then(() => {
+          options.onChunkSaved?.(this.chunkCount);
+        });
+        this.pendingWrites.push(p);
       }
     };
 
@@ -210,6 +223,11 @@ export class ScreenCaptureEngine {
           resolve();
         }
       });
+    }
+
+    if (this.pendingWrites.length > 0) {
+      await Promise.allSettled(this.pendingWrites);
+      this.pendingWrites = [];
     }
 
     // Stop all media tracks safely

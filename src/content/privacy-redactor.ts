@@ -161,21 +161,26 @@ export const unredactSensitiveData = resetRedactions;
 export const restoreRedactions = resetRedactions;
 
 // Extension message listener
-if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage && !(window as any).__smoothstudio_privacy_listener) {
+  (window as any).__smoothstudio_privacy_listener = true;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'APPLY_PRIVACY_OPTIONS') {
       applyAutoRedaction(message.options || {});
       sendResponse({ status: 'applied' });
+      return true;
     } else if (message.type === 'START_PICKER') {
       startElementPicker();
       sendResponse({ status: 'picker_active' });
+      return true;
     } else if (message.type === 'STOP_PICKER') {
       stopElementPicker();
       sendResponse({ status: 'picker_stopped' });
+      return true;
     } else if (message.type === 'RESET_PRIVACY') {
       resetRedactions();
       sendResponse({ status: 'reset' });
+      return true;
     }
-    return true;
+    return false;
   });
 }

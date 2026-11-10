@@ -33,14 +33,20 @@ export class SpringVariable {
   }
 
   public update(dt: number): number {
+    const clampedDt = Math.min(0.064, Math.max(0.001, Number.isFinite(dt) ? dt : 0.016));
     // Semi-implicit Euler integration for critically damped spring
     const displacement = this.current - this.target;
     const springForce = -this.config.stiffness * displacement;
     const dampingForce = -this.config.damping * this.velocity;
-    const acceleration = (springForce + dampingForce) / this.config.mass;
+    const acceleration = (springForce + dampingForce) / (this.config.mass || 1.0);
 
-    this.velocity += acceleration * dt;
-    this.current += this.velocity * dt;
+    this.velocity += acceleration * clampedDt;
+    this.current += this.velocity * clampedDt;
+
+    if (!Number.isFinite(this.current) || !Number.isFinite(this.velocity)) {
+      this.current = this.target;
+      this.velocity = 0;
+    }
 
     // Settle if negligible
     if (Math.abs(displacement) < 0.0001 && Math.abs(this.velocity) < 0.0001) {
@@ -128,7 +134,7 @@ export function computeCinematicCameraState(
 
   // Ken Perlin's quintic smootherstep curve: 6t^5 - 15t^4 + 10t^3 (zero 1st & 2nd derivative)
   const smootherStep = (t: number) => {
-    const c = Math.max(0, Math.min(1, t));
+    const c = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
     return c * c * c * (c * (c * 6 - 15) + 10);
   };
 
@@ -155,8 +161,8 @@ export function computeCinematicCameraState(
   if (activePill) {
     const start = activePill.startTime;
     const end = activePill.endTime;
-    const totalPillDuration = end - start;
-    const actualTransition = Math.min(TRANSITION_MS, totalPillDuration * 0.35);
+    const totalPillDuration = Math.max(1, end - start);
+    const actualTransition = Math.max(1, Math.min(TRANSITION_MS, totalPillDuration * 0.35));
 
     // Check if next pill starts soon (within 750ms of this pill ending)
     const nextPill = activePillIndex >= 0 && activePillIndex < pills.length - 1 ? pills[activePillIndex + 1] : undefined;

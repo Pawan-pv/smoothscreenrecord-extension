@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useMemo } from 'react';
 import {
   AspectRatioType,
   VibePreset,
@@ -6,9 +6,10 @@ import {
   KeystrokeEvent,
   CaptionBlock,
   CaptionStyle,
-  CursorTheme
+  CursorTheme,
+  BackdropMatrixParams
 } from '../types/telemetry';
-import { StudioRenderer, getAspectDimensions } from '../engine/renderer';
+import { StudioRenderer, RenderFrameOptions, getAspectDimensions } from '../engine/renderer';
 import { computeCinematicCameraState, SpringCameraSolver } from '../engine/spring-physics';
 import { CursorSplineEngine } from '../engine/cursor-spline';
 import { Play, Pause, RotateCcw } from 'lucide-react';
@@ -42,6 +43,7 @@ interface CanvasPreviewProps {
   showOutroCard?: boolean;
   outroHeadline?: string;
   outroCtaText?: string;
+  backdropParams?: BackdropMatrixParams;
   onCanvasClickToAddZoom?: (normalizedX: number, normalizedY: number) => void;
 }
 
@@ -74,30 +76,56 @@ export function CanvasPreview({
   showOutroCard,
   outroHeadline,
   outroCtaText,
+  backdropParams,
   onCanvasClickToAddZoom
 }: CanvasPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<StudioRenderer>(new StudioRenderer());
   const springCameraRef = useRef<SpringCameraSolver>(new SpringCameraSolver());
   const lastTimeMsRef = useRef<number>(currentTimeMs);
-  const { width: targetWidth, height: targetHeight } = getAspectDimensions(aspectRatio, 1920);
+
+  // Memoize aspect dimensions to eliminate GC allocations per render
+  const { width: targetWidth, height: targetHeight } = useMemo(
+    () => getAspectDimensions(aspectRatio, 1920),
+    [aspectRatio]
+  );
+
+  // Pre-allocated persistent render options to completely avoid heap garbage collection thrashing at 60fps
+  const renderOptionsRef = useRef<RenderFrameOptions>({
+    canvas: null as any,
+    video: null as any,
+    currentTimeMs: 0,
+    camera: null as any,
+    cursorEngine: null as any,
+    keystrokes: [],
+    preset: null as any,
+    aspectRatio: '16:9',
+    showSpotlight: true,
+    showCursor: true,
+    showHud: true
+  });
 
   // Render preview frame whenever currentTimeMs, preset, or props change
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const { width: targetW, height: targetH } = getAspectDimensions(aspectRatio, 1920);
-    if (canvas.width !== targetW || canvas.height !== targetH) {
-      canvas.width = targetW;
-      canvas.height = targetH;
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
     }
 
     if (!video) {
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        ctx.fillStyle = preset.gradientColors?.[0] || '#0F1117';
-        ctx.fillRect(0, 0, targetW, targetH);
+        rendererRef.current.drawBackdropMatrix(
+          ctx,
+          targetWidth,
+          targetHeight,
+          preset,
+          currentTimeMs,
+          backdropParams
+        );
       }
       return;
     }
@@ -108,8 +136,8 @@ export function CanvasPreview({
       currentTimeMs,
       pills,
       cursor,
-      metadata?.width || targetW,
-      metadata?.height || targetH,
+      metadata?.width || targetWidth,
+      metadata?.height || targetHeight,
       followCursor
     );
 
@@ -122,8 +150,6 @@ export function CanvasPreview({
       solver.snapTo(targetCamera);
     } else {
       // Playing: always advance the physical spring with the clamped frame step.
-      // This keeps the camera continuous even across long silence skips (>2.2s),
-      // where the playhead jumps but the spring smoothly catches up instead of snapping.
       const stepDt = Math.min(0.048, Math.max(0.016, deltaMs / 1000));
       solver.update(stepDt);
     }
@@ -132,39 +158,44 @@ export function CanvasPreview({
 
     const activePill = pills.find((p) => currentTimeMs >= p.startTime && currentTimeMs <= p.endTime);
 
-    rendererRef.current.renderFrame({
-      canvas,
-      video,
-      currentTimeMs,
-      camera,
-      activePill,
-      cursorEngine,
-      keystrokes,
-      preset,
-      aspectRatio,
-      showSpotlight,
-      showCursor,
-      showHud,
-      metadata,
-      cursorTheme,
-      cursorScale,
-      captions,
-      captionStyle,
-      captionBackdrop,
-      showCaptions,
-      showIntroCard,
-      introHeadline,
-      introSubheadline,
-      durationMs: Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000,
-      showOutroCard,
-      outroHeadline,
-      outroCtaText
-    });
+    // Reuse persistent options structure to maintain 0 allocation in 60fps render window
+    const opts = renderOptionsRef.current;
+    opts.canvas = canvas;
+    opts.video = video;
+    opts.currentTimeMs = currentTimeMs;
+    opts.camera = camera;
+    opts.activePill = activePill;
+    opts.cursorEngine = cursorEngine;
+    opts.keystrokes = keystrokes;
+    opts.preset = preset;
+    opts.aspectRatio = aspectRatio;
+    opts.showSpotlight = showSpotlight;
+    opts.showCursor = showCursor;
+    opts.showHud = showHud;
+    opts.metadata = metadata;
+    opts.cursorTheme = cursorTheme;
+    opts.cursorScale = cursorScale;
+    opts.captions = captions;
+    opts.captionStyle = captionStyle;
+    opts.captionBackdrop = captionBackdrop;
+    opts.showCaptions = showCaptions;
+    opts.showIntroCard = showIntroCard;
+    opts.introHeadline = introHeadline;
+    opts.introSubheadline = introSubheadline;
+    opts.durationMs = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000;
+    opts.showOutroCard = showOutroCard;
+    opts.outroHeadline = outroHeadline;
+    opts.outroCtaText = outroCtaText;
+    opts.backdropParams = backdropParams;
+
+    rendererRef.current.renderFrame(opts);
   }, [
     currentTimeMs,
     video,
     preset,
     aspectRatio,
+    targetWidth,
+    targetHeight,
     pills,
     showSpotlight,
     showCursor,
@@ -185,7 +216,8 @@ export function CanvasPreview({
     durationMs,
     showOutroCard,
     outroHeadline,
-    outroCtaText
+    outroCtaText,
+    backdropParams
   ]);
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {

@@ -1,9 +1,10 @@
 import { TelemetryData } from '../types/telemetry';
+import { diagnosticChannel } from './diagnostic-channel';
 
 const VIDEO_FILE_NAME = 'smoothstudio_recording.webm';
 const TELEMETRY_FILE_NAME = 'smoothstudio_telemetry.json';
 
-// In-memory fallback if OPFS is unavailable
+// In-memory fallback if OPFS is unavailable or RAM Fallback Buffer is toggled
 let memoryVideoChunks: Blob[] = [];
 let memoryTelemetry: TelemetryData | null = null;
 let opfsWritable: FileSystemWritableFileStream | null = null;
@@ -13,9 +14,30 @@ export async function isOpfsSupported(): Promise<boolean> {
   return typeof navigator !== 'undefined' && !!navigator.storage && typeof navigator.storage.getDirectory === 'function';
 }
 
+export function setUseOpfs(enabled: boolean): void {
+  useOpfs = enabled;
+  diagnosticChannel.setStorageMode(enabled ? 'opfs' : 'ram');
+  if (!enabled && opfsWritable) {
+    try { opfsWritable.close(); } catch {}
+    opfsWritable = null;
+    console.log('[SmoothStudio OPFS] RAM Fallback Buffer active: bypassed disk OPFS.');
+  }
+}
+
+export function isUseOpfs(): boolean {
+  return useOpfs && diagnosticChannel.getStorageMode() === 'opfs';
+}
+
 export async function initStorage(): Promise<void> {
   memoryVideoChunks = [];
   memoryTelemetry = null;
+
+  // Honor RAM fallback toggle from diagnostic channel
+  if (diagnosticChannel.getStorageMode() === 'ram') {
+    useOpfs = false;
+    console.log('[SmoothStudio OPFS] Using in-memory RAM fallback buffer (disk storage disabled).');
+    return;
+  }
 
   try {
     if (await isOpfsSupported()) {
@@ -26,25 +48,26 @@ export async function initStorage(): Promise<void> {
       console.log('[SmoothStudio OPFS] Storage initialized successfully on disk.');
       return;
     }
-  } catch (err) {
+  } catch (err: any) {
     console.warn('[SmoothStudio OPFS] OPFS unavailable, falling back to memory chunks:', err);
+    diagnosticChannel.recordStorageCap(err?.message || String(err));
   }
 
   useOpfs = false;
 }
 
 export async function appendVideoChunk(chunk: Blob): Promise<void> {
-  if (useOpfs && opfsWritable) {
+  memoryVideoChunks.push(chunk);
+  if (isUseOpfs() && opfsWritable) {
     try {
       await opfsWritable.write(chunk);
       return;
-    } catch (err) {
+    } catch (err: any) {
       console.warn('[SmoothStudio OPFS] Error writing chunk to disk, falling back to RAM:', err);
       useOpfs = false;
+      diagnosticChannel.recordStorageCap(err?.message || String(err));
     }
   }
-
-  memoryVideoChunks.push(chunk);
 }
 
 export async function finalizeVideo(): Promise<void> {

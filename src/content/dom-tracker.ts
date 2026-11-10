@@ -356,29 +356,21 @@ export function stopTracking(): TelemetryData {
 }
 
 // Chrome extension message listener
-if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage && !(window as any).__smoothstudio_dom_listener_registered) {
+  (window as any).__smoothstudio_dom_listener_registered = true;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'START_TELEMETRY') {
       startTracking();
       sendResponse({ status: 'started' });
+      return true;
     } else if (message.type === 'STOP_TELEMETRY') {
       const data = stopTracking();
       sendResponse({ status: 'stopped', data });
+      return true;
     } else if (message.type === 'GET_BRAND_COLORS') {
       sendResponse({ brandColors: extractBrandColors() });
-    } else if (message.type === 'APPLY_PRIVACY_OPTIONS') {
-      applyAutoRedaction(message.options || {});
-      sendResponse({ status: 'applied' });
-    } else if (message.type === 'START_PICKER') {
-      startElementPicker();
-      sendResponse({ status: 'picker_active' });
-    } else if (message.type === 'STOP_PICKER') {
-      stopElementPicker();
-      sendResponse({ status: 'picker_stopped' });
-    } else if (message.type === 'RESET_PRIVACY') {
-      resetRedactions();
-      sendResponse({ status: 'reset' });
+      return true;
     }
-    return true;
+    return false;
   });
 }

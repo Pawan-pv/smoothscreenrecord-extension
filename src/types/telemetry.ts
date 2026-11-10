@@ -103,15 +103,33 @@ export interface SilenceSegment {
 
 export type AspectRatioType = '16:9' | '9:16' | '1:1' | '4:3';
 
-export type VibePresetId = 'linear-dark' | 'apple-keynote' | 'stripe-mesh' | 'indie-pop' | 'minimal-clean' | 'custom';
+export type VibePresetId =
+  | 'keynote-pro'
+  | 'stripe-mesh'
+  | 'linear-cosmic'
+  | 'linear-dark'
+  | 'apple-keynote'
+  | 'indie-pop'
+  | 'minimal-clean'
+  | 'custom';
+
+export interface BackdropMatrixParams {
+  presetType: 'keynote-pro' | 'stripe-mesh' | 'linear-cosmic' | 'classic-mesh';
+  vignetteStrength: number; // 0..100
+  illumination: number;     // 0..100
+  flowSpeed: number;        // 0..100
+  gridIntensity?: number;   // 0..100
+  gradientAngle?: number;   // 0..360 (degrees)
+}
 
 export interface VibePreset {
   id: VibePresetId;
   name: string;
-  gradientColors: [string, string, string];
+  gradientColors: string[];
   borderRadius: number;
   shadowBlur: number;
   shadowColor: string;
   cursorRingColor: string;
   keycapTheme: 'dark' | 'light' | 'glass';
+  backdrop?: BackdropMatrixParams;
 }

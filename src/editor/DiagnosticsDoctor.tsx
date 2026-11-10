@@ -14,6 +14,7 @@ import {
   MousePointer
 } from 'lucide-react';
 import { TelemetryData } from '../types/telemetry';
+import { diagnosticChannel } from '../engine/diagnostic-channel';
 
 export interface DiagnosticsDoctorProps {
   isOpen: boolean;
@@ -412,12 +413,23 @@ export function DiagnosticsDoctor({
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
             Zero errors in content scripts & encoding pipeline
           </div>
-          <button
-            onClick={onClose}
-            className="px-4 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-white text-xs font-medium transition-colors"
-          >
-            Close Diagnostics
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                diagnosticChannel.recordFrameDrop('Flight Doctor simulated GPU hardware frame drop probe');
+              }}
+              className="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-[11px] font-medium border border-amber-500/30 transition-colors"
+              title="Test the visual triage and recovery flow"
+            >
+              Simulate Drop
+            </button>
+            <button
+              onClick={onClose}
+              className="px-4 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-white text-xs font-medium transition-colors"
+            >
+              Close Diagnostics
+            </button>
+          </div>
         </div>
       </div>
     </div>

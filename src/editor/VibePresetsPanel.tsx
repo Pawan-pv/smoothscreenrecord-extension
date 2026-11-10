@@ -5,10 +5,24 @@ import {
   VibePresetId,
   RecordingMetadata,
   CursorTheme,
-  CaptionStyle
+  CaptionStyle,
+  BackdropMatrixParams
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
-import { Palette, Volume2, Sparkles, Monitor, Smartphone, Square, Tv, MousePointer, Subtitles, Scissors } from 'lucide-react';
+import {
+  Palette,
+  Volume2,
+  Sparkles,
+  Monitor,
+  Smartphone,
+  Square,
+  Tv,
+  MousePointer,
+  Subtitles,
+  Scissors,
+  Layers,
+  RotateCcw
+} from 'lucide-react';
 
 interface VibePresetsPanelProps {
   currentPreset: VibePreset;
@@ -16,6 +30,8 @@ interface VibePresetsPanelProps {
   aspectRatio: AspectRatioType;
   onChangeAspectRatio: (aspect: AspectRatioType) => void;
   metadata?: RecordingMetadata;
+  backdropParams?: BackdropMatrixParams;
+  onChangeBackdropParams?: (params: Partial<BackdropMatrixParams>) => void;
   showSpotlight: boolean;
   onToggleSpotlight: (val: boolean) => void;
   showCursor: boolean;
@@ -59,6 +75,8 @@ export function VibePresetsPanel({
   aspectRatio,
   onChangeAspectRatio,
   metadata,
+  backdropParams,
+  onChangeBackdropParams,
   showSpotlight,
   onToggleSpotlight,
   showCursor,
@@ -106,10 +124,28 @@ export function VibePresetsPanel({
       shadowBlur: 50,
       shadowColor: 'rgba(0, 0, 0, 0.85)',
       cursorRingColor: primary || '#8B5CF6',
-      keycapTheme: 'glass'
+      keycapTheme: 'glass',
+      backdrop: {
+        presetType: 'stripe-mesh',
+        vignetteStrength: 65,
+        illumination: 80,
+        flowSpeed: 50,
+        gridIntensity: 0,
+        gradientAngle: 135
+      }
     };
     onSelectPreset(brandPreset);
   };
+
+  const PRESET_ORDER: VibePresetId[] = [
+    'keynote-pro',
+    'stripe-mesh',
+    'linear-cosmic',
+    'linear-dark',
+    'apple-keynote',
+    'indie-pop',
+    'minimal-clean'
+  ];
 
   return (
     <aside className="w-72 bg-[#14161D] border-r border-white/10 p-4 flex flex-col gap-5 overflow-y-auto select-none">
@@ -174,41 +210,51 @@ export function VibePresetsPanel({
         <div className="flex items-center justify-between mb-2.5">
           <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
             <Palette className="w-3.5 h-3.5 text-purple-400" />
-            Vibe Presets
+            Studio Presets
           </label>
         </div>
 
         <div className="space-y-1.5">
-          {(Object.keys(VIBE_PRESETS) as VibePresetId[])
-            .filter((id) => id !== 'custom')
-            .map((id) => {
-              const preset = VIBE_PRESETS[id];
-              const isSelected = currentPreset.id === id;
+          {PRESET_ORDER.map((id) => {
+            const preset = VIBE_PRESETS[id];
+            if (!preset) return null;
+            const isSelected = currentPreset.id === id;
 
-              return (
-                <button
-                  key={id}
-                  onClick={() => onSelectPreset(preset)}
-                  className={`w-full flex items-center justify-between p-2 rounded-xl border text-xs transition-all ${
-                    isSelected
-                      ? 'bg-purple-600/20 border-purple-500 text-white'
-                      : 'bg-white/5 border-white/5 hover:bg-white/10 text-gray-300'
-                  }`}
-                >
-                  <span className="font-medium">{preset.name}</span>
-                  <div className="flex items-center gap-1">
-                    <div
-                      className="w-3 h-3 rounded-full border border-white/20"
-                      style={{ backgroundColor: preset.gradientColors[1] }}
-                    />
-                    <div
-                      className="w-3 h-3 rounded-full border border-white/20"
-                      style={{ backgroundColor: preset.gradientColors[2] }}
-                    />
-                  </div>
-                </button>
-              );
-            })}
+            return (
+              <button
+                key={id}
+                onClick={() => onSelectPreset(preset)}
+                className={`w-full flex items-center justify-between p-2 rounded-xl border text-xs transition-all ${
+                  isSelected
+                    ? 'bg-purple-600/20 border-purple-500 text-white font-medium'
+                    : 'bg-white/5 border-white/5 hover:bg-white/10 text-gray-300'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span>{preset.name}</span>
+                  {id === 'keynote-pro' && (
+                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-sky-500/20 text-sky-300 font-mono">STUDIO</span>
+                  )}
+                  {id === 'stripe-mesh' && (
+                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-mono">MESH</span>
+                  )}
+                  {id === 'linear-cosmic' && (
+                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-mono">SPACE</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1">
+                  <div
+                    className="w-3 h-3 rounded-full border border-white/20"
+                    style={{ backgroundColor: preset.gradientColors[1] || preset.gradientColors[0] }}
+                  />
+                  <div
+                    className="w-3 h-3 rounded-full border border-white/20"
+                    style={{ backgroundColor: preset.gradientColors[2] || preset.gradientColors[1] }}
+                  />
+                </div>
+              </button>
+            );
+          })}
         </div>
 
         {/* Match Website Brand Button */}
@@ -221,6 +267,184 @@ export function VibePresetsPanel({
             Match Website Brand Colors
           </button>
         )}
+      </div>
+
+      {/* Advanced Backdrop Rendering Matrix Parameters */}
+      <div className="pt-2 border-t border-white/10 space-y-3">
+        <div className="flex items-center justify-between text-xs font-semibold text-gray-300 uppercase tracking-wider">
+          <span className="flex items-center gap-1.5">
+            <Layers className="w-3.5 h-3.5 text-indigo-400" />
+            Backdrop Matrix
+          </span>
+          <span className="font-mono text-indigo-400 text-[10px]">
+            {backdropParams?.presetType === 'stripe-mesh'
+              ? 'Mesh Flow'
+              : backdropParams?.presetType === 'linear-cosmic'
+              ? 'Cosmic Space'
+              : 'Studio Vignette'}
+          </span>
+        </div>
+
+        {/* Backdrop Matrix Mode Selector Pills */}
+        <div className="grid grid-cols-3 gap-1 text-[11px]">
+          <button
+            type="button"
+            onClick={() => {
+              onChangeBackdropParams?.({ presetType: 'keynote-pro' });
+              if (currentPreset.id !== 'keynote-pro') {
+                onSelectPreset(VIBE_PRESETS['keynote-pro']);
+              }
+            }}
+            className={`p-1.5 rounded-lg border text-center transition-all ${
+              (backdropParams?.presetType || currentPreset.backdrop?.presetType) === 'keynote-pro'
+                ? 'bg-sky-500/25 border-sky-400 text-sky-200 font-medium'
+                : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+            }`}
+          >
+            Keynote Pro
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onChangeBackdropParams?.({ presetType: 'stripe-mesh' });
+              if (currentPreset.id !== 'stripe-mesh') {
+                onSelectPreset(VIBE_PRESETS['stripe-mesh']);
+              }
+            }}
+            className={`p-1.5 rounded-lg border text-center transition-all ${
+              (backdropParams?.presetType || currentPreset.backdrop?.presetType) === 'stripe-mesh'
+                ? 'bg-purple-600/25 border-purple-500 text-purple-200 font-medium'
+                : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+            }`}
+          >
+            Stripe Mesh
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onChangeBackdropParams?.({ presetType: 'linear-cosmic' });
+              if (currentPreset.id !== 'linear-cosmic') {
+                onSelectPreset(VIBE_PRESETS['linear-cosmic']);
+              }
+            }}
+            className={`p-1.5 rounded-lg border text-center transition-all ${
+              (backdropParams?.presetType || currentPreset.backdrop?.presetType) === 'linear-cosmic'
+                ? 'bg-indigo-600/25 border-indigo-400 text-indigo-200 font-medium'
+                : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+            }`}
+          >
+            Linear Cosmic
+          </button>
+        </div>
+
+        {/* Backdrop Matrix Sliders */}
+        <div className="space-y-2 pt-1 text-[11px]">
+          {/* Studio Vignette Strength */}
+          <div className="space-y-1">
+            <div className="flex justify-between text-gray-300">
+              <span>Studio Vignette Strength</span>
+              <span className="font-mono text-indigo-300">{backdropParams?.vignetteStrength ?? 75}%</span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={backdropParams?.vignetteStrength ?? 75}
+              onChange={(e) => onChangeBackdropParams?.({ vignetteStrength: parseInt(e.target.value) })}
+              className="w-full accent-indigo-500"
+              title="Studio lighting drop-shadow vignette falloff"
+            />
+          </div>
+
+          {/* Ambient Illumination */}
+          <div className="space-y-1">
+            <div className="flex justify-between text-gray-300">
+              <span>Ambient Illumination</span>
+              <span className="font-mono text-indigo-300">{backdropParams?.illumination ?? 85}%</span>
+            </div>
+            <input
+              type="range"
+              min="10"
+              max="100"
+              value={backdropParams?.illumination ?? 85}
+              onChange={(e) => onChangeBackdropParams?.({ illumination: parseInt(e.target.value) })}
+              className="w-full accent-indigo-500"
+              title="Overhead key light intensity & gradient glow"
+            />
+          </div>
+
+          {/* Mesh Flow Rate */}
+          <div className="space-y-1">
+            <div className="flex justify-between text-gray-300">
+              <span>Mesh Flow Rate</span>
+              <span className="font-mono text-indigo-300">{backdropParams?.flowSpeed ?? 50}%</span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={backdropParams?.flowSpeed ?? 50}
+              onChange={(e) => onChangeBackdropParams?.({ flowSpeed: parseInt(e.target.value) })}
+              className="w-full accent-indigo-500"
+              title="Fluid flow velocity for multi-stop mesh gradients and cosmic flares"
+            />
+          </div>
+
+          {/* Cosmic Space Grid Intensity */}
+          <div className="space-y-1">
+            <div className="flex justify-between text-gray-300">
+              <span>Geometric Matrix Grid</span>
+              <span className="font-mono text-indigo-300">{backdropParams?.gridIntensity ?? 30}%</span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={backdropParams?.gridIntensity ?? 30}
+              onChange={(e) => onChangeBackdropParams?.({ gridIntensity: parseInt(e.target.value) })}
+              className="w-full accent-indigo-500"
+              title="Architectural coordinate grid in cosmic space"
+            />
+          </div>
+
+          {/* Gradient Direction Angle */}
+          <div className="space-y-1">
+            <div className="flex justify-between text-gray-300">
+              <span>Gradient Matrix Angle</span>
+              <span className="font-mono text-indigo-300">{backdropParams?.gradientAngle ?? 135}°</span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="360"
+              step="5"
+              value={backdropParams?.gradientAngle ?? 135}
+              onChange={(e) => onChangeBackdropParams?.({ gradientAngle: parseInt(e.target.value) })}
+              className="w-full accent-indigo-500"
+              title="Orientation angle of dual-tone linear and mesh gradients"
+            />
+          </div>
+
+          {/* Reset to defaults */}
+          <button
+            type="button"
+            onClick={() => {
+              const defaultParams = currentPreset.backdrop || {
+                presetType: 'keynote-pro',
+                vignetteStrength: 75,
+                illumination: 85,
+                flowSpeed: 40,
+                gridIntensity: 0,
+                gradientAngle: 180
+              };
+              onChangeBackdropParams?.(defaultParams);
+            }}
+            className="w-full mt-1 py-1 px-2 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white flex items-center justify-center gap-1.5 text-[10px] transition-colors"
+          >
+            <RotateCcw className="w-3 h-3 text-indigo-400" />
+            Reset Backdrop to Studio Defaults
+          </button>
+        </div>
       </div>
 
       {/* Window Corner Radius Slider */}

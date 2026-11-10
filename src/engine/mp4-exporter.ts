@@ -12,6 +12,7 @@ import {
 import { StudioRenderer, getAspectDimensions } from './renderer';
 import { computeCinematicCameraState, SpringCameraSolver } from './spring-physics';
 import { CursorSplineEngine } from './cursor-spline';
+import { diagnosticChannel } from './diagnostic-channel';
 
 export interface ExportOptions {
   videoSource: HTMLVideoElement | HTMLCanvasElement;
@@ -271,7 +272,10 @@ export class HardwareMp4Exporter {
           }
         }
       },
-      error: (e) => console.error('[SmoothStudio VideoEncoder Error]', e)
+      error: (e) => {
+        console.error('[SmoothStudio VideoEncoder Error]', e);
+        diagnosticChannel.recordFrameDrop((e as any)?.message || String(e));
+      }
     });
 
     // Configure H.264 hardware profile with low-latency direct GPU encoding

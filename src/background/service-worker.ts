@@ -99,7 +99,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.tabs.query({}, (tabs) => {
         for (const tab of tabs) {
           if (tab.id && (tab.id === recordingTabId || tab.active)) {
-            chrome.tabs.sendMessage(tab.id, { type: 'START_TELEMETRY' }).catch(() => {});
+            chrome.tabs.sendMessage(tab.id, { type: 'START_TELEMETRY' }, () => {
+              if (chrome.runtime?.lastError) {}
+            });
           }
         }
       });
@@ -147,7 +149,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           chrome.tabs.sendMessage(targetEditorTabId, {
             type: 'STUDIO_STOP_CAPTURE',
             telemetry: telemetryData
-          }).catch(() => {});
+          }, () => {
+            if (chrome.runtime?.lastError) {}
+          });
 
           chrome.tabs.update(targetEditorTabId, { active: true }).catch(() => {
             chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
@@ -159,7 +163,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               chrome.tabs.sendMessage(tabs[0].id, {
                 type: 'STUDIO_STOP_CAPTURE',
                 telemetry: telemetryData
-              }).catch(() => {});
+              }, () => {
+                if (chrome.runtime?.lastError) {}
+              });
               chrome.tabs.update(tabs[0].id, { active: true });
             } else {
               chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
@@ -198,7 +204,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     chrome.tabs.query({}, (tabs) => {
       for (const tab of tabs) {
         if (tab.id) {
-          chrome.tabs.sendMessage(tab.id, message).catch(() => {});
+          chrome.tabs.sendMessage(tab.id, message, () => {
+            if (chrome.runtime?.lastError) {}
+          });
         }
       }
     });

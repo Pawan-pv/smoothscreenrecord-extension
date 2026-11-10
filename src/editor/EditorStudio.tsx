@@ -7,7 +7,8 @@ import {
   VibePreset,
   CaptionBlock,
   CaptionStyle,
-  CursorTheme
+  CursorTheme,
+  BackdropMatrixParams
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
 import { generateAutoZoomPills } from '../engine/spring-physics';
@@ -18,12 +19,14 @@ import { HardwareMp4Exporter } from '../engine/mp4-exporter';
 import { HardwareGifExporter } from '../engine/gif-exporter';
 import { SopGuideExporter } from '../engine/sop-guide-exporter';
 import { HtmlWidgetExporter } from '../engine/html-widget-exporter';
-import { getRecordingBlob, loadTelemetry } from '../engine/opfs-storage';
+import { getRecordingBlob, loadTelemetry, setUseOpfs } from '../engine/opfs-storage';
 import { ScreenCaptureEngine } from '../engine/screen-recorder';
+import { diagnosticChannel, SystemDegradationEvent } from '../engine/diagnostic-channel';
 import { CanvasPreview } from './CanvasPreview';
 import { MagneticTimeline } from './MagneticTimeline';
 import { VibePresetsPanel } from './VibePresetsPanel';
 import { DiagnosticsDoctor } from './DiagnosticsDoctor';
+import { DegradationTriagePanel } from './DegradationTriagePanel';
 import { ToastContainer, ToastItem } from './ToastNotification';
 import {
   Video,
@@ -36,7 +39,10 @@ import {
   CheckCircle2,
   Play,
   Pause,
-  Activity
+  Activity,
+  AlertTriangle,
+  HardDrive,
+  Cpu
 } from 'lucide-react';
 
 export function EditorStudio() {
@@ -49,6 +55,9 @@ export function EditorStudio() {
   const [durationMs, setDurationMs] = useState<number>(10000);
   const [currentTimeMs, setCurrentTimeMs] = useState<number>(0);
   const [showDoctor, setShowDoctor] = useState<boolean>(false);
+  const [activeDegradation, setActiveDegradation] = useState<SystemDegradationEvent | null>(null);
+  const [storageMode, setStorageMode] = useState<'opfs' | 'ram'>(diagnosticChannel.getStorageMode());
+  const [encoderStreamMode, setEncoderStreamMode] = useState<'hardware-mp4' | 'client-webm'>(diagnosticChannel.getEncoderStreamMode());
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
   const showToast = useCallback((toast: Omit<ToastItem, 'id'>) => {
@@ -66,7 +75,17 @@ export function EditorStudio() {
 
   // Settings & Timeline state
   const [aspectRatio, setAspectRatio] = useState<AspectRatioType>('16:9');
-  const [preset, setPreset] = useState<VibePreset>(VIBE_PRESETS['linear-dark']);
+  const [preset, setPreset] = useState<VibePreset>(VIBE_PRESETS['keynote-pro'] || VIBE_PRESETS['linear-dark']);
+  const [backdropParams, setBackdropParams] = useState<BackdropMatrixParams>(
+    VIBE_PRESETS['keynote-pro']?.backdrop || {
+      presetType: 'keynote-pro',
+      vignetteStrength: 75,
+      illumination: 85,
+      flowSpeed: 40,
+      gridIntensity: 0,
+      gradientAngle: 180
+    }
+  );
   const [pills, setPills] = useState<ZoomPill[]>([]);
   const [silences, setSilences] = useState<SilenceSegment[]>([]);
   const [autoCutSilences, setAutoCutSilences] = useState<boolean>(true);
@@ -150,13 +169,38 @@ export function EditorStudio() {
     }
   }, []);
 
+  // Active State Subscriptions: Hook React 19 Editor UI directly into core engine diagnostic telemetry streams
+  useEffect(() => {
+    const unsubscribe = diagnosticChannel.subscribe((event) => {
+      setActiveDegradation(event);
+      showToast({
+        type: event.severity === 'critical' ? 'error' : 'warning',
+        title: event.title,
+        message: event.message
+      });
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [showToast]);
+
   // Global Error Trap & Flight Doctor Keyboard Shortcut (Ctrl+Shift+D)
   useEffect(() => {
     const onUnhandled = (e: PromiseRejectionEvent) => {
       const msg = e.reason?.message || String(e.reason || 'Unhandled error');
+      // If error is related to WebCodecs or OPFS quota, route to diagnostic channel
+      if (/VideoEncoder|WebCodecs|hardware|encoder/i.test(msg)) {
+        diagnosticChannel.recordFrameDrop(msg);
+      } else if (/quota|storage|opfs|filehandle|permission/i.test(msg)) {
+        diagnosticChannel.recordStorageCap(msg);
+      }
       showToast({ type: 'error', title: 'Runtime Alert', message: msg });
     };
     const onError = (e: ErrorEvent) => {
+      if (/VideoEncoder|WebCodecs/i.test(e.message)) {
+        diagnosticChannel.recordFrameDrop(e.message);
+      }
       showToast({ type: 'error', title: 'Script Error', message: e.message });
     };
     const onKeyDown = (e: KeyboardEvent) => {
@@ -691,23 +735,39 @@ export function EditorStudio() {
       // Procedural Audio SFX Triggering during playback.
       // The rAF loop only runs while playing, and each event is deduplicated by
       // its timestamp so adjacent frames never double-trigger the same sound.
+      // Timing offsets are passed so audio synthesizers schedule with sample-accurate timeline playhead sync.
       if (isPlaying && soundEnabled && telemetry) {
         const activeClick = telemetry.clicks.find((c) => Math.abs(c.t - next) < 25);
         if (activeClick && !firedSfxRef.current.has(`click_${activeClick.t}`)) {
           firedSfxRef.current.add(`click_${activeClick.t}`);
-          sfxSynthesizerRef.current.playClickPop();
+          const timeOffsetSec = Math.max(0, (activeClick.t - next) / 1000);
+          sfxSynthesizerRef.current.playUiClick(0.35, timeOffsetSec);
         }
 
         const activeKey = telemetry.keystrokes.find((k) => Math.abs(k.t - next) < 25);
         if (activeKey && !firedSfxRef.current.has(`key_${activeKey.t}`)) {
           firedSfxRef.current.add(`key_${activeKey.t}`);
-          sfxSynthesizerRef.current.playKeyThock();
+          const timeOffsetSec = Math.max(0, (activeKey.t - next) / 1000);
+          sfxSynthesizerRef.current.playMechanicalThock(0.3, timeOffsetSec);
         }
 
         const pillEntering = pills.find((p) => Math.abs(p.startTime - next) < 25);
         if (pillEntering && !firedSfxRef.current.has(`pill_${pillEntering.id}`)) {
           firedSfxRef.current.add(`pill_${pillEntering.id}`);
-          sfxSynthesizerRef.current.playZoomWhoosh();
+          const timeOffsetSec = Math.max(0, (pillEntering.startTime - next) / 1000);
+
+          // Calculate spring-physics translation speed based on camera trajectory delta
+          const prevPill = pills.slice().reverse().find((p) => p.endTime <= pillEntering.startTime);
+          const fromX = prevPill ? prevPill.targetX : 0.5;
+          const fromY = prevPill ? prevPill.targetY : 0.5;
+          const fromScale = prevPill ? prevPill.targetScale : 1.0;
+          const dx = pillEntering.targetX - fromX;
+          const dy = pillEntering.targetY - fromY;
+          const dScale = Math.abs(pillEntering.targetScale - fromScale);
+          const translationDist = Math.hypot(dx, dy);
+          const translationSpeed = Math.max(0.6, (translationDist * 2.8 + dScale * 1.2) / 0.5);
+
+          sfxSynthesizerRef.current.playCameraWhoosh(0.25, translationSpeed, timeOffsetSec);
         }
       }
 
@@ -740,6 +800,66 @@ export function EditorStudio() {
     };
     setPills((prev) => [...prev, newPill].sort((a, b) => a.startTime - b.startTime));
   }, [durationMs]);
+
+  const handleSelectPreset = useCallback((newPreset: VibePreset) => {
+    setPreset(newPreset);
+    if (newPreset.backdrop) {
+      setBackdropParams(newPreset.backdrop);
+    }
+  }, []);
+
+  const handleUpdateBackdropParams = useCallback((updates: Partial<BackdropMatrixParams>) => {
+    setBackdropParams((prev) => {
+      const merged = { ...prev, ...updates };
+      setPreset((p) => ({ ...p, backdrop: merged }));
+      return merged;
+    });
+  }, []);
+
+  // Safe Fail-over Action 1: Toggle RAM Fallback Buffer
+  const handleToggleRamFallback = useCallback(() => {
+    const nextMode = storageMode === 'opfs' ? 'ram' : 'opfs';
+    setStorageMode(nextMode);
+    setUseOpfs(nextMode === 'opfs');
+    diagnosticChannel.setStorageMode(nextMode);
+    if (nextMode === 'ram') {
+      diagnosticChannel.clearDegradation('opfs');
+      setActiveDegradation((curr) => (curr?.source === 'opfs' ? null : curr));
+      showToast({
+        type: 'success',
+        title: 'RAM Fallback Buffer Active',
+        message: 'Swapped from disk-heavy OPFS to raw system memory arrays.'
+      });
+    } else {
+      showToast({
+        type: 'info',
+        title: 'OPFS Storage Restored',
+        message: 'Restored disk-based OPFS storage stream.'
+      });
+    }
+  }, [storageMode, showToast]);
+
+  // Safe Fail-over Action 2: Downgrade Encoder Stream
+  const handleDowngradeEncoderStream = useCallback(() => {
+    const nextMode = encoderStreamMode === 'hardware-mp4' ? 'client-webm' : 'hardware-mp4';
+    setEncoderStreamMode(nextMode);
+    diagnosticChannel.setEncoderStreamMode(nextMode);
+    if (nextMode === 'client-webm') {
+      diagnosticChannel.clearDegradation('webcodecs');
+      setActiveDegradation((curr) => (curr?.source === 'webcodecs' ? null : curr));
+      showToast({
+        type: 'success',
+        title: 'Encoder Stream Downgraded',
+        message: 'Swapped from hardware-accelerated H.264 MP4 to pure WebM client-side downloads.'
+      });
+    } else {
+      showToast({
+        type: 'info',
+        title: 'Hardware MP4 Restored',
+        message: 'Restored H.264 GPU hardware acceleration profile.'
+      });
+    }
+  }, [encoderStreamMode, showToast]);
 
   // Keyboard shortcuts: Space (play/pause), ArrowLeft/Right (seek), Z (add zoom)
   useEffect(() => {
@@ -968,9 +1088,31 @@ export function EditorStudio() {
 
   // MULTI-FORMAT ASSET EXPORTS (MP4, GIF, Notion SOP, Interactive HTML)
 
-  // 1. Hardware 60fps MP4 Export
+  // 1. Hardware 60fps MP4 Export (with safe fail-over path to client WebM)
   const handleExportMp4 = async () => {
     if (!videoElement) return;
+
+    // Safe Fail-over Path: If user downgraded encoder stream, download pure client WebM directly
+    if (encoderStreamMode === 'client-webm') {
+      const blobToDownload = videoBlob || (await getRecordingBlob());
+      if (blobToDownload) {
+        const url = URL.createObjectURL(blobToDownload);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${telemetry?.metadata.title || 'SmoothStudio'}_Raw_Stream.webm`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        setExportComplete(true);
+        setIsExporting(false);
+        showToast({
+          type: 'success',
+          title: 'Pure WebM Export Complete',
+          message: 'Client-side WebM recording stream downloaded directly (GPU encoder bypassed).'
+        });
+        return;
+      }
+    }
+
     setIsExporting(true);
     setExportProgress(0);
     setExportComplete(false);
@@ -1017,6 +1159,7 @@ export function EditorStudio() {
       showToast({ type: 'success', title: 'MP4 Exported', message: 'Hardware encoded 4K/60fps video downloaded.' });
     } catch (err: any) {
       console.error('MP4 export failed:', err);
+      diagnosticChannel.recordFrameDrop(err?.message || 'VideoEncoder runtime error during export');
       showToast({ type: 'error', title: 'MP4 Export Failed', message: err?.message || 'VideoEncoder error' });
     } finally {
       setIsExporting(false);
@@ -1165,6 +1308,38 @@ export function EditorStudio() {
             <Activity className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
             Flight Doctor
           </button>
+
+          {/* Active Triage Recovery & Fail-Over Indicators */}
+          {activeDegradation && (
+            <button
+              onClick={() => setActiveDegradation((prev) => prev || diagnosticChannel.getActiveDegradations()[0] || null)}
+              className="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-medium flex items-center gap-1.5 border border-amber-500/40 animate-pulse transition-all shadow-md shadow-amber-500/10"
+              title="System degradation detected. Click to inspect recovery triage panel."
+            >
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+              Triage Recovery
+            </button>
+          )}
+
+          {storageMode === 'ram' && (
+            <span
+              className="px-2 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[11px] font-mono flex items-center gap-1"
+              title="RAM Fallback Buffer active (bypassing disk OPFS)"
+            >
+              <HardDrive className="w-3 h-3 text-emerald-400" />
+              RAM Buffer
+            </span>
+          )}
+
+          {encoderStreamMode === 'client-webm' && (
+            <span
+              className="px-2 py-1 rounded-lg bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[11px] font-mono flex items-center gap-1"
+              title="Client-side WebM active (GPU hardware encoder bypassed)"
+            >
+              <Cpu className="w-3 h-3 text-sky-400" />
+              WebM Stream
+            </span>
+          )}
         </div>
 
         {/* 3-in-1 Export Multi-Format Action Buttons */}
@@ -1261,10 +1436,12 @@ export function EditorStudio() {
         {/* Left Vibe Presets & Controls */}
         <VibePresetsPanel
           currentPreset={preset}
-          onSelectPreset={setPreset}
+          onSelectPreset={handleSelectPreset}
           aspectRatio={aspectRatio}
           onChangeAspectRatio={setAspectRatio}
           metadata={telemetry?.metadata}
+          backdropParams={backdropParams}
+          onChangeBackdropParams={handleUpdateBackdropParams}
           showSpotlight={showSpotlight}
           onToggleSpotlight={setShowSpotlight}
           showCursor={showCursor}
@@ -1317,6 +1494,7 @@ export function EditorStudio() {
           keystrokes={telemetry?.keystrokes || []}
           preset={preset}
           aspectRatio={aspectRatio}
+          backdropParams={backdropParams}
           showSpotlight={showSpotlight}
           showCursor={showCursor}
           showHud={showHud}
@@ -1369,6 +1547,17 @@ export function EditorStudio() {
         telemetry={telemetry}
         durationMs={durationMs}
         videoBlob={videoBlob}
+      />
+
+      {/* Visual Triage & Degradation Recovery Panel */}
+      <DegradationTriagePanel
+        activeDegradation={activeDegradation}
+        onDismiss={() => setActiveDegradation(null)}
+        storageMode={storageMode}
+        onToggleRamFallback={handleToggleRamFallback}
+        encoderStreamMode={encoderStreamMode}
+        onDowngradeEncoderStream={handleDowngradeEncoderStream}
+        onOpenFlightDoctor={() => setShowDoctor(true)}
       />
 
       {/* Real-Time Toast Notifications */}

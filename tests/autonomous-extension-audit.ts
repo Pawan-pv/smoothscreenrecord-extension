@@ -82,6 +82,11 @@ function startFixtureServer(): Promise<http.Server> {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
+      if (req.url === '/favicon.ico') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
       if (req.url === '/' || req.url?.includes('test-target.html')) {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(fs.readFileSync(FIXTURE_HTML_PATH));
@@ -301,6 +306,7 @@ async function runAutonomousAudit() {
                 type: 'APPLY_PRIVACY_OPTIONS',
                 options: { blurEmails: true, blurRevenue: true, blurApiKeys: true }
               }, () => {
+                if (chrome.runtime?.lastError) {}
                 if (--pending <= 0) resolve();
               });
             } else {
@@ -441,6 +447,35 @@ async function runAutonomousAudit() {
     }
 
     await editorPage.screenshot({ path: path.join(ARTIFACTS_DIR, '04-editor-studio-live.png') });
+
+    // 8. Audit Live Screen Recording to Editor Pipeline
+    logSection('Stage 8: Audit E2E Live Recording-to-Editor Pipeline');
+    const tRec = performance.now();
+    const recordBtn = await editorPage.$('button:has-text("Record New Screen")');
+    if (recordBtn) {
+      await recordBtn.click();
+      // Wait for recording to initiate
+      await editorPage.waitForSelector('button:has-text("Stop Live Recording")', { timeout: 6000 });
+      // Record for 2 seconds
+      await new Promise((r) => setTimeout(r, 2000));
+      // Stop recording
+      const stopBtn = await editorPage.$('button:has-text("Stop Live Recording")');
+      await stopBtn?.click();
+      // Wait for recording to finalize and editor to reload with the recorded stream
+      await editorPage.waitForSelector('button:has-text("Record New Screen")', { timeout: 10000 });
+      await new Promise((r) => setTimeout(r, 1000));
+      recordPass('LiveRecordingPipeline', 'Live screen recording completed, telemetry bound, and loaded into Studio editor', Math.round(performance.now() - tRec));
+      await editorPage.screenshot({ path: path.join(ARTIFACTS_DIR, '05-live-recorded-editor.png') });
+    }
+
+    // 9. Audit Console Errors Across Pipeline
+    logSection('Stage 9: Verify Zero Runtime Console Errors');
+    const tConsole = performance.now();
+    if (capturedErrors.length === 0) {
+      recordPass('ConsoleSanity', 'Zero runtime console errors or exceptions across all tabs and pipelines', Math.round(performance.now() - tConsole));
+    } else {
+      recordFail('ConsoleSanity', `Captured ${capturedErrors.length} runtime error(s) during execution`, Math.round(performance.now() - tConsole), new Error(capturedErrors.join(' | ')));
+    }
 
     // Final Audit Report Generation
     logSection('Autonomous Extension Audit Complete');

@@ -18,6 +18,11 @@ let mutationTimeout: any = null;
 // shield touched it, so a reset restores the page's own styling exactly.
 // The shield is visual-only (spec item 5): the page's text is never rewritten.
 let previousInlineFilter: Map<HTMLElement, { value: string; priority: string }> = new Map();
+// QA-018: a sensitive text node that sits DIRECTLY in <body>/<html> cannot be
+// covered by blurring its parent (that would blur the whole page and the HUD).
+// It is moved, unchanged (same Text node, same value), into an inert inline
+// <span> that is blurred instead. A reset puts the node back where it was.
+let bodyLevelWrappers: Set<HTMLSpanElement> = new Set();
 
 // Non-global detection patterns (safe for .test() without mutating lastIndex)
 export const EMAIL_DETECT = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/i;
@@ -180,6 +185,7 @@ function blurSensitiveTextNodes(root: Node, options: Partial<PrivacyOptions>): n
   const doc = root.ownerDocument || document;
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let node: Text | null;
+  const bodyLevel: Text[] = [];
 
   while ((node = walker.nextNode() as Text | null)) {
     const value = node.nodeValue;
@@ -188,7 +194,7 @@ function blurSensitiveTextNodes(root: Node, options: Partial<PrivacyOptions>): n
     const parent = node.parentElement;
     // Never touch code, styles, form controls (they are handled by value), the
     // document root, or the in-page recording HUD.
-    if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'TEXTAREA', 'INPUT', 'HTML', 'BODY'].includes(parent.tagName)) continue;
+    if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'TEXTAREA', 'INPUT'].includes(parent.tagName)) continue;
     if (parent.closest('#smoothstudio-floating-hud')) continue;
 
     const sensitive =
@@ -197,8 +203,26 @@ function blurSensitiveTextNodes(root: Node, options: Partial<PrivacyOptions>): n
       (options.blurApiKeys && API_KEY_DETECT.test(value));
     if (!sensitive) continue;
 
+    if (parent.tagName === 'BODY' || parent.tagName === 'HTML') {
+      bodyLevel.push(node);
+      continue;
+    }
     if (!blurredElements.has(parent)) blurred++;
     blurElement(parent);
+  }
+
+  // Wrap after the walk so the walker never sees a moving node.
+  for (const textNode of bodyLevel) {
+    const parent = textNode.parentNode;
+    if (!parent) continue;
+    const wrapper = doc.createElement('span');
+    wrapper.setAttribute('data-smoothstudio-wrapper', 'true');
+    wrapper.style.display = 'inline';
+    parent.insertBefore(wrapper, textNode);
+    wrapper.appendChild(textNode); // the same Text node: its value is untouched
+    bodyLevelWrappers.add(wrapper);
+    blurElement(wrapper);
+    blurred++;
   }
 
   return blurred;
@@ -477,6 +501,18 @@ export function resetRedactions(opts: { keepPicker?: boolean } = {}): void {
   }
   blurredElements.clear();
   previousInlineFilter.clear();
+
+  // Put body-level text nodes back exactly where they were (QA-018).
+  for (const wrapper of bodyLevelWrappers) {
+    try {
+      const parent = wrapper.parentNode;
+      if (parent) {
+        while (wrapper.firstChild) parent.insertBefore(wrapper.firstChild, wrapper);
+        parent.removeChild(wrapper);
+      }
+    } catch {}
+  }
+  bodyLevelWrappers.clear();
 
   try {
     document.querySelectorAll('#smoothstudio-redaction-styles').forEach(s => s.remove());

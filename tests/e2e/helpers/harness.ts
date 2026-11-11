@@ -98,6 +98,12 @@ export function extractFrame(file: string, timeSec: number, outPng: string): str
   ffmpeg(['-i', file, '-ss', String(timeSec), '-frames:v', '1', outPng]);
   return outPng;
 }
+/** Extracts one frame of a GIF. GIF frames are all key frames, so the seek is
+ *  done on the input side; ffmpeg's output seeking does not work on GIFs. */
+export function extractGifFrame(gif: string, timeSec: number, outPng: string): string {
+  ffmpeg(['-i', gif, '-vsync', '0', '-f', 'image2', '-ss', String(timeSec), '-frames:v', '1', outPng]);
+  return outPng;
+}
 /** Raw RGB24 pixels of an image. */
 export function rawPixels(file: string): { buf: Buffer; w: number; h: number } {
   const buf = execFileSync(FFMPEG, ['-v', 'error', '-i', file, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],

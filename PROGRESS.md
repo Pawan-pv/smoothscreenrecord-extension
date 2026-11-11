@@ -2,6 +2,39 @@
 
 One entry per iteration. Newest first.
 
+## Iteration 3 — second product bug found and fixed (QA-010), full-suite run
+
+**Full suite (33 tests, 22.3 min):** `6 failed, 27 passed`.
+
+| Journey | Result | Raw evidence |
+|---------|--------|--------------|
+| J1 | PASS | 20.4 s recording, Opus + VP9, waveform from the real audio |
+| J2 | FAIL (harness) | the clock decoder produced false positives on two frames — fixed by a median-offset reference |
+| J3 | FAIL (harness) | the comparison windows overlapped the mouse movement — fixed |
+| J9 | PASS | redaction masks, `/echo` receives the original values, the SOP and the widget contain 0 sensitive values |
+| J10 | FAIL | the MP4 export is 0.186 s longer than the recording (QA-009) |
+| J11 | FAIL | the MP4 export hung for 420 s with **no seek event at all** (QA-001) |
+| J12 | FAIL | the exported GIF had **one** frame for a 10 s clip (QA-010) |
+| c2 (pre-existing) | FAIL | the MP4 export **completed** (`Encoded frame 1200/1217 (99%)`, `Muxed 948 AAC chunks`) but the A/V skew is 51-86 ms (QA-011) |
+
+**Reproduced (failing test, before the fix) — QA-010:**
+
+```
+J12 GIF preset compact: 26848 bytes, 10.08s
+ffprobe: stream|codec_name=gif|width=640|height=360|duration=10.080000|nb_frames=1
+  ✘  19 tests\e2e\j12-gif-export.spec.ts:20:3 › J12 GIF export › J12: the exported GIF animates with increasing clock values …
+```
+
+**Root cause:** `src/engine/gif-exporter.ts:327-338` assigned `videoSource.currentTime = target` **before** attaching the `seeked` listener, and then compared `videoSource.currentTime` with the target to decide whether the frame was already there. Reading `currentTime` right after assigning it returns the **new** target, so that check was always true and the wait resolved before the decoder had produced a frame. Every exported frame was therefore the same picture, and the frame de-duplication collapsed the whole clip into a single frame.
+
+**Fix:** the listener is attached before the assignment, the "already at this position" case is checked before it, and a 2 s timeout keeps a stalled seek from hanging the export.
+
+**After the fix:**
+
+```
+J12 GIF preset compact: 516525 bytes, 11.12s
+```
+
 ## Iteration 2 — first product bug found and fixed (QA-007)
 
 **Reproduced (failing test, before the fix):**

@@ -83,3 +83,41 @@ tracker and blur appear only in the recorded tab and are gone after stopping.
 
 **What to report:** the export resolution, whether the export plays, and where the HUD
 appeared.
+
+---
+
+## HC-006 — Frame rate of a recording made the normal way (QA-008)
+
+**Why a human:** the automated run measures ~7 fps for a 20 s recording made while the
+editor tab stays in the background, but the cause (Chromium throttling frame presentation
+in the hidden editor tab) and the effect on the exported video can only be judged by
+watching the result.
+
+**Steps**
+1. Open a page that animates continuously (the clock fixture, or any video page).
+2. Start the recording from the popup and let the editor tab sit in the background for
+   20 s.
+3. Export to MP4 or GIF and play the result at 1x.
+
+**What to report:** whether the motion looks smooth or stuttery, and whether the exported
+file's frame rate (ffprobe `nb_frames` / duration) matches what you see.
+
+---
+
+## HC-007 — Privacy shield when the recording is started from the editor (QA-006)
+
+**Why a human:** the automated run proves that the page is NOT redacted when the recording
+is started from the editor, but a human has to decide how the fix should behave when the
+recording covers the whole screen instead of one tab (in-page redaction cannot protect a
+screen capture of other applications).
+
+**Steps**
+1. Open a page with an e-mail address in it.
+2. Open the extension from the toolbar icon and press *Open Studio* (NOT *Start Studio
+   Recording*).
+3. In the editor press *Record New Screen*, record the page for a few seconds, stop.
+4. Play the recording.
+
+**What to report:** whether the e-mail address is readable in the recording, and what the
+extension should do when the user captures the whole screen while the privacy shield is
+on.

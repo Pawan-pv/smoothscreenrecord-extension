@@ -325,15 +325,39 @@ export class HardwareGifExporter {
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
 
       if (videoSource instanceof HTMLVideoElement) {
-        videoSource.currentTime = currentMs / 1000;
-        await new Promise<void>((r) => {
-          const onSeeked = () => {
+        // Wait for the frame to actually be presented.
+        //
+        // The listener has to be attached BEFORE currentTime is assigned, and
+        // the "already there" case has to be checked BEFORE the assignment:
+        // reading video.currentTime right after assigning it returns the NEW
+        // target, so the old check always passed and the wait resolved before
+        // the decoder had produced a frame. Every exported frame was then the
+        // same picture and the deduplication collapsed the whole GIF into a
+        // single frame.
+        const targetSec = currentMs / 1000;
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          let timer: any = null;
+          const done = () => {
+            if (settled) return;
+            settled = true;
             videoSource.removeEventListener('seeked', onSeeked);
-            r();
+            if (timer !== null) clearTimeout(timer);
+            resolve();
           };
-          videoSource.addEventListener('seeked', onSeeked, { once: true });
-          if (Math.abs(videoSource.currentTime - currentMs / 1000) < 0.01) {
-            r();
+          const onSeeked = () => done();
+          if (Math.abs(videoSource.currentTime - targetSec) < 0.005) {
+            // The element already holds this frame: nothing to wait for.
+            done();
+            return;
+          }
+          videoSource.addEventListener('seeked', onSeeked);
+          // A seek that never completes must not hang the whole export.
+          timer = setTimeout(done, 2000);
+          try {
+            videoSource.currentTime = targetSec;
+          } catch {
+            done();
           }
         });
       } else if (onRenderCanvasFrame) {

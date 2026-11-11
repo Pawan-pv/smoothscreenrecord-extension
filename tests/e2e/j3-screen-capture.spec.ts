@@ -22,11 +22,10 @@ test.describe.serial('J3 screen capture', () => {
     const dir = outDir('j3');
     const site = await serveFixtures();
     // real content, no fake device
-    const app = await launchApp({ capture: 'screen', appUrl: `${site.base}/static.html` });
+    const app = await launchApp({ capture: 'screen', raiseWindow: true });
     try {
-      const target = app.context.pages().find((p) => p.url().includes('static.html'))!;
-      expect(target, 'the app window with the fixture must exist').toBeTruthy();
-      await target.bringToFront();
+      const target = await app.context.newPage();
+      await target.goto(`${site.base}/static.html`, { waitUntil: 'domcontentloaded' });
       await target.waitForTimeout(500);
 
       // move the mouse in a straight line during the middle of the recording
@@ -69,13 +68,18 @@ test.describe.serial('J3 screen capture', () => {
       expect(fs.statSync(first).size).toBeGreaterThan(1000);
 
       // ---- cursor count ----------------------------------------------------
-      // 0.0-1.5 s: mouse still. 2.0-4.0 s: mouse moving in a straight line.
-      const stillDiff = countChangedBlobs(frames[0], frames[4]);      // 0.00 s vs 1.00 s
-      const movingDiff = countChangedBlobs(frames[12], frames[16]);   // 3.00 s vs 4.00 s
-      console.log('J3 still-window diff:', JSON.stringify(stillDiff));
-      console.log('J3 moving-window diff:', JSON.stringify(movingDiff));
+      // The mouse is moved during roughly t=1.5 s .. t=3.6 s (the interact
+      // callback runs at the start of the recording). Two frames taken while
+      // the mouse is still must be identical on a static page; two frames
+      // taken while it moves must differ by exactly the cursor.
+      const stillDiff = countChangedBlobs(frames[24], frames[26]);   // t = 6.00 s vs 6.50 s
+      const movingDiff = countChangedBlobs(frames[8], frames[12]);   // t = 2.00 s vs 3.00 s
+      console.log('J3 still-window diff (t=6.0s vs 6.5s):', JSON.stringify({ changed: stillDiff.changed, blobs: stillDiff.blobs }));
+      console.log('J3 moving-window diff (t=2.0s vs 3.0s):', JSON.stringify({ changed: movingDiff.changed, blobs: movingDiff.blobs }));
       fs.writeFileSync(path.join(dir, 'j3-summary.json'), JSON.stringify({
-        info, videoEnd, wallClockSec: session.wallClockSec, stillDiff, movingDiff,
+        info, videoEnd, wallClockSec: session.wallClockSec,
+        stillDiff: { changed: stillDiff.changed, blobs: stillDiff.blobs },
+        movingDiff: { changed: movingDiff.changed, blobs: movingDiff.blobs, boxes: movingDiff.boxes },
         frames: countFrames(rawPath!)
       }, null, 2));
 
@@ -85,7 +89,8 @@ test.describe.serial('J3 screen capture', () => {
         .toBeLessThan(2000);
 
       // While the mouse moves, the cursor must be visible in the capture:
-      // the difference between two frames is the cursor's old and new position.
+      // the difference between two frames is the cursor's old and its new
+      // position - exactly one cursor moved.
       expect(movingDiff.changed, 'the OS cursor must be part of the screen capture').toBeGreaterThan(50);
       expect(movingDiff.blobs, 'exactly one cursor moved (its old and its new position)').toBe(2);
       for (const b of movingDiff.boxes) {

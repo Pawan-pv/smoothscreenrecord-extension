@@ -168,11 +168,23 @@ function handleClick(e: MouseEvent) {
 
   const target = e.target as Element | null;
   const tag = target?.tagName.toLowerCase() || 'unknown';
-  let text = target?.textContent?.trim().slice(0, 80) || undefined;
+  const fullText = (target?.textContent?.trim() || '').slice(0, 2000);
+  let text = fullText.slice(0, 80) || undefined;
+  let checkedText = fullText;
   if (target instanceof HTMLInputElement && target.value) {
     text = target.value.trim().slice(0, 80);
+    checkedText = target.value.trim();
   }
-  const sensitive = isSensitiveElement(target as HTMLElement | null) || Boolean(text && isSensitiveString(text));
+  // The privacy shield only BLURS the page (it never rewrites its text), so the
+  // raw value is still in the DOM: decide on the FULL text, not on the 80
+  // characters that are stored, and never record anything the shield covers.
+  const coveredByShield = Boolean(
+    target?.closest?.('[data-smoothstudio-redacted="true"]') ||
+    target?.querySelector?.('[data-smoothstudio-redacted="true"]')
+  );
+  const sensitive = coveredByShield ||
+    isSensitiveElement(target as HTMLElement | null) ||
+    Boolean(checkedText && isSensitiveString(checkedText));
   if (sensitive) {
     text = '[hidden input]';
   }

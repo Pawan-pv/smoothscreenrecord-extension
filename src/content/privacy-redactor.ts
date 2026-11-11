@@ -14,10 +14,10 @@ let activeObservers: MutationObserver[] = [];
 // current options.
 let observedTargets: Node[] = [];
 let mutationTimeout: any = null;
-// Original text of every masked text node, so a reset can restore the DOM exactly.
-// `masked` records what we wrote, so a later page-driven text change is
-// detected and the freshly captured value becomes the new restore point.
-let textNodeOriginals: Map<Text, { original: string; masked: string }> = new Map();
+// The inline `filter` (value + priority) each blurred element had BEFORE the
+// shield touched it, so a reset restores the page's own styling exactly.
+// The shield is visual-only (spec item 5): the page's text is never rewritten.
+let previousInlineFilter: Map<HTMLElement, { value: string; priority: string }> = new Map();
 
 // Non-global detection patterns (safe for .test() without mutating lastIndex)
 export const EMAIL_DETECT = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/i;
@@ -67,6 +67,10 @@ export function isSensitiveString(str: string): boolean {
   return EMAIL_DETECT.test(str) || API_KEY_DETECT.test(str) || REVENUE_DETECT.test(str) || /(password|secret|sk_live_|bearer\s+)/i.test(str);
 }
 
+/**
+ * Pure string scrubber for the EXPORTED assets (SOP guide, HTML widget).
+ * It is never applied to the live page: the page itself is only ever blurred.
+ */
 export function redactTextString(
   text: string,
   options: Partial<PrivacyOptions> = { blurEmails: true, blurRevenue: true, blurApiKeys: true }
@@ -125,8 +129,6 @@ function ensureRedactionStyles(docOrShadow: Document | ShadowRoot) {
       .smoothstudio-blur-redacted {
         filter: blur(8px) !important;
         -webkit-filter: blur(8px) !important;
-        user-select: none !important;
-        transition: filter 0.1s ease !important;
       }
       input.smoothstudio-blur-redacted, textarea.smoothstudio-blur-redacted {
         filter: blur(8px) !important;
@@ -142,6 +144,10 @@ function ensureRedactionStyles(docOrShadow: Document | ShadowRoot) {
 
 function blurElement(el: HTMLElement) {
   if (!blurredElements.has(el)) {
+    previousInlineFilter.set(el, {
+      value: el.style.getPropertyValue('filter'),
+      priority: el.style.getPropertyPriority('filter')
+    });
     el.classList.add('smoothstudio-blur-redacted');
     el.setAttribute('data-smoothstudio-redacted', 'true');
     // Inline filter as well as the class: inline styling survives pages that
@@ -151,45 +157,51 @@ function blurElement(el: HTMLElement) {
   }
 }
 
-// Masks sensitive substrings inside every text node of a root.
-// The original text is remembered so `resetRedactions` can restore the DOM.
-function maskSensitiveText(root: Node, options: Partial<PrivacyOptions>): number {
-  let masked = 0;
+/** Undoes blurElement: the element gets back exactly the inline filter it had. */
+function unblurElement(el: HTMLElement) {
+  el.classList.remove('smoothstudio-blur-redacted');
+  el.removeAttribute('data-smoothstudio-redacted');
+  const prev = previousInlineFilter.get(el);
+  if (prev && prev.value) {
+    el.style.setProperty('filter', prev.value, prev.priority);
+  } else {
+    el.style.removeProperty('filter');
+  }
+  previousInlineFilter.delete(el);
+  blurredElements.delete(el);
+}
+
+// Blurs the element that holds a sensitive substring of a text node.
+// The text node itself is NEVER modified: `textContent` stays exactly what the
+// page wrote, so forms still post the original values and copy/paste still
+// yields the original text.
+function blurSensitiveTextNodes(root: Node, options: Partial<PrivacyOptions>): number {
+  let blurred = 0;
   const doc = root.ownerDocument || document;
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let node: Text | null;
 
   while ((node = walker.nextNode() as Text | null)) {
-    if (!node.nodeValue || !node.parentElement) continue;
+    const value = node.nodeValue;
+    if (!value || !node.parentElement) continue;
 
     const parent = node.parentElement;
-    // Never touch code, styles, form controls, or the in-page recording HUD.
-    if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'TEXTAREA', 'INPUT'].includes(parent.tagName)) continue;
+    // Never touch code, styles, form controls (they are handled by value), the
+    // document root, or the in-page recording HUD.
+    if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'TEXTAREA', 'INPUT', 'HTML', 'BODY'].includes(parent.tagName)) continue;
     if (parent.closest('#smoothstudio-floating-hud')) continue;
 
-    const original = node.nodeValue;
-    const redacted = redactTextString(original, options);
-    if (redacted === original) continue;
+    const sensitive =
+      (options.blurEmails && EMAIL_DETECT.test(value)) ||
+      (options.blurRevenue && REVENUE_DETECT.test(value)) ||
+      (options.blurApiKeys && API_KEY_DETECT.test(value));
+    if (!sensitive) continue;
 
-    const tracked = textNodeOriginals.get(node);
-    if (!tracked) {
-      textNodeOriginals.set(node, { original, masked: redacted });
-    } else if (tracked.masked !== original) {
-      // The page rewrote this node since we last masked it. The new content is
-      // the value that must be restored, so re-anchor the restore point.
-      tracked.original = original;
-      tracked.masked = redacted;
-    }
-    node.nodeValue = redacted;
-    try {
-      parent.setAttribute('data-redacted', 'true');
-    } catch {
-      // Parent may have been detached between the walk and the write
-    }
-    masked++;
+    if (!blurredElements.has(parent)) blurred++;
+    blurElement(parent);
   }
 
-  return masked;
+  return blurred;
 }
 
 function checkAndBlurInput(el: HTMLInputElement | HTMLTextAreaElement, options: Partial<PrivacyOptions>) {
@@ -205,7 +217,12 @@ function checkAndBlurInput(el: HTMLInputElement | HTMLTextAreaElement, options: 
   if (['cc-number', 'current-password', 'one-time-code', 'new-password'].some(v => autocomplete.includes(v))) {
     shouldBlur = true;
   }
-  if (/(password|secret|api[_-]?key|token|credit[_-]?card|cvv|cvc)/i.test(nameOrId)) {
+  // Credentials are always covered. Key/token/secret fields belong to the
+  // "API Keys & Secrets" category, so switching that category OFF restores them.
+  if (/(password|passwd|credit[_-]?card|cvv|cvc)/i.test(nameOrId)) {
+    shouldBlur = true;
+  }
+  if (options.blurApiKeys && /(secret|api[_-]?key|token)/i.test(nameOrId)) {
     shouldBlur = true;
   }
   if (options.blurEmails && (el.type === 'email' || EMAIL_DETECT.test(val) || autocomplete.includes('email') || nameOrId.includes('email'))) {
@@ -261,11 +278,9 @@ function scanContainer(root: Document | ShadowRoot | Element, options: Partial<P
     const docOrShadow = (root instanceof Document || root instanceof ShadowRoot) ? root : (root.ownerDocument || document);
     ensureRedactionStyles(docOrShadow as any);
 
-    // 0. Mask sensitive substrings inside text nodes first. This is the
-    //    strongest form of redaction: the raw value never reaches the DOM,
-    //    the recorder, or the exported video. Blur below then only covers
-    //    what text masking cannot reach (input values, canvas, attributes).
-    maskSensitiveText(root, options);
+    // 0. Blur the element that holds a sensitive substring of a text node.
+    //    The page's own text is never rewritten (spec item 5).
+    blurSensitiveTextNodes(root, options);
 
     const elements = root.querySelectorAll('*');
     for (let i = 0; i < elements.length; i++) {
@@ -397,11 +412,8 @@ function handlePickerClick(e: MouseEvent) {
   if (!target) return;
 
   if (blurredElements.has(target)) {
-    target.classList.remove('smoothstudio-blur-redacted');
-    target.removeAttribute('data-smoothstudio-redacted');
-    target.style.filter = '';
+    unblurElement(target);
     target.style.outline = '';
-    blurredElements.delete(target);
   } else {
     blurElement(target);
     target.style.outline = '';
@@ -457,28 +469,16 @@ export function resetRedactions(opts: { keepPicker?: boolean } = {}): void {
   }
   observedTargets = [];
 
-  for (const el of blurredElements) {
+  for (const el of Array.from(blurredElements)) {
     try {
-      el.classList.remove('smoothstudio-blur-redacted');
-      el.removeAttribute('data-smoothstudio-redacted');
-      el.style.filter = '';
+      unblurElement(el);
       el.style.outline = '';
     } catch {}
   }
   blurredElements.clear();
-
-  // Restore the original text of every masked node and drop the markers.
-  for (const [node, tracked] of textNodeOriginals.entries()) {
-    try {
-      node.nodeValue = tracked.original;
-    } catch {
-      // Node may no longer be attached to the document
-    }
-  }
-  textNodeOriginals.clear();
+  previousInlineFilter.clear();
 
   try {
-    document.querySelectorAll('[data-redacted="true"]').forEach(el => el.removeAttribute('data-redacted'));
     document.querySelectorAll('#smoothstudio-redaction-styles').forEach(s => s.remove());
   } catch {}
 }

@@ -103,67 +103,9 @@ export class AudioProcessor {
       }
 
       const channelData = audioBuffer.getChannelData(0); // primary channel
-      const sampleRate = audioBuffer.sampleRate;
-      const windowSize = Math.floor(sampleRate * 0.05); // 50ms window
-      const totalWindows = Math.floor(channelData.length / windowSize);
-
-      const silences: SilenceSegment[] = [];
-      let silenceStartMs: number | null = null;
-
-      for (let w = 0; w < totalWindows; w++) {
-        const startIdx = w * windowSize;
-        let sumSquares = 0;
-
-        for (let i = 0; i < windowSize; i++) {
-          const val = channelData[startIdx + i];
-          sumSquares += val * val;
-        }
-
-        const rms = Math.sqrt(sumSquares / windowSize);
-        const db = rms > 0.00001 ? 20 * Math.log10(rms) : -100;
-        const currentMs = (w * windowSize * 1000) / sampleRate;
-
-        if (db < dbThreshold) {
-          if (silenceStartMs === null) {
-            silenceStartMs = currentMs;
-          }
-        } else {
-          if (silenceStartMs !== null) {
-            const duration = currentMs - silenceStartMs;
-            if (duration >= minSilenceDurationMs) {
-              // Check if user was clicking or typing during this pause
-              const hasActivity =
-                clicks.some((c) => c.t >= silenceStartMs! && c.t <= currentMs) ||
-                keystrokes.some((k) => k.t >= silenceStartMs! && k.t <= currentMs);
-
-              if (!hasActivity) {
-                silences.push({
-                  id: 'silence_' + Math.round(silenceStartMs),
-                  startTime: Math.round(silenceStartMs),
-                  endTime: Math.round(currentMs),
-                  duration: Math.round(duration),
-                  markedForCut: true
-                });
-              }
-            }
-            silenceStartMs = null;
-          }
-        }
-      }
-
-      // Flush trailing silence
-      if (silenceStartMs !== null) {
-        const duration = (audioBuffer.duration * 1000) - silenceStartMs;
-        if (duration >= minSilenceDurationMs) {
-          silences.push({
-            id: 'silence_' + Math.round(silenceStartMs),
-            startTime: Math.round(silenceStartMs),
-            endTime: Math.round(audioBuffer.duration * 1000),
-            duration: Math.round(duration),
-            markedForCut: true
-          });
-        }
-      }
+      const silences = detectSilenceSegments(
+        channelData, audioBuffer.sampleRate, clicks, keystrokes, dbThreshold, minSilenceDurationMs
+      );
 
       return silences;
     } catch (err) {
@@ -342,4 +284,81 @@ export class AudioProcessor {
       // Audio autoplay policy fallback
     }
   }
+}
+
+/**
+ * Pure silence detector over one channel of PCM: pauses of at least
+ * `minSilenceDurationMs` below `dbThreshold`, without clicks/keystrokes.
+ */
+export function detectSilenceSegments(
+  channelData: Float32Array,
+  sampleRate: number,
+  clicks: ClickEvent[] = [],
+  keystrokes: KeystrokeEvent[] = [],
+  dbThreshold = -42,
+  minSilenceDurationMs = 1200
+): SilenceSegment[] {
+  const windowSize = Math.floor(sampleRate * 0.05); // 50ms window
+  const totalWindows = Math.floor(channelData.length / windowSize);
+  const totalMs = (channelData.length * 1000) / sampleRate;
+
+  const silences: SilenceSegment[] = [];
+  let silenceStartMs: number | null = null;
+
+  for (let w = 0; w < totalWindows; w++) {
+    const startIdx = w * windowSize;
+    let sumSquares = 0;
+
+    for (let i = 0; i < windowSize; i++) {
+      const val = channelData[startIdx + i];
+      sumSquares += val * val;
+    }
+
+    const rms = Math.sqrt(sumSquares / windowSize);
+    const db = rms > 0.00001 ? 20 * Math.log10(rms) : -100;
+    const currentMs = (w * windowSize * 1000) / sampleRate;
+
+    if (db < dbThreshold) {
+      if (silenceStartMs === null) {
+        silenceStartMs = currentMs;
+      }
+    } else {
+      if (silenceStartMs !== null) {
+        const duration = currentMs - silenceStartMs;
+        if (duration >= minSilenceDurationMs) {
+          // Check if user was clicking or typing during this pause
+          const hasActivity =
+            clicks.some((c) => c.t >= silenceStartMs! && c.t <= currentMs) ||
+            keystrokes.some((k) => k.t >= silenceStartMs! && k.t <= currentMs);
+
+          if (!hasActivity) {
+            silences.push({
+              id: 'silence_' + Math.round(silenceStartMs),
+              startTime: Math.round(silenceStartMs),
+              endTime: Math.round(currentMs),
+              duration: Math.round(duration),
+              markedForCut: true
+            });
+          }
+        }
+        silenceStartMs = null;
+      }
+    }
+  }
+
+  // Flush trailing silence
+  if (silenceStartMs !== null) {
+    const duration = totalMs - silenceStartMs;
+    if (duration >= minSilenceDurationMs) {
+      silences.push({
+        id: 'silence_' + Math.round(silenceStartMs),
+        startTime: Math.round(silenceStartMs),
+        endTime: Math.round(totalMs),
+        duration: Math.round(duration),
+        markedForCut: true
+      });
+    }
+  }
+
+  return silences;
 }

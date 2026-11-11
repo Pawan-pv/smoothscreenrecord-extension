@@ -36,7 +36,7 @@ export class AudioProcessor {
   /**
    * Builds a real amplitude envelope from the recorded audio track.
    * Returns an empty array when the recording has no audio, so the UI can
-   * truthfully render "No audio" instead of a simulated waveform.
+   * truthfully render "No audio" instead of invented bars.
    */
   public async buildWaveformPeaks(videoBlob: Blob, buckets = 160): Promise<number[]> {
     const audioBuffer = await this.decodeAudioBuffer(videoBlob);

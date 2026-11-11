@@ -101,10 +101,13 @@ export class SopGuideExporter {
     });
 
     // Keystrokes that belong to a typing burst are consumed by that burst.
+    // Modifier combinations (Ctrl+K, Cmd+...) are NOT part of the typed text
+    // and stay separate shortcut steps.
     const consumedKeystrokeTimes = new Set<number>();
     typingSessions.forEach((s) => {
       keystrokes.forEach((k) => {
-        if (k.t >= s.t - 60 && k.t <= s.endT + 60 && k.key && k.key.length === 1) {
+        const isPlainCharacter = k.key && k.key.length === 1 && !k.combo.includes('+');
+        if (isPlainCharacter && k.t >= s.t - 60 && k.t <= s.endT + 60) {
           consumedKeystrokeTimes.add(k.t);
         }
       });

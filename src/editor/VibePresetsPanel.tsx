@@ -717,7 +717,7 @@ export function VibePresetsPanel({
                 type="text"
                 value={introHeadline || ''}
                 onChange={(e) => onChangeIntroHeadline?.(e.target.value)}
-                placeholder="e.g. Introducing SmoothStudio 2.0"
+                placeholder="Headline text"
                 className="w-full bg-black/50 border border-white/15 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none"
               />
             </div>
@@ -728,43 +728,9 @@ export function VibePresetsPanel({
                 type="text"
                 value={introSubheadline || ''}
                 onChange={(e) => onChangeIntroSubheadline?.(e.target.value)}
-                placeholder="e.g. Cinematic screen demos in seconds"
+                placeholder="Subheadline text"
                 className="w-full bg-black/50 border border-white/15 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 placeholder-gray-500 focus:outline-none"
               />
-            </div>
-
-            {/* Quick Title Hook Templates */}
-            <div className="flex flex-wrap gap-1 pt-0.5">
-              <button
-                type="button"
-                onClick={() => {
-                  onChangeIntroHeadline?.('Introducing SmoothStudio 2.0');
-                  onChangeIntroSubheadline?.('Cinematic screen demos in seconds');
-                }}
-                className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-gray-400 hover:text-purple-300 transition-colors"
-              >
-                Launch
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onChangeIntroHeadline?.('New Feature Walkthrough');
-                  onChangeIntroSubheadline?.('See what is possible with local hardware acceleration');
-                }}
-                className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-gray-400 hover:text-purple-300 transition-colors"
-              >
-                Feature
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onChangeIntroHeadline?.('Quick Step-by-Step Guide');
-                  onChangeIntroSubheadline?.('Everything you need to know in 60 seconds');
-                }}
-                className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-gray-400 hover:text-purple-300 transition-colors"
-              >
-                Guide
-              </button>
             </div>
 
             <p className="text-[10px] text-gray-400 leading-tight">
@@ -799,7 +765,7 @@ export function VibePresetsPanel({
                 type="text"
                 value={outroHeadline || ''}
                 onChange={(e) => onChangeOutroHeadline?.(e.target.value)}
-                placeholder="e.g. Ready to ship better demos?"
+                placeholder="Outro headline text"
                 className="w-full bg-black/50 border border-white/15 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none"
               />
             </div>
@@ -810,43 +776,9 @@ export function VibePresetsPanel({
                 type="text"
                 value={outroCtaText || ''}
                 onChange={(e) => onChangeOutroCtaText?.(e.target.value)}
-                placeholder="e.g. Try SmoothStudio Free →"
+                placeholder="Outro CTA text"
                 className="w-full bg-black/50 border border-white/15 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 placeholder-gray-500 focus:outline-none"
               />
-            </div>
-
-            {/* Quick Outro CTA Templates */}
-            <div className="flex flex-wrap gap-1 pt-0.5">
-              <button
-                type="button"
-                onClick={() => {
-                  onChangeOutroHeadline?.('Ready to ship better demos?');
-                  onChangeOutroCtaText?.('Try SmoothStudio Free →');
-                }}
-                className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-gray-400 hover:text-purple-300 transition-colors"
-              >
-                Free Trial
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onChangeOutroHeadline?.('Want the full walkthrough?');
-                  onChangeOutroCtaText?.('Read the Docs →');
-                }}
-                className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-gray-400 hover:text-purple-300 transition-colors"
-              >
-                Docs
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onChangeOutroHeadline?.('Built with SmoothStudio');
-                  onChangeOutroCtaText?.('smoothstudio.app');
-                }}
-                className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-gray-400 hover:text-purple-300 transition-colors"
-              >
-                URL
-              </button>
             </div>
 
             <p className="text-[10px] text-gray-400 leading-tight">

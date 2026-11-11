@@ -553,8 +553,8 @@ export class StudioRenderer {
         ctx,
         canvasW,
         canvasH,
-        introHeadline || 'Introducing SmoothStudio 2.0',
-        introSubheadline || 'Cinematic screen demos in seconds',
+        introHeadline,
+        introSubheadline,
         introCardAlpha,
         introCardScale,
         preset
@@ -567,8 +567,8 @@ export class StudioRenderer {
         ctx,
         canvasW,
         canvasH,
-        outroHeadline || 'Ready to ship better demos?',
-        outroCtaText || 'Try SmoothStudio Free',
+        outroHeadline,
+        outroCtaText ?? '',
         outroCardAlpha,
         outroCardScale,
         preset
@@ -1177,13 +1177,16 @@ export class StudioRenderer {
     ctx: CanvasRenderingContext2D,
     canvasW: number,
     canvasH: number,
-    headline: string,
-    subheadline: string,
+    headline: string | undefined,
+    subheadline: string | undefined,
     alpha: number,
     scale: number,
     preset: VibePreset
   ) {
     if (alpha <= 0.001) return;
+
+    const headlineText = headline ?? '';
+    const subheadlineText = subheadline ?? '';
 
     ctx.save();
     ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
@@ -1256,18 +1259,18 @@ export class StudioRenderer {
     ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
     ctx.shadowBlur = 18;
     ctx.shadowOffsetY = 4;
-    ctx.fillText(headline || 'Introducing SmoothStudio 2.0', 0, cardY + cardH * 0.52);
+    ctx.fillText(headlineText, 0, cardY + cardH * 0.52);
     ctx.restore();
 
     // Subheadline
-    if (subheadline) {
+    if (subheadlineText) {
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const subFontSize = Math.max(15, Math.min(22, Math.round(cardW * 0.026)));
       ctx.font = `400 ${subFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
       ctx.fillStyle = 'rgba(226, 232, 240, 0.85)';
-      ctx.fillText(subheadline, 0, cardY + cardH * 0.76);
+      ctx.fillText(subheadlineText, 0, cardY + cardH * 0.76);
       ctx.restore();
     }
 
@@ -1279,13 +1282,15 @@ export class StudioRenderer {
     ctx: CanvasRenderingContext2D,
     canvasW: number,
     canvasH: number,
-    headline: string,
-    ctaText: string,
+    headline: string | undefined,
+    ctaText: string | undefined,
     alpha: number,
     scale: number,
     preset: VibePreset
   ) {
     if (alpha <= 0.001) return;
+
+    const headlineText = headline ?? '';
 
     ctx.save();
     ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
@@ -1341,11 +1346,11 @@ export class StudioRenderer {
     ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
     ctx.shadowBlur = 18;
     ctx.shadowOffsetY = 4;
-    ctx.fillText(headline || 'Ready to ship better demos?', 0, cardY + cardH * 0.44);
+    ctx.fillText(headlineText, 0, cardY + cardH * 0.44);
     ctx.restore();
 
     // Glowing gradient CTA pill badge
-    const cta = ctaText || 'Try SmoothStudio Free';
+    const cta = ctaText ?? '';
     ctx.save();
     ctx.font = '700 15px Inter, sans-serif';
     const ctaMetrics = ctx.measureText(cta);

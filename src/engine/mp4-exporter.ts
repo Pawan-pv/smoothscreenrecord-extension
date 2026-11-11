@@ -13,6 +13,15 @@ import { StudioRenderer, getAspectDimensions } from './renderer';
 import { computeCinematicCameraState, SpringCameraSolver } from './spring-physics';
 import { CursorSplineEngine } from './cursor-spline';
 import { diagnosticChannel } from './diagnostic-channel';
+import {
+  PcmTrack,
+  webmHasAudioTrack,
+  decodeRecordingPcm,
+  keepRangesFromCuts,
+  cutPcmToKeepRanges,
+  encodeAac,
+  AAC_OUTPUT_CHANNELS
+} from './audio-track';
 
 export interface ExportOptions {
   videoSource: HTMLVideoElement | HTMLCanvasElement;
@@ -52,6 +61,16 @@ export class HardwareMp4Exporter {
   /** Hard safety limit for a single video seek. Exceeding it is an error, never a silent wrong frame. */
   private static readonly SEEK_TIMEOUT_MS = 2000;
 
+  /**
+   * Grace period for requestVideoFrameCallback after `seeked`.
+   * The element must be rendered for rVFC to fire; an offscreen/background
+   * window never presents frames, so we fall back to the (already correct)
+   * `seeked` frame and remember that rVFC is not usable for this element.
+   */
+  private static readonly RVFC_GRACE_MS = 250;
+  private rvfcUsable = true;
+  private rvfcPresented = false;
+
   constructor() {
     this.renderer = new StudioRenderer();
   }
@@ -70,6 +89,7 @@ export class HardwareMp4Exporter {
       let settled = false;
       let rafHandle: number | null = null;
       let timer: number | null = null;
+      let graceTimer: number | null = null;
 
       const cleanup = () => {
         video.removeEventListener('seeked', onSeeked);
@@ -77,6 +97,7 @@ export class HardwareMp4Exporter {
           try { (video as any).cancelVideoFrameCallback(rafHandle); } catch { /* ignore */ }
         }
         if (timer !== null) clearTimeout(timer);
+        if (graceTimer !== null) clearTimeout(graceTimer);
       };
 
       const succeed = () => {
@@ -96,10 +117,21 @@ export class HardwareMp4Exporter {
       const onSeeked = () => {
         if (settled) return;
         // `seeked` guarantees the decoder produced the frame for the new
-        // currentTime. requestVideoFrameCallback additionally guarantees the
-        // frame was presented to the compositor.
-        if (typeof (video as any).requestVideoFrameCallback === 'function') {
-          rafHandle = (video as any).requestVideoFrameCallback(() => succeed());
+        // currentTime, so the frame is already the CORRECT one.
+        // requestVideoFrameCallback additionally guarantees the frame was
+        // presented to the compositor. It only fires while the element is
+        // actually being rendered (an offscreen/background window never
+        // presents), so it is awaited with a bounded grace period and skipped
+        // entirely once we know this element is not presented.
+        if (this.rvfcUsable && typeof (video as any).requestVideoFrameCallback === 'function') {
+          rafHandle = (video as any).requestVideoFrameCallback(() => {
+            this.rvfcPresented = true;
+            succeed();
+          });
+          graceTimer = window.setTimeout(() => {
+            if (!this.rvfcPresented) this.rvfcUsable = false;
+            succeed();
+          }, HardwareMp4Exporter.RVFC_GRACE_MS);
         } else {
           succeed();
         }
@@ -193,6 +225,15 @@ export class HardwareMp4Exporter {
           .filter((s) => s.endTime > s.startTime)
       : [];
 
+    // C2: audio. If the recording has an audio track it MUST be decoded and
+    // encoded; a failure aborts the export (no silent video-only MP4). The audio
+    // is cut at exactly the same spans as the video timeline.
+    let audioTrack: PcmTrack | null = null;
+    if (videoBlob && (await webmHasAudioTrack(new Uint8Array(await videoBlob.slice(0, 4 * 1024 * 1024).arrayBuffer())))) {
+      const decoded = await decodeRecordingPcm(videoBlob);
+      audioTrack = cutPcmToKeepRanges(decoded, keepRangesFromCuts(activeCutSilences, durationMs));
+    }
+
     // Build timeline frames to render (skipping cut silences)
     const timelineTimestamps: number[] = [];
     for (let t = 0; t <= durationMs; t += frameIntervalMs) {
@@ -241,8 +282,13 @@ export class HardwareMp4Exporter {
           showOutroCard: options.showOutroCard,
           outroHeadline: options.outroHeadline,
           outroCtaText: options.outroCtaText,
-          onProgress
+          onProgress,
+          audioTrack
         });
+      }
+
+      if (audioTrack) {
+        throw new Error('This browser has no WebCodecs support, so the MP4 export cannot include the recording audio. Export aborted.');
       }
 
       // Fallback exporter only if WebCodecs is completely unavailable
@@ -287,6 +333,7 @@ export class HardwareMp4Exporter {
 
   private async exportWithWebCodecs(params: {
     video: HTMLVideoElement | HTMLCanvasElement;
+    audioTrack?: PcmTrack | null;
     onRenderCanvasFrame?: (timeMs: number) => void;
     exportCanvas: HTMLCanvasElement;
     outW: number;
@@ -320,6 +367,7 @@ export class HardwareMp4Exporter {
   }): Promise<Blob> {
     const {
       video,
+      audioTrack,
       onRenderCanvasFrame,
       exportCanvas,
       outW,
@@ -365,6 +413,13 @@ export class HardwareMp4Exporter {
         width: outW,
         height: outH
       },
+      ...(audioTrack ? {
+        audio: {
+          codec: 'aac' as const,
+          numberOfChannels: AAC_OUTPUT_CHANNELS,
+          sampleRate: audioTrack.sampleRate
+        }
+      } : {}),
       fastStart: 'in-memory'
     });
 
@@ -552,6 +607,17 @@ export class HardwareMp4Exporter {
 
     if (encodedChunksCount === 0) {
       throw new Error(`VideoEncoder did not produce any encoded video chunks for ${totalFrames} frames.`);
+    }
+
+    // C2: encode the cut audio and mux it next to the video. Errors propagate.
+    if (audioTrack) {
+      const audioChunkCount = await encodeAac(audioTrack, (chunk) => {
+        muxer.addAudioChunkRaw(chunk.data, chunk.type, chunk.timestamp, chunk.duration, chunk.meta);
+      });
+      if (audioChunkCount === 0) {
+        throw new Error('The AAC encoder produced no audio chunks. Export aborted.');
+      }
+      console.log(`[SmoothStudio MP4 Exporter] Muxed ${audioChunkCount} AAC chunks (${audioTrack.sampleRate} Hz).`);
     }
 
     isFinalized = true;

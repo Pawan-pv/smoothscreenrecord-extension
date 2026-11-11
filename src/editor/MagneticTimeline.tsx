@@ -401,6 +401,8 @@ export function MagneticTimeline({
               return (
                 <div
                   key={cap.id}
+                  data-caption-id={cap.id}
+                  data-caption-text={cap.text}
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -456,6 +458,7 @@ export function MagneticTimeline({
                 key={pill.id}
                 data-zoom-pill={pill.id}
                 data-start-time={pill.startTime}
+                data-end-time={pill.endTime}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();

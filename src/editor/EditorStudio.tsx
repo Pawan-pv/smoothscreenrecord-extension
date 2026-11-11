@@ -1393,7 +1393,7 @@ export function EditorStudio() {
       )}
 
       {/* Main Studio Body: Sidebar + Center Canvas */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="relative flex flex-1 overflow-hidden">
         {/* Left Vibe Presets & Controls */}
         <VibePresetsPanel
           currentPreset={preset}

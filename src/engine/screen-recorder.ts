@@ -22,7 +22,11 @@ export interface RecorderOptions {
   onTimelineOrigin?: (originEpochMs: number) => void;
 }
 
-const PUMP_INTERVAL_MS = 16;          // ~60 fps frame pump
+const PUMP_MIN_INTERVAL_MS = 8;       // never forward more than ~120 fps
+const PUMP_SAFETY_INTERVAL_MS = 500;  // re-push the last frame if the source stalls
+const WARMUP_WINDOW_MS = 4000;        // encoder warm-up window
+const WARMUP_FPS = 3;                 // slow feed while the encoder warms up
+const FIRST_FRAME_TIMEOUT_MS = 3000;  // never block the start on the first frame
 const RECORDER_TIMESLICE_MS = 250;    // flush encoded data to storage 4x/second
 const MAX_SNAPSHOTS = 160;
 
@@ -97,6 +101,7 @@ export class ScreenCaptureEngine {
     const vTrack = this.mediaStream.getVideoTracks()[0];
     if (vTrack) {
       this.lastTrackSettings = vTrack.getSettings ? vTrack.getSettings() : null;
+      console.log('[SmoothStudio CaptureEngine] Capture track settings:', JSON.stringify(this.lastTrackSettings));
     }
 
     // Optional microphone capture (with timeout guard to prevent capture stall)
@@ -173,7 +178,11 @@ export class ScreenCaptureEngine {
     }
 
     this.mediaRecorder = new MediaRecorder(this.recorderStream, {
-      mimeType
+      mimeType,
+      // An explicit bitrate keeps Chromium's rate control stable. Leaving it
+      // unset makes the encoder ramp up very slowly, which delays the first
+      // keyframe by several seconds and loses the beginning of the recording.
+      videoBitsPerSecond: this.computeCaptureBitrate()
     });
 
     this.pendingWrites = [];
@@ -222,6 +231,17 @@ export class ScreenCaptureEngine {
     return this.mediaStream;
   }
 
+  private computeCaptureBitrate(): number {
+    const w = this.lastTrackSettings?.width || 1920;
+    const h = this.lastTrackSettings?.height || 1080;
+    const pixels = w * h;
+    if (pixels >= 3840 * 2160) return 24_000_000;
+    if (pixels >= 2560 * 1440) return 16_000_000;
+    if (pixels >= 1920 * 1080) return 10_000_000;
+    if (pixels >= 1280 * 720) return 6_000_000;
+    return 3_000_000;
+  }
+
   // -----------------------------------------------------------------------
   // Frame pump: capture -> <video> -> <canvas> -> captureStream(0) -> recorder
   // -----------------------------------------------------------------------
@@ -235,7 +255,11 @@ export class ScreenCaptureEngine {
     document.body.appendChild(video);
     this.pumpVideo = video;
 
-    await video.play().catch(() => {});
+    // Never block on play(): some capture surfaces never resolve the promise.
+    await Promise.race([
+      video.play().catch(() => {}),
+      new Promise<void>((resolve) => setTimeout(resolve, 2000))
+    ]);
     if (video.readyState < 1) {
       await new Promise<void>((resolve) => {
         const done = () => resolve();
@@ -275,12 +299,18 @@ export class ScreenCaptureEngine {
     });
 
     let lastPumpAt = 0;
-    const tick = () => {
-      if (!this.isRecording && this.pumpFrameCount > 0) return;
+    let lastSourceFrameAt = 0;
+    const warmupStart = Date.now();
+    const pumpOneFrame = () => {
       const now = performance.now();
-      // Both the interval driver and the rAF driver call tick(); cap the
-      // combined rate so the encoder never sees more than ~60 fps.
-      if (now - lastPumpAt < PUMP_INTERVAL_MS - 2) return;
+      // During the encoder warm-up Chromium drops every frame that overflows
+      // the encoder queue. Feeding the encoder slowly during the warm-up keeps
+      // the queue short so that the first seconds of the recording survive.
+      const warmupElapsed = Date.now() - warmupStart;
+      const minInterval = warmupElapsed < WARMUP_WINDOW_MS
+        ? (1000 / WARMUP_FPS)
+        : PUMP_MIN_INTERVAL_MS;
+      if (now - lastPumpAt < minInterval - 2) return;
       lastPumpAt = now;
       try {
         if (video.readyState >= 2 && video.videoWidth > 0) {
@@ -303,24 +333,45 @@ export class ScreenCaptureEngine {
       }
     };
 
-    // A fixed-interval timer keeps the pump alive even when the page is not
-    // rendering (background tab / unfocused window), which is exactly when
-    // Chromium stops delivering capture frames.
-    this.pumpTimer = window.setInterval(tick, PUMP_INTERVAL_MS);
-    // requestAnimationFrame as a secondary driver (runs while the page renders).
-    const rafTick = () => {
-      if (!this.isRecording) return;
-      tick();
-      this.pumpRaf = requestAnimationFrame(rafTick);
+    // PRIMARY DRIVER: one output frame per NEW source frame.
+    // Pushing duplicates would make the encoder stretch the timeline (the
+    // recorded video would play the captured content slower than real time),
+    // so the pump only forwards genuine source frames.
+    const onSourceFrame = () => {
+      lastSourceFrameAt = performance.now();
+      pumpOneFrame();
+      scheduleSourceFrameCallback();
     };
-    this.pumpRaf = requestAnimationFrame(rafTick);
+    const scheduleSourceFrameCallback = () => {
+      if (typeof (video as any).requestVideoFrameCallback === 'function') {
+        (video as any).requestVideoFrameCallback(onSourceFrame);
+      }
+    };
+    scheduleSourceFrameCallback();
+
+    // SAFETY NET: if the captured surface stops delivering frames (a
+    // background tab is not composited by Chromium), keep the encoder fed with
+    // the last known frame so the recorded timeline stays continuous instead
+    // of containing multi-second holes.
+    this.pumpTimer = window.setInterval(() => {
+      if (!this.isRecording) return;
+      if (performance.now() - lastSourceFrameAt > PUMP_SAFETY_INTERVAL_MS) {
+        pumpOneFrame();
+      }
+    }, PUMP_SAFETY_INTERVAL_MS);
 
     return pumped;
   }
 
   private waitForFirstFrame(): Promise<void> {
-    if (this.firstFramePromise) return this.firstFramePromise;
-    return Promise.resolve();
+    if (!this.firstFramePromise) return Promise.resolve();
+    // Never block the UI on the first frame: if the captured surface does not
+    // render at all we still start the recording (the frame pump safety net
+    // will deliver frames as soon as anything is available).
+    return Promise.race([
+      this.firstFramePromise,
+      new Promise<void>((resolve) => setTimeout(resolve, FIRST_FRAME_TIMEOUT_MS))
+    ]);
   }
 
   private stopFramePump() {

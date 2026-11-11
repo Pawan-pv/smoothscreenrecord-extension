@@ -10,6 +10,10 @@ let hoveredElement: HTMLElement | null = null;
 let blurredElements: Set<HTMLElement> = new Set();
 let activeObservers: MutationObserver[] = [];
 let mutationTimeout: any = null;
+// Original text of every masked text node, so a reset can restore the DOM exactly.
+// `masked` records what we wrote, so a later page-driven text change is
+// detected and the freshly captured value becomes the new restore point.
+let textNodeOriginals: Map<Text, { original: string; masked: string }> = new Map();
 
 // Non-global detection patterns (safe for .test() without mutating lastIndex)
 export const EMAIL_DETECT = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/i;
@@ -136,8 +140,52 @@ function blurElement(el: HTMLElement) {
   if (!blurredElements.has(el)) {
     el.classList.add('smoothstudio-blur-redacted');
     el.setAttribute('data-smoothstudio-redacted', 'true');
+    // Inline filter as well as the class: inline styling survives pages that
+    // strip injected stylesheets, and it is what the picker toggles back off.
+    el.style.filter = 'blur(8px)';
     blurredElements.add(el);
   }
+}
+
+// Masks sensitive substrings inside every text node of a root.
+// The original text is remembered so `resetRedactions` can restore the DOM.
+function maskSensitiveText(root: Node, options: Partial<PrivacyOptions>): number {
+  let masked = 0;
+  const doc = root.ownerDocument || document;
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node: Text | null;
+
+  while ((node = walker.nextNode() as Text | null)) {
+    if (!node.nodeValue || !node.parentElement) continue;
+
+    const parent = node.parentElement;
+    // Never touch code, styles, form controls, or the in-page recording HUD.
+    if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'TEXTAREA', 'INPUT'].includes(parent.tagName)) continue;
+    if (parent.closest('#smoothstudio-floating-hud')) continue;
+
+    const original = node.nodeValue;
+    const redacted = redactTextString(original, options);
+    if (redacted === original) continue;
+
+    const tracked = textNodeOriginals.get(node);
+    if (!tracked) {
+      textNodeOriginals.set(node, { original, masked: redacted });
+    } else if (tracked.masked !== original) {
+      // The page rewrote this node since we last masked it. The new content is
+      // the value that must be restored, so re-anchor the restore point.
+      tracked.original = original;
+      tracked.masked = redacted;
+    }
+    node.nodeValue = redacted;
+    try {
+      parent.setAttribute('data-redacted', 'true');
+    } catch {
+      // Parent may have been detached between the walk and the write
+    }
+    masked++;
+  }
+
+  return masked;
 }
 
 function checkAndBlurInput(el: HTMLInputElement | HTMLTextAreaElement, options: Partial<PrivacyOptions>) {
@@ -208,6 +256,12 @@ function scanContainer(root: Document | ShadowRoot | Element, options: Partial<P
   try {
     const docOrShadow = (root instanceof Document || root instanceof ShadowRoot) ? root : (root.ownerDocument || document);
     ensureRedactionStyles(docOrShadow as any);
+
+    // 0. Mask sensitive substrings inside text nodes first. This is the
+    //    strongest form of redaction: the raw value never reaches the DOM,
+    //    the recorder, or the exported video. Blur below then only covers
+    //    what text masking cannot reach (input values, canvas, attributes).
+    maskSensitiveText(root, options);
 
     const elements = root.querySelectorAll('*');
     for (let i = 0; i < elements.length; i++) {
@@ -391,7 +445,18 @@ export function resetRedactions(): void {
   }
   blurredElements.clear();
 
+  // Restore the original text of every masked node and drop the markers.
+  for (const [node, tracked] of textNodeOriginals.entries()) {
+    try {
+      node.nodeValue = tracked.original;
+    } catch {
+      // Node may no longer be attached to the document
+    }
+  }
+  textNodeOriginals.clear();
+
   try {
+    document.querySelectorAll('[data-redacted="true"]').forEach(el => el.removeAttribute('data-redacted'));
     document.querySelectorAll('#smoothstudio-redaction-styles').forEach(s => s.remove());
   } catch {}
 }

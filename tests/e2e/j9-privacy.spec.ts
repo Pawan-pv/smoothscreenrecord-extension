@@ -11,7 +11,7 @@ import { test, expect } from '@playwright/test';
 import path from 'path';
 import fs from 'fs';
 import {
-  launchApp, serveFixtures, recordPage, outDir, saveRawRecording, extractFrame, meanLuma
+  launchApp, serveFixtures, recordPage, outDir, saveRawRecording, extractFrame, meanLuma, lumaStdDev
 } from './helpers/harness';
 
 /** Every sensitive value the fixture contains. */
@@ -63,15 +63,69 @@ test.describe.serial('J9 privacy', () => {
       await target.waitForTimeout(800);
 
       // ---- 3. the redaction must be visible on the page --------------------
+      // SPEC ITEM 5: the shield is a visual blur(8px). The page's own text is
+      // never rewritten, so innerText/textContent are exactly what the page put there.
       const after = await emailBox.innerText();
       console.log('J9 email text after redaction:', JSON.stringify(after));
-      expect(after, 'the email must not be readable on the page').not.toContain('dana.reeves@example-corp.com');
+      expect(after, 'the shield must NOT rewrite the page text').toBe('dana.reeves@example-corp.com');
+      const bodyHasBullets = await target.evaluate(() => (document.body.textContent || '').includes('•'));
+      expect(bodyHasBullets, 'no • character may be written into the page').toBe(false);
+
+      // every sensitive element is blurred with filter: blur(8px), its text is intact
+      const SENSITIVE_SELECTORS = ['#email-text', '#email-input', '#email-textarea', '#key-text', '#key-input',
+        '#key-text2', '#mrr', '#rev-jan', '#form-email', '#form-amount', '#rerender'];
+      const states = await target.evaluate((sels) => sels.map((s) => {
+        const el = document.querySelector(s) as HTMLElement | null;
+        return { sel: s, found: !!el, filter: el ? getComputedStyle(el).filter : '' };
+      }), SENSITIVE_SELECTORS);
+      console.log('J9 blur state:', JSON.stringify(states));
+      for (const st of states) {
+        expect(st.found, `${st.sel} must exist`).toBe(true);
+        expect(st.filter, `${st.sel} must be blurred`).toContain('blur(8px)');
+      }
+      // shadow DOM + same-origin iframe + dynamically added rows
+      const nested = await target.evaluate(() => {
+        const shadow = document.querySelector('#shadow-host')!.shadowRoot!.querySelector('#shadow-email') as HTMLElement;
+        const frameDoc = (document.querySelector('#inner-frame') as HTMLIFrameElement).contentDocument!;
+        const fe = frameDoc.querySelector('#frame-email') as HTMLElement;
+        const rows = Array.from(document.querySelectorAll('#rows-host > div')) as HTMLElement[];
+        return {
+          shadow: getComputedStyle(shadow).filter, shadowText: shadow.textContent,
+          frame: getComputedStyle(fe).filter, frameText: fe.textContent,
+          rows: rows.map((r) => getComputedStyle(r).filter), rowText: rows.map((r) => r.textContent)
+        };
+      });
+      console.log('J9 nested blur state:', JSON.stringify(nested));
+      expect(nested.shadow).toContain('blur(8px)');
+      expect(nested.shadowText).toBe('shadow.user@shadowdom.example');
+      expect(nested.frame).toContain('blur(8px)');
+      expect(nested.frameText).toBe('iframe.contact@embedded.example');
+      expect(nested.rows.length).toBe(3);
+      for (const f of nested.rows) expect(f).toContain('blur(8px)');
+      for (const t of nested.rowText) expect(t).toContain('@bulkrows.example');
+
+      // copy/paste must still yield the original text
+      const selected = await target.evaluate(() => {
+        const el = document.querySelector('#email-text') as HTMLElement;
+        const sel = window.getSelection()!;
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return { text: sel.toString(), userSelect: getComputedStyle(el).userSelect };
+      });
+      expect(selected.text, 'copy/paste must yield the original text').toBe('dana.reeves@example-corp.com');
+      expect(selected.userSelect, 'the shield must not disable text selection').not.toBe('none');
+
       const afterShot = path.join(dir, 'email_after.png');
       await emailBox.screenshot({ path: afterShot });
-      const beforeLuma = meanLuma(beforeShot, { x: 0, y: 0, w: 200, h: 20 });
-      const afterLuma = meanLuma(afterShot, { x: 0, y: 0, w: 200, h: 20 });
-      console.log(`J9 email region luma before=${beforeLuma.toFixed(1)} after=${afterLuma.toFixed(1)}`);
-      expect(Math.abs(beforeLuma - afterLuma), 'the redaction must change what is rendered').toBeGreaterThan(3);
+      // A blur keeps the MEAN luma, it removes the sharp edges: measure the sharpness.
+      const rect = { x: 0, y: 0, w: 200, h: 20 };
+      const beforeSharp = lumaStdDev(beforeShot, rect);
+      const afterSharp = lumaStdDev(afterShot, rect);
+      console.log(`J9 email region sharpness (luma stddev) before=${beforeSharp.toFixed(1)} after=${afterSharp.toFixed(1)}`);
+      expect(afterSharp, 'the blurred email must be markedly less sharp than the readable one')
+        .toBeLessThan(beforeSharp * 0.6);
 
       // ---- 4. the page must keep working ----------------------------------
       await target.locator('#email-input').fill('typed.by.user@example.org');
@@ -127,6 +181,14 @@ test.describe.serial('J9 privacy', () => {
       console.log('J9 email text after turning the toggles off:', JSON.stringify(restored));
       expect(restored, 'turning the toggles off must restore the original value')
         .toContain('dana.reeves@example-corp.com');
+      const filtersAfterOff = await target.evaluate((sels) => sels.map((s) => {
+        const el = document.querySelector(s) as HTMLElement;
+        return getComputedStyle(el).filter;
+      }), SENSITIVE_SELECTORS);
+      console.log('J9 filters after the toggles are off:', JSON.stringify(filtersAfterOff));
+      for (const f of filtersAfterOff) {
+        expect(f, 'turning the toggles off must restore the original rendering').not.toContain('blur');
+      }
 
       // ---- 7. no asset may contain a sensitive value -----------------------
       const downloads: { kind: string; file: string; text: string }[] = [];

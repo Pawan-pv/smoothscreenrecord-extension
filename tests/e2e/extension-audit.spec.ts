@@ -215,8 +215,14 @@ test.describe.serial('SmoothStudio Autonomous Extension Audit Suite', () => {
     await privacyControllerPage.close();
     await targetPage.waitForTimeout(400);
 
-    const redactedEmail = await targetPage.innerText('#user-email');
-    expect(redactedEmail).toContain('•');
+    // Spec item 5: the shield is VISUAL ONLY. The page's own text stays exactly
+    // as the page wrote it; the element is blurred with filter: blur(8px).
+    const redacted = await targetPage.evaluate(() => {
+      const el = document.querySelector('#user-email') as HTMLElement;
+      return { text: el.textContent, filter: getComputedStyle(el).filter };
+    });
+    expect(redacted.text, 'the shield must not rewrite the page text').toBe('ceo@enterprise-saas.com');
+    expect(redacted.filter, 'the email must be blurred').toContain('blur(8px)');
 
     await targetPage.screenshot({ path: path.join(ARTIFACTS_DIR, '01-target-page-redacted.png') });
     await targetPage.close();

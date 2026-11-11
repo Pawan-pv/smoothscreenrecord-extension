@@ -450,8 +450,13 @@ test.describe.serial('SmoothStudio Popup & Service Worker Interactive Suite', ()
     await popupPage.waitForTimeout(400);
 
     // Target page DOM should be redacted via real-time message forwarding
-    const redactedEmail = await targetPage.innerText('#user-email');
-    expect(redactedEmail).toContain('•');
+    // Spec item 5: visual-only blur, the page's text is never rewritten.
+    const redacted = await targetPage.evaluate(() => {
+      const el = document.querySelector('#user-email') as HTMLElement;
+      return { text: el.textContent, filter: getComputedStyle(el).filter };
+    });
+    expect(redacted.text, 'the shield must not rewrite the page text').toBe('ceo@enterprise-saas.com');
+    expect(redacted.filter, 'the email must be blurred').toContain('blur(8px)');
 
     await popupPage.close();
     await targetPage.close();

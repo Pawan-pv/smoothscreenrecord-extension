@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   applyAutoRedaction,
+  resetRedactions,
   redactTextString,
   EMAIL_DETECT,
   REVENUE_DETECT,
@@ -61,7 +62,7 @@ describe('Privacy Redactor: Real-Time DOM Inspection & Sanitization', () => {
   });
 
   describe('2. In-Memory Document Mutation & Sub-30ms Performance', () => {
-    it('selectively redacts DOM text nodes in-memory within a sub-30ms performance target', () => {
+    it('blurs the offending elements with filter: blur(8px) and never rewrites the page text (spec item 5)', () => {
       // Build a realistic enterprise UI dashboard DOM fragment
       document.body.innerHTML = `
         <div id="app-root" class="min-h-screen bg-slate-900 text-white p-6">
@@ -89,32 +90,110 @@ describe('Privacy Redactor: Real-Time DOM Inspection & Sanitization', () => {
         </div>
       `;
 
-      // Measure execution duration for DOM TreeWalker mutation
+      const textNodesBefore: string[] = [];
+      const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (w.nextNode()) textNodesBefore.push((w.currentNode as Text).nodeValue || '');
+      const textBefore = document.body.textContent;
+
+      // Measure execution duration for the DOM scan
       const start = performance.now();
       applyAutoRedaction({ blurEmails: true, blurRevenue: true, blurApiKeys: true });
       const durationMs = performance.now() - start;
-
-      // Real-time execution target (deterministic under thread load)
       expect(durationMs).toBeLessThan(150);
 
-      // Verify specific redacted fields
+      // SPEC ITEM 5: the page's own text is never rewritten.
+      expect(document.body.textContent).toBe(textBefore);
+      expect(document.body.textContent).not.toContain('•');
+      const textNodesAfter: string[] = [];
+      const w2 = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (w2.nextNode()) textNodesAfter.push((w2.currentNode as Text).nodeValue || '');
+      expect(textNodesAfter).toEqual(textNodesBefore);
       expect(document.getElementById('account-holder')?.textContent).toBe(
-        'Account Owner: ••••••@••••.com'
+        'Account Owner: executive.director@fintech-global.com'
       );
-      expect(document.getElementById('arr-val')?.textContent).toBe('$••,•••');
-      expect(document.getElementById('prod-key')?.textContent).toBe('••••••••••••••••');
+      expect(document.getElementById('arr-val')?.textContent).toBe('$1,250,000');
+      expect(document.getElementById('prod-key')?.textContent).toBe('sk\u005flive_998811223344556677889900');
 
-      // Verify structural preservation of non-sensitive elements
-      expect(document.getElementById('page-title')?.textContent).toBe('Financial Overview');
-      expect(document.getElementById('seat-count')?.textContent).toBe('45 active seats');
-      expect(document.getElementById('footer-copy')?.textContent).toBe(
-        'All rights reserved © 2026 Enterprise Inc.'
-      );
+      // The redaction is VISUAL: a blur(8px) filter on the offending elements.
+      for (const id of ['account-holder', 'arr-val', 'prod-key']) {
+        const el = document.getElementById(id) as HTMLElement;
+        expect(el.style.filter, `#${id} must be blurred`).toContain('blur(8px)');
+      }
 
-      // Verify data-redacted attribute markers
-      expect(document.getElementById('account-holder')?.getAttribute('data-redacted')).toBe('true');
-      expect(document.getElementById('arr-val')?.getAttribute('data-redacted')).toBe('true');
-      expect(document.getElementById('prod-key')?.getAttribute('data-redacted')).toBe('true');
+      // Non-sensitive elements are untouched.
+      for (const id of ['page-title', 'seat-count', 'footer-copy']) {
+        const el = document.getElementById(id) as HTMLElement;
+        expect(el.style.filter, `#${id} must not be blurred`).toBe('');
+        expect(el.classList.contains('smoothstudio-blur-redacted')).toBe(false);
+      }
+    });
+
+    it('turning a category OFF restores the original rendering immediately, and the text was never touched', () => {
+      document.body.innerHTML = `
+        <p id="mail">Write to ops.lead@acme-labs.io</p>
+        <p id="money">Revenue is $14,250.00</p>
+      `;
+      applyAutoRedaction({ blurEmails: true, blurRevenue: true, blurApiKeys: true });
+      expect((document.getElementById('mail') as HTMLElement).style.filter).toContain('blur(8px)');
+      expect((document.getElementById('money') as HTMLElement).style.filter).toContain('blur(8px)');
+
+      applyAutoRedaction({ blurEmails: false, blurRevenue: true, blurApiKeys: true });
+      const mail = document.getElementById('mail') as HTMLElement;
+      expect(mail.style.filter).toBe('');
+      expect(mail.classList.contains('smoothstudio-blur-redacted')).toBe(false);
+      expect(mail.textContent).toBe('Write to ops.lead@acme-labs.io');
+      expect((document.getElementById('money') as HTMLElement).style.filter).toContain('blur(8px)');
+
+      resetRedactions();
+      expect((document.getElementById('money') as HTMLElement).style.filter).toBe('');
+      expect(document.getElementById('money')?.textContent).toBe('Revenue is $14,250.00');
+    });
+
+    it("restores the page's own inline filter and never touches the page's own data-redacted attribute", () => {
+      document.body.innerHTML = `
+        <p id="own" style="filter: grayscale(1)" data-redacted="from-the-page">Mail me: own.filter@example.org</p>
+      `;
+      applyAutoRedaction({ blurEmails: true });
+      const el = document.getElementById('own') as HTMLElement;
+      expect(el.style.filter).toContain('blur(8px)');
+      expect(el.getAttribute('data-redacted')).toBe('from-the-page');
+
+      resetRedactions();
+      expect(el.style.filter).toBe('grayscale(1)');
+      expect(el.getAttribute('data-redacted')).toBe('from-the-page');
+      expect(el.textContent).toBe('Mail me: own.filter@example.org');
+    });
+
+    it('keeps the page usable: selection/copy is allowed, form values stay intact, no fade-in leaks a frame', () => {
+      document.body.innerHTML = `
+        <p id="mail">Contact: copy.me@example.org</p>
+        <input id="em" type="text" value="typed.value@example.org" />
+        <input id="pwd" type="password" value="hunter2-hunter2" />
+      `;
+      applyAutoRedaction({ blurEmails: true, blurRevenue: true, blurApiKeys: true });
+
+      expect((document.getElementById('em') as HTMLInputElement).value).toBe('typed.value@example.org');
+      expect((document.getElementById('pwd') as HTMLInputElement).value).toBe('hunter2-hunter2');
+      expect((document.getElementById('em') as HTMLElement).style.filter).toContain('blur(8px)');
+
+      const css = document.getElementById('smoothstudio-redaction-styles')?.textContent || '';
+      expect(css).toContain('blur(8px)');
+      // copy/paste must still yield the original text
+      expect(css).not.toMatch(/user-select\s*:\s*none/);
+      // the blur must be instant: a transition would paint sharp frames into the recording
+      expect(css).not.toMatch(/transition/);
+    });
+
+    it('blurs sensitive content that the page adds later, without rewriting it', async () => {
+      document.body.innerHTML = `<div id="host"></div>`;
+      applyAutoRedaction({ blurEmails: true, blurRevenue: true, blurApiKeys: true });
+      const host = document.getElementById('host') as HTMLElement;
+      host.innerHTML = `<div id="late">late.arrival@example.org</div>`;
+      await new Promise((r) => setTimeout(r, 120));
+      const late = document.getElementById('late') as HTMLElement;
+      expect(late.style.filter).toContain('blur(8px)');
+      expect(late.textContent).toBe('late.arrival@example.org');
+      resetRedactions();
     });
 
     it('blurs password inputs with CSS filter style while preserving user attributes', () => {

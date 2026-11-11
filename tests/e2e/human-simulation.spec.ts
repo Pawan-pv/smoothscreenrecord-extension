@@ -190,8 +190,13 @@ test.describe.serial('SmoothStudio Natural Human User Journey Simulation', () =>
     await popupPage.waitForTimeout(300);
 
     // Target page should reflect real-time text redaction
-    const emailText = await targetPage.innerText('#user-email');
-    expect(emailText).toContain('•');
+    // Spec item 5: visual-only blur, the page's text is never rewritten.
+    const emailState = await targetPage.evaluate(() => {
+      const el = document.querySelector('#user-email') as HTMLElement;
+      return { text: el.textContent, filter: getComputedStyle(el).filter };
+    });
+    expect(emailState.text, 'the shield must not rewrite the page text').toBe('ceo@enterprise-saas.com');
+    expect(emailState.filter, 'the email must be blurred').toContain('blur(8px)');
 
     await popupPage.close();
     await targetPage.close();

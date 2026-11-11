@@ -129,6 +129,27 @@ export function meanLuma(file: string, rect: { x: number; y: number; w: number; 
   }
   return n ? sum / n : 0;
 }
+/**
+ * Standard deviation of the luma inside a rectangle. Sharp text on a flat
+ * background has a high value; blurring the same text (which keeps the MEAN
+ * luma almost unchanged) lowers it markedly.
+ */
+export function lumaStdDev(file: string, rect: { x: number; y: number; w: number; h: number }): number {
+  const { buf, w, h } = rawPixels(file);
+  let sum = 0, sumSq = 0, n = 0;
+  for (let py = rect.y; py < Math.min(h, rect.y + rect.h); py++) {
+    for (let px = rect.x; px < Math.min(w, rect.x + rect.w); px++) {
+      const i = (py * w + px) * 3;
+      const l = 0.299 * buf[i] + 0.587 * buf[i + 1] + 0.114 * buf[i + 2];
+      sum += l;
+      sumSq += l * l;
+      n++;
+    }
+  }
+  if (!n) return 0;
+  const mean = sum / n;
+  return Math.sqrt(Math.max(0, sumSq / n - mean * mean));
+}
 /** Counts pixels close to a colour inside a rectangle. */
 export function countColor(file: string, rect: { x: number; y: number; w: number; h: number },
   rgb: [number, number, number], tol = 40): number {

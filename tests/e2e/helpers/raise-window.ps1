@@ -17,6 +17,8 @@ public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, System.IntPtr 
 public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint pid);
 [System.Runtime.InteropServices.DllImport("user32.dll")]
 public static extern bool IsWindowVisible(System.IntPtr hWnd);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool SetForegroundWindow(System.IntPtr hWnd);
 public delegate bool EnumWindowsProc(System.IntPtr hWnd, System.IntPtr lParam);
 '@ -ErrorAction SilentlyContinue
 
@@ -42,7 +44,9 @@ $callback = [SmoothQa.W+EnumWindowsProc] {
 [SmoothQa.W]::EnumWindows($callback, [IntPtr]::Zero) | Out-Null
 
 foreach ($h in $handles) {
-  [SmoothQa.W]::ShowWindow($h, 9) | Out-Null            # SWI_RESTORE
+  # top: MAXIMISE and bring to the foreground (AGENTS.md 3.8); normal: leave the size alone
+  if ($Mode -eq "top") { [SmoothQa.W]::ShowWindow($h, 3) | Out-Null } else { [SmoothQa.W]::ShowWindow($h, 9) | Out-Null }
   if ([SmoothQa.W]::SetWindowPos($h, $after, 0, 0, 0, 0, $flags)) { $raised++ }
+  if ($Mode -eq "top") { [SmoothQa.W]::SetForegroundWindow($h) | Out-Null }
 }
 Write-Output "windows=$($handles.Count) raised=$raised mode=$Mode"

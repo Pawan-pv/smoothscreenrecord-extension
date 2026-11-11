@@ -8,6 +8,8 @@ import path from 'path';
 import { AddressInfo } from 'net';
 import { REPO } from './extension';
 import { prepareSpeaker } from './speaker';
+import { raiseContextWindows, loadedRecordingBytes } from './harness';
+import { guardRecording } from './marker';
 
 export const FFMPEG = path.join(REPO, 'ffmpeg.exe');
 
@@ -54,6 +56,7 @@ export async function startRecording(
 ): Promise<{ target: Page; editor: Page; startedAt: number }> {
   const target = opts.existingTarget || (await context.newPage());
   if (!opts.existingTarget) await target.goto(targetUrl);
+  raiseContextWindows(context); // AGENTS.md 3.8
 
   let editor = opts.existingEditor;
   if (!editor) {
@@ -91,6 +94,9 @@ export async function recordSession(
   const wallClockSec = (Date.now() - startedAt) / 1000;
   speaker?.stop();
   await expect(editor.locator('#smoothstudio-source-video')).toHaveCount(1, { timeout: 60000 });
+  // AGENTS.md 3.8: the recording is checked for the marker before anything views or saves it
+  const loaded = await loadedRecordingBytes(editor);
+  if (loaded) guardRecording(loaded, 'recordSession');
   return { target, editor, wallClockSec, audioOffsetSec };
 }
 

@@ -24,6 +24,8 @@ import {
   launchApp, serveFixtures, recordPage, mediaInfo, outDir, streamEndTime, framePts, FFMPEG,
   sleep, REPO, extractFrameByIndex, lumaStdDev
 } from './helpers/harness';
+import { loadedRecordingBytes } from './helpers/harness';
+import { guardRecording } from './helpers/marker';
 
 /* ----------------------------------------------------------------- helpers */
 
@@ -44,16 +46,10 @@ function raiseBrowser(profile: string): void {
 
 /** Bytes of the recording the editor has loaded (its <video> blob URL). */
 async function loadedRecording(editor: Page, file: string): Promise<string> {
-  const b64 = await editor.evaluate(async () => {
-    const v = document.querySelector('#smoothstudio-source-video') as HTMLVideoElement | null;
-    if (!v || !v.src) return null;
-    const buf = new Uint8Array(await (await fetch(v.src)).arrayBuffer());
-    let s = '';
-    for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-    return btoa(s);
-  });
-  expect(b64, 'the editor must have a loaded recording').toBeTruthy();
-  fs.writeFileSync(file, Buffer.from(b64!, 'base64'));
+  const bytes = await loadedRecordingBytes(editor);
+  expect(bytes, 'the editor must have a loaded recording').toBeTruthy();
+  guardRecording(bytes!, path.basename(path.dirname(file)) + '/' + path.basename(file)); // AGENTS.md 3.8
+  fs.writeFileSync(file, bytes!);
   return file;
 }
 
@@ -170,7 +166,9 @@ async function plainRecorderFps(context: BrowserContext, fixtureUrl: string, fro
       for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
       return btoa(s);
     }, seconds);
-    fs.writeFileSync(file, Buffer.from(b64, 'base64'));
+    const bytes = Buffer.from(b64, 'base64');
+    guardRecording(bytes, 'plain-recorder baseline'); // AGENTS.md 3.8
+    fs.writeFileSync(file, bytes);
     const pts = framePts(file);
     return pts.length / Math.max(0.5, (pts[pts.length - 1] || 0) - (pts[0] || 0));
   } finally {

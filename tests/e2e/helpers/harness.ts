@@ -15,6 +15,7 @@ import path from 'path';
 import { AddressInfo } from 'net';
 import { fileURLToPath } from 'url';
 import { prepareSpeaker } from './speaker';
+import { installMarker, assertRunNotAborted, guardRecording } from './marker';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -362,9 +363,40 @@ export interface LaunchOptions {
   height?: number;
 }
 
+/** Raises + maximises + foregrounds every window of the test browser (AGENTS.md 3.8). */
+export function raiseWindowTop(profile: string): void {
+  try {
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+      path.join(__dirname, 'raise-window.ps1'), '-ProfileDir', profile, '-Mode', 'top'],
+      { encoding: 'utf8', timeout: 20000 }).trim();
+    console.log('[harness] raise:', out);
+  } catch (e) { console.log('[harness] raise failed:', String(e).slice(0, 200)); }
+}
+const raisers = new WeakMap<BrowserContext, () => void>();
+export function registerContextRaiser(context: BrowserContext, fn: () => void): void {
+  raisers.set(context, fn);
+}
+export function raiseContextWindows(context: BrowserContext): void {
+  raisers.get(context)?.();
+}
+
+/** Bytes of the recording the editor has LOADED (its <video> blob URL), not yet checked. */
+export async function loadedRecordingBytes(editor: Page): Promise<Buffer | null> {
+  const b64 = await editor.evaluate(async () => {
+    const v = document.querySelector('#smoothstudio-source-video') as HTMLVideoElement | null;
+    if (!v || !v.src) return null;
+    const buf = new Uint8Array(await (await fetch(v.src)).arrayBuffer());
+    let s = '';
+    for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  });
+  return b64 ? Buffer.from(b64, 'base64') : null;
+}
+
 export async function launchApp(opts: LaunchOptions = {}): Promise<{
   context: BrowserContext; extensionId: string; cleanup: () => Promise<void>; profile: string;
 }> {
+  assertRunNotAborted();
   if (!fs.existsSync(path.join(DIST, 'manifest.json'))) {
     throw new Error('dist/manifest.json missing - run "npm run build" first');
   }
@@ -408,6 +440,8 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<{
     acceptDownloads: true,
     args
   });
+  // AGENTS.md 3.8: every page of the test browser carries the capture marker
+  await installMarker(context);
   let sw = context.serviceWorkers()[0];
   if (!sw) sw = await context.waitForEvent('serviceworker', { timeout: 20000 });
   const extensionId = new URL(sw.url()).host;
@@ -425,6 +459,8 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<{
     } catch { /* the window could not be raised - the capture will show what it shows */ }
   };
   await raise('top');
+  // AGENTS.md 3.8: before every screen test the window is raised + maximised
+  raisers.set(context, () => raiseWindowTop(profile));
 
   return {
     context,
@@ -515,6 +551,7 @@ export async function recordPage(
     await target.goto(targetUrl, { waitUntil: 'domcontentloaded' });
     await target.waitForTimeout(500);
   }
+  raiseContextWindows(context);
   let editor = opts.editor;
   if (!editor) {
     editor = await context.newPage();
@@ -567,6 +604,9 @@ export async function recordPage(
     console.error('[harness] the recording never reached the editor:', JSON.stringify(state));
     throw err;
   }
+  // AGENTS.md 3.8: the recording is checked for the marker before anything views or saves it
+  const loaded = await loadedRecordingBytes(editor);
+  if (loaded) guardRecording(loaded, 'recordPage');
   return { target, editor, wallClockSec, startedAt, audioOffsetSec };
 }
 
@@ -591,6 +631,7 @@ export async function readOpfsFile(page: Page, name: string): Promise<Buffer | n
 export async function saveRawRecording(page: Page, dir: string): Promise<string | null> {
   const bytes = await readOpfsFile(page, 'smoothstudio_recording.webm');
   if (!bytes) return null;
+  guardRecording(bytes, 'saveRawRecording');
   const p = path.join(dir, 'raw_recording.webm');
   fs.writeFileSync(p, bytes);
   return p;

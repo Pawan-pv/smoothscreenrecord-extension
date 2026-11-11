@@ -6,6 +6,8 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { installMarker, assertRunNotAborted, guardRecording } from './marker';
+import { raiseWindowTop, registerContextRaiser } from './harness';
 
 // The npm scripts run from the repo root (package.json is "type": "module", so
 // __dirname is not available).
@@ -40,6 +42,7 @@ export async function launchExtension(opts: LaunchOptions = {}): Promise<{
   extensionId: string;
   cleanup: () => Promise<void>;
 }> {
+  assertRunNotAborted();
   if (!fs.existsSync(path.join(DIST, 'manifest.json'))) {
     throw new Error(`dist/manifest.json missing. Run "npm run build" first (looked in ${DIST}).`);
   }
@@ -65,6 +68,8 @@ export async function launchExtension(opts: LaunchOptions = {}): Promise<{
     acceptDownloads: true,
     args,
   });
+  // AGENTS.md 3.8: every page of the test browser carries the capture marker
+  await installMarker(context);
   let sw = context.serviceWorkers()[0];
   if (!sw) sw = await context.waitForEvent('serviceworker', { timeout: 20000 });
   const extensionId = sw.url().split('/')[2];
@@ -79,6 +84,7 @@ export async function launchExtension(opts: LaunchOptions = {}): Promise<{
     } catch (e) { console.log('[launchExtension] could not raise the window:', String(e).slice(0, 200)); }
   };
   raise('top');
+  if (opts.raiseWindow) registerContextRaiser(context, () => raiseWindowTop(profile));
   return {
     context,
     extensionId,
@@ -146,6 +152,8 @@ export function writeScratch(name: string, data: Buffer): string {
   const dir = path.join(os.tmpdir(), 'ss-e2e-artifacts');
   fs.mkdirSync(dir, { recursive: true });
   const p = path.join(dir, name);
+  // AGENTS.md 3.8: a recording is checked for the marker before it is saved
+  if (/\.(webm|mp4|gif)$/i.test(name)) guardRecording(data, 'writeScratch ' + name);
   fs.writeFileSync(p, data);
   return p;
 }

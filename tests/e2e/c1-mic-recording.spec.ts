@@ -8,7 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { AddressInfo } from 'net';
 import { launchExtension, readOpfsFile, ffprobeStreams, writeScratch, REPO, SPEECH_WAV } from './helpers/extension';
-import { detectAudioOnset } from './helpers/harness';
+import { detectAudioOnset, checkKnownPauses, maxWindowDb } from './helpers/harness';
 import { prepareSpeaker } from './helpers/speaker';
 
 function serveFixtures(): Promise<{ url: string; close: () => Promise<void> }> {
@@ -91,19 +91,34 @@ test('C1: a recording made with the mic ON contains an Opus audio stream of the 
     console.log(`C1 acoustic onset of the speaker WAV in the recording: ${onset}s (START line said ${audioOffsetSec.toFixed(3)}s)`);
     expect(onset, 'the speaker audio must be audible in the real-mic recording').not.toBeNull();
     const silences = editor.locator('[data-silence-id]');
-    await expect.poll(() => silences.count(), { timeout: 60000 }).toBe(2);
+    await expect.poll(() => silences.count(), { timeout: 60000 }).toBeGreaterThanOrEqual(1);
+    await editor.waitForTimeout(1000);
     const titles = await silences.evaluateAll((els) => els.map((e) => e.getAttribute('title') || ''));
     const durations = titles.map((t) => {
       const m = /Silence gap \((\d+(?:\.\d+)?)s\)/.exec(t);
       return m ? parseFloat(m[1]) : NaN;
     });
-    for (const d of durations) expect(Math.abs(d - 2)).toBeLessThan(0.5);
     const lefts = await silences.evaluateAll((els) => els.map((e) => parseFloat((e as HTMLElement).style.left)));
     // Timeline position: left% of the timeline == start / duration.
     const starts = lefts.map((l) => (l / 100) * durationSec);
-    console.log('C1 product silence starts:', JSON.stringify(starts), 'durations:', JSON.stringify(durations));
-    expect(Math.abs(starts[0] - (4 + onset!)), `first gap starts at ${starts[0]}s`).toBeLessThan(1);
-    expect(Math.abs(starts[1] - (14 + onset!)), `second gap starts at ${starts[1]}s`).toBeLessThan(1);
+    const pauses = starts.map((s, i) => ({ start: s, duration: durations[i] }));
+    console.log('C1 product pauses:', JSON.stringify(pauses));
+    // QA-020 ground truth from the recording itself (real room, real mic).
+    const checks = checkKnownPauses(file, [[4, 6], [14, 16]], onset!, pauses);
+    console.log('C1 known pauses vs the recording:', JSON.stringify(checks));
+    const quiet = checks.filter((c) => c.quiet);
+    expect(quiet.length, 'at least one known pause must have stayed quiet in the room').toBeGreaterThanOrEqual(1);
+    for (const c of quiet) {
+      expect(c.matched, `the product missed the quiet pause at ${c.gap[0].toFixed(2)}s (max ${c.maxDb} dB)`).toBeTruthy();
+      expect(Math.abs(c.matched!.duration - 2), `pause at ${c.gap[0].toFixed(2)}s lasts ${c.matched!.duration}s`).toBeLessThan(0.5);
+    }
+    // ...and the product reports no pause where the recording is not quiet
+    // (a recording may begin quietly: the speaker audio starts at the onset).
+    for (const p of pauses) {
+      if (p.start < 0.1 && p.duration <= onset! + 0.3) continue;
+      const loud = maxWindowDb(file, p.start + 0.25, p.start + p.duration - 0.25);
+      expect(loud, `the product's pause at ${p.start.toFixed(2)}s is not quiet in the recording (${loud} dB)`).toBeLessThan(-25);
+    }
   } finally {
     speaker.stop();
     await ext.cleanup();

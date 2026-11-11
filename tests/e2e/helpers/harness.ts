@@ -103,10 +103,51 @@ export function detectAudioOnset(file: string, noise = '-30dB'): number | null {
   const r = spawnSync(FFMPEG, ['-hide_banner', '-i', file, '-vn', '-af',
     `silencedetect=noise=${noise}:d=0.2`, '-f', 'null', '-'], { encoding: 'utf8', maxBuffer: 1 << 28 });
   const text = (r.stderr || '') + (r.stdout || '');
-  const s = /silence_start: (-?[\d.]+)/.exec(text);
-  const e = /silence_end: (-?[\d.]+)/.exec(text);
-  if (!s || !e || parseFloat(s[1]) > 0.1) return null;
-  return parseFloat(e[1]);
+  const starts = [...text.matchAll(/silence_start: (-?[\d.]+)/g)].map((m) => parseFloat(m[1]));
+  const ends = [...text.matchAll(/silence_end: (-?[\d.]+)/g)].map((m) => parseFloat(m[1]));
+  if (!starts.length || starts[0] > 0.1) return null;
+  // The onset is the first sound that LASTS (>= 0.3 s): a short room-noise blip
+  // (a click, a breath) inside the leading quiet span does not count.
+  for (let i = 0; i < ends.length; i++) {
+    const nextQuiet = i + 1 < starts.length ? starts[i + 1] : Infinity;
+    if (nextQuiet - ends[i] >= 0.3) return ends[i];
+  }
+  return null;
+}
+/** Loudest 100 ms window (dBFS) of [fromSec, toSec] of a file's audio, measured by ffmpeg. */
+export function maxWindowDb(file: string, fromSec: number, toSec: number): number {
+  let max = -Infinity;
+  for (let t = fromSec; t < toSec - 0.05; t += 0.1) {
+    const r = spawnSync(FFMPEG, ['-hide_banner', '-i', file, '-vn', '-af',
+      `atrim=${t.toFixed(3)}:${Math.min(toSec, t + 0.1).toFixed(3)},volumedetect`, '-f', 'null', '-'],
+      { encoding: 'utf8', maxBuffer: 1 << 26 });
+    const m = /mean_volume: (-?[\d.]+)/.exec(r.stderr || '');
+    if (m) max = Math.max(max, parseFloat(m[1]));
+  }
+  return max;
+}
+
+export interface KnownPauseCheck {
+  gap: [number, number];      // expected position in the recording (s)
+  maxDb: number;              // loudest 100 ms inside it (ffmpeg, edges trimmed 0.25 s)
+  quiet: boolean;             // the room kept it quiet (maxDb < QUIET_DB)
+  matched: { start: number; duration: number } | null; // product pause covering it
+}
+/**
+ * QA-020: real-mic ground truth for the product's pause detection. Each known
+ * pause of the WAV (shifted by the measured acoustic onset) is checked against
+ * the RECORDING: if a real room sound disturbed it (any 100 ms window louder
+ * than QUIET_DB), it is reported and not required; otherwise the product must
+ * have detected a pause at that place.
+ */
+export function checkKnownPauses(file: string, knownWavGaps: [number, number][], onsetSec: number,
+  productPauses: { start: number; duration: number }[], QUIET_DB = -30): KnownPauseCheck[] {
+  return knownWavGaps.map(([a, b]) => {
+    const gap: [number, number] = [a + onsetSec, b + onsetSec];
+    const maxDb = maxWindowDb(file, gap[0] + 0.25, gap[1] - 0.25);
+    const matched = productPauses.find((p) => Math.abs(p.start - gap[0]) < 1 && p.start < gap[1]) || null;
+    return { gap, maxDb, quiet: maxDb < QUIET_DB, matched };
+  });
 }
 /** Extracts one frame as PNG. Output seeking (-ss after -i) is used on purpose:
  *  input seeking lands on the nearest keyframe, which can be hundreds of

@@ -2,6 +2,34 @@
 
 One entry per iteration. Newest first.
 
+## Iteration 2 — first product bug found and fixed (QA-007)
+
+**Reproduced (failing test, before the fix):**
+
+```
+[2026-11-11T…] J9 email text after redaction: "••••••@••••.com"
+[2026-11-11T…] J9 /echo payloads: ["name=Robin Vale&email=robin.vale@fieldwork.dev&amount=₹1,25,000"]
+  ✘  2 tests\e2e\j9-privacy.spec.ts:34:3 › J9 privacy › J9: sensitive values are unreadable in the recording and the export, …
+    Error: turning the toggles off must restore the original value
+```
+
+**Root cause:** `applyAutoRedaction()` (`src/content/privacy-redactor.ts:352`) only ever *masked*. Switching a privacy category OFF broadcasted `APPLY_PRIVACY_OPTIONS` with that option `false`, but the content script re-scanned with the new options and never restored the text it had masked before, so the page kept showing `••••••@••••.com` forever.
+
+**Fix:** `applyAutoRedaction()` now restores the previous state first (`resetRedactions({ keepPicker: true })`) and re-applies with the current options, in the same task, so no unredacted frame is ever painted. `resetRedactions()` also clears the `__smoothstudio_observed` marker now, so the mutation observers are re-armed with the *current* options (otherwise dynamic content would keep being redacted with the old ones).
+
+**After the fix (same test):**
+
+```
+[2026-11-11T…] J9 email text after redaction: "••••••@••••.com"
+[2026-11-11T…] J9 /echo payloads: ["name=Robin Vale&email=robin.vale@fieldwork.dev&amount=₹1,25,000"]
+[2026-11-11T…] J9 email text after turning the toggles off: "dana.reeves@example-corp.com"
+[2026-11-11T…] J9 sop: 118942 bytes, 0 sensitive values
+[2026-11-11T…] J9 widget: 196282 bytes, 0 sensitive values
+  ✓  1 tests\e2e\j9-privacy.spec.ts:34:3 › J9 privacy › J9: sensitive values are unreadable in the recording and the export, the page still works, and no asset leaks them (32.9s)
+```
+
+Unit tests after the fix: `Test Files 10 passed (10)`, `Tests 67 passed (67)`. `tsc --noEmit` clean. `npm run build` exit 0.
+
 ## Iteration 1 — environment reality check + first journeys
 
 **Findings**

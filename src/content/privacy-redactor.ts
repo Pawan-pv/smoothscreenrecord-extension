@@ -9,6 +9,10 @@ let isPickerActive = false;
 let hoveredElement: HTMLElement | null = null;
 let blurredElements: Set<HTMLElement> = new Set();
 let activeObservers: MutationObserver[] = [];
+// The nodes the observers were attached to, so a reset can clear the
+// "already observed" marker and the observers can be re-attached with the
+// current options.
+let observedTargets: Node[] = [];
 let mutationTimeout: any = null;
 // Original text of every masked text node, so a reset can restore the DOM exactly.
 // `masked` records what we wrote, so a later page-driven text change is
@@ -311,6 +315,7 @@ function observeContainer(target: Node, options: Partial<PrivacyOptions>) {
   // Avoid duplicate observers on the same target
   if ((target as any).__smoothstudio_observed) return;
   (target as any).__smoothstudio_observed = true;
+  observedTargets.push(target);
 
   const obs = new MutationObserver((mutations) => {
     let hasRelevantChanges = false;
@@ -351,6 +356,14 @@ function observeContainer(target: Node, options: Partial<PrivacyOptions>) {
 
 export function applyAutoRedaction(options: Partial<PrivacyOptions> = { blurEmails: true, blurRevenue: true, blurApiKeys: true }): number {
   if (!document?.body) return 0;
+
+  // Restore whatever was redacted before and re-apply with the CURRENT
+  // options. Without this, switching a category OFF leaves the previously
+  // masked text masked: the user could never read the value again.
+  // The restore and the re-mask happen in the same task, so the browser never
+  // paints an unredacted frame in between. The interactive picker keeps its
+  // state - it is not part of the options.
+  resetRedactions({ keepPicker: true });
 
   ensureRedactionStyles(document);
   observeContainer(document.body, options);
@@ -422,8 +435,10 @@ export function stopElementPicker(): void {
   console.log('[SmoothStudio Privacy] Interactive element picker deactivated.');
 }
 
-export function resetRedactions(): void {
-  stopElementPicker();
+export function resetRedactions(opts: { keepPicker?: boolean } = {}): void {
+  if (!opts.keepPicker) {
+    stopElementPicker();
+  }
 
   if (mutationTimeout) {
     clearTimeout(mutationTimeout);
@@ -434,6 +449,13 @@ export function resetRedactions(): void {
     try { obs.disconnect(); } catch {}
   }
   activeObservers = [];
+
+  // Clear the "already observed" marker so a later applyAutoRedaction() can
+  // attach fresh observers that use the current options.
+  for (const target of observedTargets) {
+    try { delete (target as any).__smoothstudio_observed; } catch {}
+  }
+  observedTargets = [];
 
   for (const el of blurredElements) {
     try {

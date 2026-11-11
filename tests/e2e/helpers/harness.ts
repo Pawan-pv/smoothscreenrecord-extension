@@ -198,10 +198,21 @@ export function countChangedBlobs(fileA: string, fileB: string, minPixels = 8): 
  * being assumed. Returns the epoch milliseconds, or null when no row decodes
  * to a plausible epoch.
  */
-export function decodeEpochBits(png: string): number | null {
+/** Presentation timestamps (seconds) of every frame in the file. */
+export function framePts(file: string): number[] {
+  const out = ffprobeText(['-select_streams', 'v:0', '-show_entries', 'frame=pts_time', '-of', 'csv=p=0', file]);
+  return out.split('\n').map((l) => l.trim()).filter(Boolean).map(Number);
+}
+/** Extracts the frame with the given index (0-based) as PNG. */
+export function extractFrameByIndex(file: string, index: number, outPng: string): string {
+  ffmpeg(['-i', file, '-vf', `select=eq(n\\,${index})`, '-vsync', '0', '-frames:v', '1', outPng]);
+  return outPng;
+}
+
+export function decodeEpochCandidates(png: string): number[] {
   const { buf, w, h } = rawPixels(png);
   const cellW = w / 48;
-  const rows: { y: number; value: number }[] = [];
+  const found: number[] = [];
   for (let frac = 0.02; frac <= 0.30; frac += 0.0025) {
     const y = Math.min(h - 2, Math.round(h * frac));
     let value = 0;
@@ -211,25 +222,23 @@ export function decodeEpochBits(png: string): number | null {
       const luma = 0.299 * buf[i] + 0.587 * buf[i + 1] + 0.114 * buf[i + 2];
       value = value * 2 + (luma > 128 ? 1 : 0);
     }
-    if (value >= 1_600_000_000_000 && value <= 4_000_000_000_000) rows.push({ y, value });
+    if (value >= 1_600_000_000_000 && value <= 4_000_000_000_000 && !found.includes(value)) found.push(value);
   }
-  if (!rows.length) return null;
-  // The band is ~4 % of the frame tall, so the same value repeats over several
-  // consecutive rows. A single stray row (browser chrome) is not the band.
-  let best = { value: rows[0].value, run: 1 };
-  let run = 1;
-  for (let i = 1; i < rows.length; i++) {
-    run = (rows[i].value === rows[i - 1].value) ? run + 1 : 1;
-    if (run > best.run) best = { value: rows[i].value, run };
-  }
-  // allow small differences between rows (the page repaints between rows)
-  if (best.run >= 2) return best.value;
-  // fall back: the most frequent plausible value
-  const counts = new Map<number, number>();
-  for (const r of rows) counts.set(r.value, (counts.get(r.value) || 0) + 1);
-  let top = { value: rows[0].value, n: 0 };
-  for (const [v, n] of counts) if (n > top.n) top = { value: v, n };
-  return top.value;
+  return found;
+}
+
+/**
+ * Decodes the 48-bit millisecond epoch readout that clock.html and avsync.html
+ * draw as a row of black/white cells across the top of the page.
+ *
+ * The band sits at the top of the PAGE viewport, so in a screen capture it is
+ * below the browser chrome - the row is therefore searched for instead of
+ * being assumed. Returns the epoch milliseconds, or null when no row decodes
+ * to a plausible epoch.
+ */
+export function decodeEpochBits(png: string): number | null {
+  const candidates = decodeEpochCandidates(png);
+  return candidates.length ? candidates[0] : null;
 }
 
 /** Band energy (RMS dB) of a media file in a 4-5 kHz band around a time window. */
@@ -420,8 +429,15 @@ export async function recordPage(
     await editor.bringToFront();
     await editor.locator('#start-capture-prompt-btn').click({ timeout: 20000 });
   } else {
+    // A pre-opened editor (e.g. one opened by the popup's Start Studio
+    // Recording button) still has to be started the way a user starts it.
     await editor.bringToFront();
-    await editor.locator('#record-new-screen-top-btn').click({ timeout: 20000 });
+    const startPrompt = editor.locator('#start-capture-prompt-btn');
+    if (await startPrompt.count()) {
+      await startPrompt.click({ timeout: 20000 });
+    } else {
+      await editor.locator('#record-new-screen-top-btn').click({ timeout: 20000 });
+    }
   }
   await editor.locator('#stop-live-recording-top-btn').waitFor({ state: 'visible', timeout: 30000 });
 

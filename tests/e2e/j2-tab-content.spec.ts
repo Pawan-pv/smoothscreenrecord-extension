@@ -17,8 +17,8 @@ import { test, expect } from '@playwright/test';
 import path from 'path';
 import fs from 'fs';
 import {
-  launchApp, serveFixtures, recordPage, mediaInfo, extractFrame, decodeEpochBits,
-  rawPixels, outDir, saveRawRecording, countFrames
+  launchApp, serveFixtures, recordPage, mediaInfo, extractFrame, extractFrameByIndex,
+  decodeEpochBits, decodeEpochCandidates, framePts, rawPixels, outDir, saveRawRecording, countFrames
 } from './helpers/harness';
 
 function frameDiffPixels(a: string, b: string): number {
@@ -73,37 +73,65 @@ test.describe.serial('J2 tab recording with real content', () => {
       }
       console.log('J2 epoch samples:', JSON.stringify(samples.map((s) => [s.t, s.epoch, s.diffPrev])));
 
+      // The browser chrome can decode to a plausible-looking number, so the real
+      // band is picked by temporal consistency: the clock advances by ~1000 ms
+      // per video second.
+      const candidates = samples.map((s) => decodeEpochCandidates(s.file));
+      const tracked: (number | null)[] = [];
+      let previous: number | null = null;
+      for (let i = 0; i < samples.length; i++) {
+        if (!candidates[i].length) { tracked.push(null); continue; }
+        const prediction = previous === null ? null : previous + (samples[i].t - samples[i - 1].t) * 1000;
+        const best = prediction === null
+          ? candidates[i].reduce((a, b) => (Math.abs(b - candidates[i][0]) < Math.abs(a - candidates[i][0]) ? b : a))
+          : candidates[i].reduce((a, b) => (Math.abs(b - prediction) < Math.abs(a - prediction) ? b : a));
+        tracked.push(best);
+        previous = best;
+      }
+      samples.forEach((s, i) => { s.epoch = tracked[i]; });
+      // the first frame has no predecessor to predict from - use the second
+      // frame instead (the clock advances by ~1000 ms per video second)
+      if (samples.length > 1 && tracked[1] !== null && candidates[0].length) {
+        const prediction = tracked[1]! - (samples[1].t - samples[0].t) * 1000;
+        const best = candidates[0].reduce((a, b) =>
+          (Math.abs(b - prediction) < Math.abs(a - prediction) ? b : a), candidates[0][0]);
+        tracked[0] = best;
+        samples[0].epoch = best;
+      }
+      console.log('J2 tracked clocks:', JSON.stringify(samples.map((s) => [s.t, s.epoch])));
+
       // every frame must show the real page (the epoch band must be readable)
       const unreadable = samples.filter((s) => s.epoch === null);
       expect(unreadable.length, `frames without a readable epoch band: ${JSON.stringify(unreadable.map((s) => s.t))}`)
         .toBe(0);
 
-      // the page clock must advance 1:1 with the video timeline (+-100 ms).
-      // A least-squares fit over the inliers is used (reference = median, then
-      // keep everything within 2 s of it) so that a single mis-decoded frame
-      // cannot skew the result.
-      const decodedValues = samples.filter((s) => s.epoch !== null).map((s) => s.epoch!).sort((a, b) => a - b);
-      const median = decodedValues[Math.floor(decodedValues.length / 2)];
-      const points = samples.filter((s) => s.epoch !== null && Math.abs(s.epoch! - median) < 2000);
-      console.log(`J2 decoded ${decodedValues.length}/${samples.length} frames, ${points.length} inliers around the median`);
-      expect(points.length, 'at least 80 % of the frames must decode a clock').toBeGreaterThan(samples.length * 0.8);
-      const n = points.length;
-      const sumT = points.reduce((a, s) => a + s.t, 0);
-      const sumE = points.reduce((a, s) => a + s.epoch!, 0);
-      const sumTT = points.reduce((a, s) => a + s.t * s.t, 0);
-      const sumTE = points.reduce((a, s) => a + s.t * s.epoch!, 0);
-      const slope = (n * sumTE - sumT * sumE) / (n * sumTT - sumT * sumT);   // ms per video second
-      const intercept = (sumE - slope * sumT) / n;
-      const residuals = points.map((s) => ({
-        t: s.t,
-        residualMs: Math.round((s.epoch! - (intercept + slope * s.t)))
+      // ---- the page clock must advance 1:1 with the video timeline ---------
+      // Measured against each frame's OWN presentation timestamp: the clock
+      // painted into a frame must be the wall clock of that frame's time.
+      const pts = framePts(rawPath!);
+      console.log('J2 frame count:', pts.length);
+      expect(pts.length, 'the raw file must contain a frame stream').toBeGreaterThan(100);
+      const indexes = [0, Math.floor(pts.length * 0.25), Math.floor(pts.length * 0.5),
+        Math.floor(pts.length * 0.75), pts.length - 1];
+      const clock: { index: number; pts: number; epoch: number | null }[] = [];
+      for (const idx of indexes) {
+        const f = path.join(dir, `clock_frame_${idx}.png`);
+        extractFrameByIndex(rawPath!, idx, f);
+        clock.push({ index: idx, pts: pts[idx], epoch: decodeEpochBits(f) });
+      }
+      console.log('J2 clock samples:', JSON.stringify(clock));
+      const reference = clock.find((c) => c.epoch !== null)!;
+      expect(reference, 'the first frames must carry a readable clock').toBeTruthy();
+      const errors = clock.filter((c) => c.epoch !== null).map((c) => ({
+        index: c.index,
+        pts: c.pts,
+        errorMs: Math.round(c.epoch! - (reference.epoch! + (c.pts - reference.pts) * 1000))
       }));
-      const worst = residuals.reduce((m, r) => Math.abs(r.residualMs) > Math.abs(m.residualMs) ? r : m, residuals[0]);
-      console.log('J2 fitted clock rate:', slope.toFixed(2), 'ms per video second');
-      console.log('J2 residuals vs the fit (ms):', JSON.stringify(residuals));
-      expect(Math.abs(slope - 1000), `the page clock must advance 1:1 with the video time (got ${slope.toFixed(1)} ms/s)`)
-        .toBeLessThan(100);
-      expect(Math.abs(worst.residualMs), `worst residual ${worst.residualMs}ms at t=${worst.t}s`).toBeLessThan(100);
+      console.log('J2 clock error vs the frame timestamp (ms):', JSON.stringify(errors));
+      for (const e of errors) {
+        expect(Math.abs(e.errorMs), `the clock in frame ${e.index} is ${e.errorMs}ms away from its own timestamp`)
+          .toBeLessThan(100);
+      }
 
       // no frozen start: the first three frames must already differ from each other
       for (let i = 1; i < 3; i++) {

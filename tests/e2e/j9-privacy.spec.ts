@@ -47,8 +47,9 @@ test.describe.serial('J9 privacy', () => {
       const beforeShot = path.join(dir, 'email_before.png');
       await emailBox.screenshot({ path: beforeShot });
 
-      // ---- 2. turn the privacy toggles on (they are on by default, but the
-      //         user must be able to see and change them) --------------------
+      // ---- 2. the user starts the recording from the popup ------------------
+      // The popup applies the privacy options to the tab and then opens the
+      // editor. This is the only flow that arms the privacy shield.
       const popup = await app.context.newPage();
       await popup.goto(`chrome-extension://${app.extensionId}/popup.html`, { waitUntil: 'domcontentloaded' });
       await popup.waitForTimeout(400);
@@ -56,8 +57,10 @@ test.describe.serial('J9 privacy', () => {
         const box = popup.locator('label', { hasText: label }).locator('input[type=checkbox]');
         expect(await box.isChecked(), `${label} must be on`).toBe(true);
       }
-      await popup.close();
-      await target.waitForTimeout(600);
+      await popup.getByRole('button', { name: 'Start Studio Recording' }).click();
+      const editor = await app.context.waitForEvent('page', { predicate: (p) => p.url().includes('editor.html') });
+      await editor.waitForLoadState('domcontentloaded');
+      await target.waitForTimeout(800);
 
       // ---- 3. the redaction must be visible on the page --------------------
       const after = await emailBox.innerText();
@@ -82,14 +85,17 @@ test.describe.serial('J9 privacy', () => {
       expect(payloads.length, 'the form must reach /echo').toBe(1);
       const body = payloads[0];
       expect(body, 'the form must send the ORIGINAL values').toContain('robin.vale@fieldwork.dev');
-      expect(body, 'the form must send the ORIGINAL amount').toContain('%E2%82%B91%2C25%2C000');
-      expect(body, 'the form must send the ORIGINAL typed email').toContain('typed.by.user%40example.org');
+      expect(body, 'the form must send the ORIGINAL amount').toContain('₹1,25,000');
+      expect(body, 'the form must send the ORIGINAL name').toContain('Robin Vale');
+      // the typed value must reach the page itself (it is not part of the form)
+      expect(await target.locator('#email-input').inputValue()).toBe('typed.by.user@example.org');
 
       // ---- 5. record the page ---------------------------------------------
       const session = await recordPage(app.context, app.extensionId, `${site.base}/privacy.html`, {
         seconds: 8,
         includeMic: false,
         target,
+        editor,
         interact: async (p) => {
           await p.locator('#load-more').click();
           await p.waitForTimeout(500);

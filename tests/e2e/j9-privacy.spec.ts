@@ -11,7 +11,7 @@ import { test, expect } from '@playwright/test';
 import path from 'path';
 import fs from 'fs';
 import {
-  launchApp, serveFixtures, recordPage, outDir, saveRawRecording, extractFrame, meanLuma, lumaStdDev
+  launchApp, serveFixtures, recordPage, outDir, saveRawRecording, extractFrame, meanLuma, lumaStdDev, readOpfsFile
 } from './helpers/harness';
 
 /** Every sensitive value the fixture contains. */
@@ -218,10 +218,21 @@ test.describe.serial('J9 privacy', () => {
       }
 
       // the telemetry the editor holds must be clean as well
-      const telemetry = await session.editor.evaluate(() => {
-        const el = document.querySelector('#smoothstudio-source-video');
-        return el ? (el.getAttribute('data-telemetry') || '') : '';
-      });
+      // QA-019: read the REAL persisted telemetry (OPFS file + chrome.storage.local),
+      // the only places the product stores it.
+      const opfsTelemetry = await readOpfsFile(session.editor, 'smoothstudio_telemetry.json');
+      const storedTelemetry = await session.editor.evaluate(() => new Promise<string>((resolve) => {
+        chrome.storage.local.get(['smoothstudio_telemetry', 'smoothstudio_telemetry.json'], (items) => {
+          resolve(JSON.stringify(items || {}));
+        });
+      }));
+      const telemetry = (opfsTelemetry ? opfsTelemetry.toString('utf8') : '') + '\n' + storedTelemetry;
+      console.log(`J9 telemetry: opfs=${opfsTelemetry ? opfsTelemetry.length : 0} bytes, storage=${storedTelemetry.length} bytes`);
+      const parsed = JSON.parse(storedTelemetry);
+      const t = parsed.smoothstudio_telemetry || parsed['smoothstudio_telemetry.json'];
+      expect(t, 'the recording must have persisted its telemetry').toBeTruthy();
+      expect((t.clicks || []).length, 'the clicks made during the recording must be in the telemetry').toBeGreaterThanOrEqual(5);
+      console.log('J9 telemetry clicks:', JSON.stringify((t.clicks || []).map((c: any) => [c.targetTag, c.targetText, c.targetLabel])));
       for (const secret of SECRETS) {
         expect(telemetry, 'the telemetry must not contain a sensitive value').not.toContain(secret);
       }

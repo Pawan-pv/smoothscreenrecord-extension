@@ -184,6 +184,29 @@ describe('Privacy Redactor: Real-Time DOM Inspection & Sanitization', () => {
       expect(css).not.toMatch(/transition/);
     });
 
+    it('QA-018: covers sensitive text written directly into <body>, keeps the text, and reset restores the DOM exactly', () => {
+      document.body.innerHTML = 'Mail body.level@example.org now<div id="other">Plain heading</div>';
+      const htmlBefore = document.body.innerHTML;
+      const textBefore = document.body.textContent;
+      applyAutoRedaction({ blurEmails: true, blurRevenue: true, blurApiKeys: true });
+
+      expect(document.body.textContent).toBe(textBefore);
+      expect(document.body.style.filter, 'the whole page must not be blurred').toBe('');
+      // the text node holding the email must sit inside a blurred element
+      const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let holder: HTMLElement | null = null;
+      while (w.nextNode()) {
+        if ((w.currentNode.nodeValue || '').includes('body.level@example.org')) holder = w.currentNode.parentElement;
+      }
+      expect(holder).not.toBeNull();
+      expect(holder).not.toBe(document.body);
+      expect(holder!.style.filter).toContain('blur(8px)');
+      expect((document.getElementById('other') as HTMLElement).style.filter).toBe('');
+
+      resetRedactions();
+      expect(document.body.innerHTML).toBe(htmlBefore);
+    });
+
     it('blurs sensitive content that the page adds later, without rewriting it', async () => {
       document.body.innerHTML = `<div id="host"></div>`;
       applyAutoRedaction({ blurEmails: true, blurRevenue: true, blurApiKeys: true });

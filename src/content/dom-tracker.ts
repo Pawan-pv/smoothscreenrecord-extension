@@ -37,6 +37,8 @@ const SAMPLE_INTERVAL_MS = 8.33; // ~120Hz sampling
  * video time and telemetry time are directly comparable (no per-page drift).
  */
 let originEpoch = 0;
+/** Recording session id handed over by START_TELEMETRY (M1-08). */
+let sessionId: string | null = null;
 
 function epochNow(): number {
   // performance.timeOrigin + performance.now() is a high resolution wall clock
@@ -459,8 +461,9 @@ function removeRecordingHud() {
   }
 }
 
-export function startTracking(originEpochMs?: number): void {
+export function startTracking(originEpochMs?: number, recordingSessionId?: string | null): void {
   isRecording = true;
+  sessionId = recordingSessionId || null;
   startTime = performance.now();
   // Use the recorder published origin so telemetry and video share one clock.
   originEpoch = typeof originEpochMs === 'number' && originEpochMs > 0
@@ -502,7 +505,8 @@ export function stopTracking(): TelemetryData {
 
   const telemetry: TelemetryData = {
     metadata: {
-      id: 'rec_' + Date.now(),
+      id: sessionId || ('rec_' + Date.now()),
+      ...(sessionId ? { sessionId } : {}),
       startTime: Date.now() - durationMs,
       endTime: Date.now(),
       durationMs,
@@ -529,7 +533,7 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage 
   (window as any).__smoothstudio_dom_listener_registered = true;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'START_TELEMETRY') {
-      startTracking(message.originEpoch);
+      startTracking(message.originEpoch, message.sessionId);
       sendResponse({ status: 'started' });
       return true;
     } else if (message.type === 'STOP_TELEMETRY') {

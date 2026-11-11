@@ -1,4 +1,7 @@
-import { initStorage, appendVideoChunk, finalizeVideo, getRecordingBlob, overwriteRecordingBlob } from './opfs-storage';
+import {
+  initStorage, appendVideoChunk, finalizeVideo, getRecordingBlob, commitRecording,
+  newSessionId, setSessionOrigin, holdSessionLock
+} from './opfs-storage';
 import { patchWebmBlobDuration } from './webm-fixer';
 
 /**
@@ -10,6 +13,8 @@ export const RECORDING_FAILURE_NO_VIDEO = 'RECORDING_FAILED_NO_VIDEO';
 
 export interface RecorderOptions {
   includeMic: boolean;
+  /** Recording session id (M1-08). Generated when omitted. */
+  sessionId?: string;
   frameRate?: number;
   onChunkSaved?: (chunkIndex: number) => void;
   onStop?: (blob: Blob | null) => void;
@@ -24,8 +29,6 @@ export interface RecorderOptions {
 
 const PUMP_MIN_INTERVAL_MS = 8;       // never forward more than ~120 fps
 const PUMP_SAFETY_INTERVAL_MS = 500;  // re-push the last frame if the source stalls
-const WARMUP_WINDOW_MS = 4000;        // encoder warm-up window
-const WARMUP_FPS = 3;                 // slow feed while the encoder warms up
 const FIRST_FRAME_TIMEOUT_MS = 3000;  // never block the start on the first frame
 const RECORDER_TIMESLICE_MS = 250;    // flush encoded data to storage 4x/second
 const MAX_SNAPSHOTS = 160;
@@ -61,6 +64,12 @@ export class ScreenCaptureEngine {
   private timelineOriginEpoch = 0;
   private firstFrameResolve: (() => void) | null = null;
   private firstFramePromise: Promise<void> | null = null;
+  private pumpReader: ReadableStreamDefaultReader<any> | null = null;
+  private pumpDriver: 'processor' | 'video-frame-callback' = 'video-frame-callback';
+  private pumpRepeatFrame: (() => void) | null = null;
+  private pumpSourceFrames = 0;
+  private sessionId = '';
+  private releaseSessionLock: (() => void) | null = null;
 
   constructor() {
     this.frameDiffCanvas = document.createElement('canvas');
@@ -70,7 +79,12 @@ export class ScreenCaptureEngine {
   }
 
   public async start(options: RecorderOptions): Promise<MediaStream> {
-    await initStorage();
+    this.sessionId = options.sessionId || newSessionId();
+    await initStorage(this.sessionId);
+    // The lock tells a later editor that this session is alive; the browser
+    // releases it if this page crashes, which makes the session recoverable.
+    this.releaseSessionLock?.();
+    this.releaseSessionLock = holdSessionLock(this.sessionId);
     this.chunkCount = 0;
     this.snapshots = [];
     this.lastBlob = null;
@@ -97,7 +111,15 @@ export class ScreenCaptureEngine {
       audio: false
     };
 
-    this.mediaStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
+    try {
+      this.mediaStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
+    } catch (err) {
+      // Nothing was recorded: the session is over before it started.
+      await finalizeVideo().catch(() => undefined);
+      this.releaseSessionLock?.();
+      this.releaseSessionLock = null;
+      throw err;
+    }
     const vTrack = this.mediaStream.getVideoTracks()[0];
     if (vTrack) {
       this.lastTrackSettings = vTrack.getSettings ? vTrack.getSettings() : null;
@@ -151,9 +173,13 @@ export class ScreenCaptureEngine {
     // be recorded is the microphone track. Decide the MIME type from it.
     const micTracks = this.audioStream ? this.audioStream.getAudioTracks() : [];
     const hasAudio = micTracks.length > 0;
-    let mimeType = hasAudio ? 'video/webm; codecs=vp9,opus' : 'video/webm; codecs=vp9';
+    // VP8 first: Chromium's VP9 MediaRecorder encoder needs ~4.5 s before it
+    // emits its first chunk on a low-spec machine (measured, M1-B01), so any
+    // recording shorter than that contained no video at all. VP8 starts in
+    // ~0.3 s and plays everywhere the editor and the exporters decode WebM.
+    let mimeType = hasAudio ? 'video/webm; codecs=vp8,opus' : 'video/webm; codecs=vp8';
     if (!MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = hasAudio ? 'video/webm; codecs=vp8,opus' : 'video/webm; codecs=vp8';
+      mimeType = hasAudio ? 'video/webm; codecs=vp9,opus' : 'video/webm; codecs=vp9';
     }
     if (!MediaRecorder.isTypeSupported(mimeType)) {
       mimeType = 'video/webm';
@@ -222,6 +248,7 @@ export class ScreenCaptureEngine {
 
     // Wait for the very first pumped frame: that frame defines timeline zero.
     await this.waitForFirstFrame();
+    setSessionOrigin(this.timelineOriginEpoch);
     console.log(`[SmoothStudio CaptureEngine] Timeline origin established at epoch ${this.timelineOriginEpoch} (pump frames: ${this.pumpFrameCount})`);
     options.onTimelineOrigin?.(this.timelineOriginEpoch);
 
@@ -271,8 +298,10 @@ export class ScreenCaptureEngine {
 
     const track = source.getVideoTracks()[0];
     const settings = (track && track.getSettings) ? track.getSettings() : ({} as MediaTrackSettings);
-    const width = video.videoWidth || settings.width || 1920;
-    const height = video.videoHeight || settings.height || 1080;
+    // Even dimensions: H.264 (MP4 export) and most encoders require them.
+    const even = (n: number) => Math.max(2, Math.floor(n / 2) * 2);
+    const width = even(video.videoWidth || settings.width || 1920);
+    const height = even(video.videoHeight || settings.height || 1080);
 
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -300,63 +329,82 @@ export class ScreenCaptureEngine {
 
     let lastPumpAt = 0;
     let lastSourceFrameAt = 0;
-    const warmupStart = Date.now();
-    const pumpOneFrame = () => {
+    let hasPicture = false;
+    const emit = () => {
+      pumpTrack.requestFrame?.();
+      this.pumpFrameCount++;
+      if (this.pumpFrameCount === 1) {
+        this.timelineOriginEpoch = Date.now();
+        this.firstFrameResolve?.();
+        this.firstFrameResolve = null;
+      }
+    };
+    // Re-sends the last REAL captured picture (static surface / final frame).
+    // Nothing is ever sent before the first real captured frame: no invented
+    // (black) picture.
+    this.pumpRepeatFrame = () => {
+      if (!hasPicture) return;
+      try { emit(); } catch (err) { console.warn('[SmoothStudio CaptureEngine] Frame pump repeat failed:', err); }
+    };
+    this.pumpSourceFrames = 0;
+    const drawSource = (image: CanvasImageSource) => {
+      this.pumpSourceFrames++;
       const now = performance.now();
-      // During the encoder warm-up Chromium drops every frame that overflows
-      // the encoder queue. Feeding the encoder slowly during the warm-up keeps
-      // the queue short so that the first seconds of the recording survive.
-      const warmupElapsed = Date.now() - warmupStart;
-      const minInterval = warmupElapsed < WARMUP_WINDOW_MS
-        ? (1000 / WARMUP_FPS)
-        : PUMP_MIN_INTERVAL_MS;
-      if (now - lastPumpAt < minInterval - 2) return;
+      lastSourceFrameAt = now;
+      if (now - lastPumpAt < PUMP_MIN_INTERVAL_MS - 2) return;
       lastPumpAt = now;
       try {
-        if (video.readyState >= 2 && video.videoWidth > 0) {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        } else if (this.pumpFrameCount === 0) {
-          // Nothing decoded yet: paint a neutral frame so the encoder still
-          // receives a valid image rather than an empty canvas.
-          ctx.fillStyle = '#000000';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-        }
-        pumpTrack.requestFrame?.();
-        this.pumpFrameCount++;
-        if (this.pumpFrameCount === 1) {
-          this.timelineOriginEpoch = Date.now();
-          this.firstFrameResolve?.();
-          this.firstFrameResolve = null;
-        }
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        hasPicture = true;
+        emit();
       } catch (err) {
         console.warn('[SmoothStudio CaptureEngine] Frame pump tick failed:', err);
       }
     };
 
-    // PRIMARY DRIVER: one output frame per NEW source frame.
-    // Pushing duplicates would make the encoder stretch the timeline (the
-    // recorded video would play the captured content slower than real time),
-    // so the pump only forwards genuine source frames.
-    const onSourceFrame = () => {
-      lastSourceFrameAt = performance.now();
-      pumpOneFrame();
+    const Processor = (typeof window !== 'undefined') ? (window as any).MediaStreamTrackProcessor : undefined;
+    if (Processor && track) {
+      // PRIMARY DRIVER: read every captured frame straight from the track.
+      // requestVideoFrameCallback on a <video> only fires while the editor tab
+      // is RENDERED, so a background editor recorded at 2-7 fps (QA-008).
+      // Reading the track does not depend on rendering.
+      this.pumpDriver = 'processor';
+      const processor = new Processor({ track });
+      const reader = processor.readable.getReader();
+      this.pumpReader = reader;
+      (async () => {
+        for (;;) {
+          const { value: frame, done } = await reader.read();
+          if (done || !frame) break;
+          try {
+            if (this.pumpTrack) drawSource(frame);
+          } finally {
+            try { frame.close(); } catch {}
+          }
+        }
+      })().catch((err) => console.warn('[SmoothStudio CaptureEngine] Frame reader ended:', err));
+    } else {
+      // FALLBACK DRIVER: one output frame per new frame of the <video>.
+      this.pumpDriver = 'video-frame-callback';
+      const onSourceFrame = () => {
+        if (video.readyState >= 2 && video.videoWidth > 0) drawSource(video);
+        scheduleSourceFrameCallback();
+      };
+      const scheduleSourceFrameCallback = () => {
+        if (typeof (video as any).requestVideoFrameCallback === 'function') {
+          (video as any).requestVideoFrameCallback(onSourceFrame);
+        }
+      };
       scheduleSourceFrameCallback();
-    };
-    const scheduleSourceFrameCallback = () => {
-      if (typeof (video as any).requestVideoFrameCallback === 'function') {
-        (video as any).requestVideoFrameCallback(onSourceFrame);
-      }
-    };
-    scheduleSourceFrameCallback();
+    }
+    console.log(`[SmoothStudio CaptureEngine] Frame pump driver: ${this.pumpDriver}, ${width}x${height}`);
 
-    // SAFETY NET: if the captured surface stops delivering frames (a
-    // background tab is not composited by Chromium), keep the encoder fed with
-    // the last known frame so the recorded timeline stays continuous instead
-    // of containing multi-second holes.
+    // SAFETY NET: if the captured surface stops delivering frames, re-send the
+    // last real picture so the encoder timeline keeps moving.
     this.pumpTimer = window.setInterval(() => {
       if (!this.isRecording) return;
       if (performance.now() - lastSourceFrameAt > PUMP_SAFETY_INTERVAL_MS) {
-        pumpOneFrame();
+        this.pumpRepeatFrame?.();
       }
     }, PUMP_SAFETY_INTERVAL_MS);
 
@@ -383,6 +431,11 @@ export class ScreenCaptureEngine {
       cancelAnimationFrame(this.pumpRaf);
       this.pumpRaf = null;
     }
+    try {
+      this.pumpReader?.cancel().catch(() => undefined);
+    } catch {}
+    this.pumpReader = null;
+    this.pumpRepeatFrame = null;
     try {
       this.pumpTrack?.stop();
     } catch {}
@@ -511,6 +564,11 @@ export class ScreenCaptureEngine {
     // used. Calling requestData() before the encoder has emitted its first
     // output makes Chromium dispatch *empty* dataavailable events and discard
     // the already-encoded video, which resulted in "0 chunks recorded".
+    // The recording ends NOW: hand the encoder the current picture once more so
+    // the video track lasts until the stop instant (and ends with the audio).
+    this.pumpRepeatFrame?.();
+    await new Promise((r) => setTimeout(r, 40));
+
     if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
       await new Promise<void>((resolve) => {
         let settled = false;
@@ -537,9 +595,7 @@ export class ScreenCaptureEngine {
       });
     }
 
-    // Keep pumping for a moment so the encoder receives the final frames,
-    // then tear the pump down.
-    await new Promise((r) => setTimeout(r, 60));
+    console.log(`[SmoothStudio CaptureEngine] Frame pump (${this.pumpDriver}): ${this.pumpSourceFrames} captured frames read, ${this.pumpFrameCount} frames sent to the encoder in ${this.recordingDurationMs}ms`);
     this.stopFramePump();
 
     if (this.pendingWrites.length > 0) {
@@ -565,6 +621,8 @@ export class ScreenCaptureEngine {
       const reason = `Recording failed: no video was captured. The display capture stream produced 0 encoded frames in ${this.recordingDurationMs}ms.`;
       console.error('[SmoothStudio CaptureEngine] ' + reason);
       this.lastBlob = null;
+      this.releaseSessionLock?.();
+      this.releaseSessionLock = null;
       if (this.onStopHandler) {
         try {
           this.onStopHandler(null);
@@ -576,17 +634,24 @@ export class ScreenCaptureEngine {
       throw new Error(reason);
     }
 
-    let blob = rawBlob;
+    let blob: Blob = rawBlob;
     if (this.recordingDurationMs > 0) {
       try {
-        blob = await patchWebmBlobDuration(rawBlob, this.recordingDurationMs);
-        if (blob && blob.size > 0) {
-          await overwriteRecordingBlob(blob);
-        }
+        const patched = await patchWebmBlobDuration(rawBlob, this.recordingDurationMs);
+        if (patched && patched.size > 0) blob = patched;
       } catch (err) {
         console.warn('[SmoothStudio CaptureEngine] Failed to patch WebM duration:', err);
       }
     }
+    // Always commit: the file becomes THE recording of this session, even when
+    // the duration patch failed.
+    try {
+      await commitRecording(blob, this.sessionId);
+    } catch (err) {
+      console.error('[SmoothStudio CaptureEngine] Could not commit the recording:', err);
+    }
+    this.releaseSessionLock?.();
+    this.releaseSessionLock = null;
     this.lastBlob = blob;
 
     if (this.onStopHandler) {
@@ -599,6 +664,10 @@ export class ScreenCaptureEngine {
 
     this.stopPromise = null;
     return blob;
+  }
+
+  public getSessionId(): string {
+    return this.sessionId;
   }
 
   public getLastBlob(): Blob | null {

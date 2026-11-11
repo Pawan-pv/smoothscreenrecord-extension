@@ -52,6 +52,8 @@ export interface InputFocusEvent {
 
 export interface RecordingMetadata {
   id: string;
+  /** Recording session id: shared by the video, the telemetry and the editor (M1-08). */
+  sessionId?: string;
   startTime: number;
   endTime: number;
   durationMs: number;

@@ -20,7 +20,11 @@ import { HardwareMp4Exporter } from '../engine/mp4-exporter';
 import { HardwareGifExporter, GIF_QUALITY_PRESETS, GifQualityPreset } from '../engine/gif-exporter';
 import { SopGuideExporter } from '../engine/sop-guide-exporter';
 import { HtmlWidgetExporter } from '../engine/html-widget-exporter';
-import { getRecordingBlob, loadTelemetry, setUseOpfs } from '../engine/opfs-storage';
+import {
+  getRecordingBlob, loadTelemetry, saveTelemetry, setUseOpfs, newSessionId, getFinalSessionId,
+  recoverInterruptedSession, isSessionLockHeld
+} from '../engine/opfs-storage';
+import { patchWebmBlobDuration } from '../engine/webm-fixer';
 import { ScreenCaptureEngine } from '../engine/screen-recorder';
 import { diagnosticChannel, SystemDegradationEvent } from '../engine/diagnostic-channel';
 import { CanvasPreview } from './CanvasPreview';
@@ -46,11 +50,46 @@ import {
   Cpu
 } from 'lucide-react';
 
+/**
+ * Tags telemetry with its recording session (M1-08). Without telemetry an
+ * EMPTY record is returned: no click, key or mouse point is ever invented.
+ */
+function withSession(tel: TelemetryData | null, sessionId: string, durationMs: number, displaySurface?: string): TelemetryData {
+  const now = Date.now();
+  const base: TelemetryData = tel || {
+    metadata: {
+      id: sessionId,
+      startTime: now - durationMs,
+      endTime: now,
+      durationMs,
+      width: typeof window !== 'undefined' ? window.innerWidth : 1920,
+      height: typeof window !== 'undefined' ? window.innerHeight : 1080,
+      devicePixelRatio: (typeof window !== 'undefined' && window.devicePixelRatio) || 1,
+      title: 'Screen Recording'
+    },
+    mousePoints: [],
+    clicks: [],
+    keystrokes: [],
+    inputEvents: []
+  };
+  return {
+    ...base,
+    metadata: {
+      ...base.metadata,
+      id: sessionId,
+      sessionId,
+      ...(displaySurface ? { displaySurface } : {})
+    }
+  };
+}
+
 export function EditorStudio() {
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
   const prevBlobUrlRef = useRef<string | null>(null);
   const currentBlobUrlRef = useRef<string | null>(null);
   const latestTelemetryRef = useRef<TelemetryData | null>(null);
+  /** Session id of the recording being made right now (M1-08). */
+  const activeSessionIdRef = useRef<string | null>(null);
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | HTMLCanvasElement | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
   const [durationMs, setDurationMs] = useState<number>(10000);
@@ -283,6 +322,45 @@ export function EditorStudio() {
 
   useEffect(() => {
     async function loadInitial() {
+      // M1-06 crash recovery: a session whose recorder page died (crash, tab
+      // closed) is assembled from its committed chunks and becomes the
+      // recording. A session another live editor is recording is left alone.
+      let recoveredSession = false;
+      try {
+        const recovered = await recoverInterruptedSession({
+          isSessionAlive: isSessionLockHeld,
+          transform: (b, d) => (d > 0 ? patchWebmBlobDuration(b, d) : Promise.resolve(b))
+        });
+        if (recovered) {
+          const sid = recovered.sessionId;
+          let tel: TelemetryData | null = null;
+          if (typeof chrome !== 'undefined' && chrome.runtime) {
+            tel = await new Promise<TelemetryData | null>((resolve) => {
+              const timer = setTimeout(() => resolve(null), 5000);
+              chrome.runtime.sendMessage({ type: 'RECOVER_SESSION', sessionId: sid }, (res) => {
+                void chrome.runtime?.lastError;
+                clearTimeout(timer);
+                const t = res?.telemetry as TelemetryData | undefined;
+                resolve(t && t.metadata?.sessionId === sid ? t : null);
+              });
+            });
+          }
+          if (!tel) tel = await loadTelemetry(sid);
+          const finalTel = withSession(tel, sid, recovered.durationMs);
+          await saveTelemetry(finalTel).catch(() => undefined);
+          setupLoadedRecording(recovered.blob, finalTel, recovered.durationMs || undefined, sid);
+          setHasNoRecording(false);
+          recoveredSession = true;
+          showToast({
+            type: 'warning',
+            title: 'Recording Recovered',
+            message: `The previous recording was interrupted. ${(recovered.durationMs / 1000).toFixed(1)}s were recovered.`
+          });
+        }
+      } catch (err) {
+        console.warn('[SmoothStudio] Crash recovery failed:', err);
+      }
+
       if (typeof window !== 'undefined' && window.location.search.includes('record=true')) {
         const urlParams = new URLSearchParams(window.location.search);
         const sourceTabStr = urlParams.get('sourceTab');
@@ -295,28 +373,17 @@ export function EditorStudio() {
         return;
       }
 
+      if (recoveredSession) return;
+
       try {
-        const storedTelemetry = await loadTelemetry();
         const storedBlob = await getRecordingBlob();
+        // Only the committed recording's OWN telemetry is used (M1-08).
+        const sid = getFinalSessionId();
+        const storedTelemetry = sid ? await loadTelemetry(sid) : await loadTelemetry();
 
         if (storedBlob && storedBlob.size > 0) {
-          const defaultTel: TelemetryData = storedTelemetry || {
-            metadata: {
-              id: 'rec_' + Date.now(),
-              startTime: Date.now() - 15000,
-              endTime: Date.now(),
-              durationMs: 15000,
-              width: 1920,
-              height: 1080,
-              devicePixelRatio: 1,
-              title: 'Screen Recording'
-            },
-            mousePoints: [],
-            clicks: [],
-            keystrokes: [],
-            inputEvents: []
-          };
-          setupLoadedRecording(storedBlob, defaultTel);
+          const defaultTel: TelemetryData = storedTelemetry || withSession(null, sid || newSessionId(), 0);
+          setupLoadedRecording(storedBlob, defaultTel, undefined, sid || defaultTel.metadata.sessionId);
           setHasNoRecording(false);
         } else {
           setHasNoRecording(true);
@@ -329,7 +396,7 @@ export function EditorStudio() {
     loadInitial();
   }, []);
 
-  const setupLoadedRecording = (blob: Blob, data: TelemetryData, measuredDurationMs?: number) => {
+  const setupLoadedRecording = (blob: Blob, data: TelemetryData, measuredDurationMs?: number, sessionId?: string | null) => {
     firedSfxRef.current.clear();
     setVideoBlob(blob);
     setTelemetry(data);
@@ -359,6 +426,8 @@ export function EditorStudio() {
     const existingVideo = document.getElementById('smoothstudio-source-video');
     if (existingVideo) existingVideo.remove();
     video.id = 'smoothstudio-source-video';
+    const loadedSid = sessionId || data.metadata?.sessionId || null;
+    if (loadedSid) video.setAttribute('data-session-id', loadedSid);
     video.style.cssText = 'position: fixed; bottom: 0; right: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; z-index: -1;';
     document.body.appendChild(video);
     if (import.meta.env.DEV) {
@@ -715,6 +784,9 @@ export function EditorStudio() {
       hasFinalizedRef.current = false;
       isStoppingRef.current = false;
       telemetryReceivedRef.current = false;
+      latestTelemetryRef.current = null;
+      const sessionId = newSessionId();
+      activeSessionIdRef.current = sessionId;
       setIsPlaying(false);
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
@@ -722,6 +794,7 @@ export function EditorStudio() {
       }
       await captureEngineRef.current.start({
         includeMic,
+        sessionId,
         frameRate: 60,
         onMicWarning: (msg) => {
           showToast({
@@ -760,7 +833,8 @@ export function EditorStudio() {
             type: 'START_STUDIO_RECORDING',
             tabId: sourceTabId,
             focusTarget: Boolean(sourceTabId),
-            originEpoch
+            originEpoch,
+            sessionId
           },
           () => {
             void chrome.runtime?.lastError;
@@ -779,37 +853,49 @@ export function EditorStudio() {
   };
 
   const handleStopLiveRecording = async (passedTelemetry?: TelemetryData | null, passedBlob?: Blob | null) => {
-    if (passedTelemetry) {
+    // Every stop path ends here: the HUD / popup (via the SW, with telemetry),
+    // the editor's Stop button and Chrome's "Stop sharing" bar (recorder onStop).
+    const sessionId = activeSessionIdRef.current;
+    const sameSession = (t?: TelemetryData | null) =>
+      !!t && (!t.metadata?.sessionId || !sessionId || t.metadata.sessionId === sessionId);
+    if (passedTelemetry && sameSession(passedTelemetry)) {
       latestTelemetryRef.current = passedTelemetry;
     }
 
-    // If already finalized or in-flight stopping, do not run duplicate pass
+    // One stop per session: a second stop request while (or after) this
+    // session is being finalized only hands over its telemetry.
     if (hasFinalizedRef.current || isStoppingRef.current) {
-      if (passedTelemetry && (!telemetry || telemetry.mousePoints.length === 0)) {
-        setTelemetry(passedTelemetry);
-        if (import.meta.env.DEV) (window as any).__lastLoadedTelemetry = passedTelemetry;
-        // Use the MEASURED recording duration. The previous code used the
-        // React `durationMs` state, which is still the 10000ms default at this
-        // point and therefore clamped every zoom pill to a bogus end time.
-        const measuredForPills = captureEngineRef.current.getDurationMs() || durationMs;
-        const autoPills = generateAutoZoomPills(
-          passedTelemetry.clicks || [],
-          passedTelemetry.inputEvents || [],
-          measuredForPills,
-          passedTelemetry.metadata?.width || window.innerWidth,
-          passedTelemetry.metadata?.height || window.innerHeight
-        );
-        setPills(autoPills);
-        if (import.meta.env.DEV) (window as any).__smoothstudio_pills = autoPills;
-      }
+      return;
+    }
+    // A stop request when this editor is not recording must not load the
+    // previous recording again.
+    if (!passedBlob && !captureEngineRef.current.getStatus()) {
+      console.log('[SmoothStudio] Stop request ignored: this editor is not recording.');
       return;
     }
     hasFinalizedRef.current = true;
     isStoppingRef.current = true;
     setIsRecordingLive(false);
 
+    // Ask the SW to end the session on the recorded tab (HUD, telemetry) in
+    // parallel with stopping the recorder, unless the SW already did.
+    const telemetryFromSw: Promise<TelemetryData | null> = latestTelemetryRef.current
+      ? Promise.resolve(latestTelemetryRef.current)
+      : new Promise<TelemetryData | null>((resolve) => {
+          if (typeof chrome === 'undefined' || !chrome.runtime) { resolve(null); return; }
+          const timer = setTimeout(() => resolve(null), 6000);
+          try {
+            chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING', sessionId }, (res) => {
+              void chrome.runtime?.lastError;
+              clearTimeout(timer);
+              const t = res?.telemetry as TelemetryData | undefined;
+              resolve(t && sameSession(t) ? t : null);
+            });
+          } catch { clearTimeout(timer); resolve(null); }
+        });
+
     try {
-      // 1. Ensure capture engine stops and gives us the finalized blob
+      // 1. Stop the recorder and get the finalized blob of THIS session
       let blob = passedBlob || null;
       if (!blob) {
         try {
@@ -825,59 +911,23 @@ export function EditorStudio() {
           return;
         }
       }
-      if (!blob) {
-        blob = captureEngineRef.current.getLastBlob() || (await getRecordingBlob());
-      }
 
-      // 2. Obtain telemetry: priority passedTelemetry -> latestTelemetryRef -> loadTelemetry() -> service worker query
-      let tel = latestTelemetryRef.current || (await loadTelemetry());
-      if (!tel && typeof chrome !== 'undefined' && chrome.runtime) {
-        try {
-          await new Promise<void>((resolve) => {
-            chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' }, () => {
-              void chrome.runtime?.lastError;
-              resolve();
-            });
-            setTimeout(resolve, 600);
-          });
-          tel = latestTelemetryRef.current || (await loadTelemetry());
-        } catch {}
-      }
+      // 2. Telemetry of THIS session only (never a previous recording's)
+      let tel = latestTelemetryRef.current || (await telemetryFromSw);
+      if (!tel) tel = latestTelemetryRef.current || (sessionId ? await loadTelemetry(sessionId) : null);
 
       const measuredDur = captureEngineRef.current.getDurationMs() || 10000;
       const trackSettings = captureEngineRef.current.getTrackSettings();
       const displaySurface = trackSettings?.displaySurface || tel?.metadata?.displaySurface || 'browser';
+      const sid = sessionId || captureEngineRef.current.getSessionId() || newSessionId();
 
-      // 3. Prepare complete telemetry with metadata
-      const finalTelemetry: TelemetryData = (tel && tel.mousePoints && tel.mousePoints.length > 0)
-        ? {
-            ...tel,
-            metadata: {
-              ...tel.metadata,
-              displaySurface
-            }
-          }
-        : {
-            metadata: {
-              id: 'live_' + Date.now(),
-              startTime: Date.now() - measuredDur,
-              endTime: Date.now(),
-              durationMs: measuredDur,
-              width: window.innerWidth,
-              height: window.innerHeight,
-              devicePixelRatio: window.devicePixelRatio || 1,
-              title: tel?.metadata?.title || 'Screen Recording',
-              displaySurface
-            },
-            mousePoints: tel?.mousePoints || [],
-            clicks: tel?.clicks || [],
-            keystrokes: tel?.keystrokes || [],
-            inputEvents: tel?.inputEvents || []
-          };
+      // 3. Complete telemetry tagged with the session
+      const finalTelemetry = withSession(tel, sid, measuredDur, displaySurface);
+      await saveTelemetry(finalTelemetry).catch((e) => console.warn('[SmoothStudio] Could not persist telemetry:', e));
 
       if (blob && blob.size > 0) {
         console.log('[SmoothStudio] Recording stopped successfully. Finalizing editor with blob size:', blob.size, 'duration:', measuredDur);
-        setupLoadedRecording(blob, finalTelemetry, measuredDur);
+        setupLoadedRecording(blob, finalTelemetry, measuredDur, sid);
         showToast({
           type: 'success',
           title: 'Recording Loaded',

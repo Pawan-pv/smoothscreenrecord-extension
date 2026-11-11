@@ -55,26 +55,28 @@ background) and `tests/unit/recording-storage.test.ts` (storage/session logic).
 Human checks for M1: HC-004 (Chrome's "Stop sharing" bar), HC-008 (tab and window surfaces
 chosen in the share picker).
 
-### M1 state (2026-11-11, end of session 1)
+### M1 state (2026-11-11, end of session 2) — NOT DONE
 
 - [x] acceptance checks written (this table)
-- [x] tests written and shown failing on `e289055`: unit 11/11 failed (`bytes committed to disk before stop: expected 0 to be >= 12`, stale telemetry handed to another session); m1 journey 5/5 failed (2.4 fps with a 2.5 s hole, audio 0.495 s past the video, no session ids, `OPFS while recording: … 0 bytes`, no IndexedDB)
-- [x] implementation: `39f7756` (tests `68c8d50`)
-- [~] used like a real user: unit 88/88; m1 `mic`, `stop paths`, `crash`, `idb fallback` PASS on the real build; `timing` not yet valid — see below
-- [ ] full suite run 1 / run 2
-- [ ] verifier
+- [x] tests written and shown failing on `e289055` (tests `68c8d50`)
+- [x] implementation `39f7756`, zero-copy pump + snapshot limit `93ece99`; capture marker (AGENTS.md 3.8) `1635815`
+- [x] used like a real user (desktop free): every M1 check PASSED one at a time — timing `28.7 fps vs 31.2 plain, worst hole 99 ms, first page frame −96 ms, last −77 ms`, mic, stop paths, crash, idb; a guarded mid-frame was looked at (real clock fixture + marker + HUD)
+- [ ] full suite run 1 — **FAILED** (HEAD `93ece99`, 27 passed / 11 failed, 14.0 min). See BUGS.md QA-029..QA-034
+- [ ] full suite run 2 — not started
+- [ ] verifier — aborted before any test run (suite red). Its static review (Q3): **no weakening, faking or mocking found**; notes: (1) M1-03 check (b) `pts.length >= 0.95*read` is inflated by repeated hold frames → count only real frames; (2) the unit tests fail on `e289055` mostly with "not a function", only M1-05 #1 on behaviour; (3) the marker overlay is visible to every journey's pixel/DOM checks
 
-**Where exactly I stopped:** the m1 `timing` run was invalidated by the desktop: another
-application window came on top of the test browser half-way through the recording (frames 63..119
-show that window, not the fixture), although the harness sets the browser TOPMOST. Every
-screen-capture journey needs the desktop to itself while it runs (HC-009). Last valid numbers
-before that: 119/121 pump frames kept, worst hole 215 ms, last page frame −217 ms from the stop
-click, first page frame −692 ms before the HUD. Next steps, in order:
-1. With the desktop free: `node node_modules/playwright/cli.js test tests/e2e/m1-recording-core.spec.ts --reporter=list --workers=1`
-2. Full suite run 1 and 2 (`--workers=1`), regressions fixed first.
-3. Fresh verifier subagent: tests fail on `e289055`, pass on HEAD, nothing weakened/mocked.
-4. Commit `M1 done`.
+**Where exactly I stopped (resume here):**
+1. `tests/e2e/out/MARKER_ABORT.json` is still present ON PURPOSE (QA-031: the popup-stop recording had 34/127 frames without the marker; not viewed). Explain it WITHOUT viewing frames (is the marker on `popup.html`? what is on top after the popup closes?), fix, and only then delete the file.
+2. QA-029 (blocks M1, regression: J1 failed `20.737 s vs 20.142 s`): forward frames only from HUD-live to the stop REQUEST instant.
+3. QA-030 (blocks M1): reduce the frame-diff detector cost (≈20 % of the editor main thread); fix M1-03 (b) per the verifier.
+4. Check whether the marker overlay causes J3's third blob (`moving-window diff {"changed":1751,"blobs":3}`).
+5. Triage (not M1-owned, but must not be M1 regressions): QA-032 C1 silent mic track?, QA-033 J11 frozen export clock, QA-034 C2 3 silences.
+6. Then full suite ×2 with the desktop free, the verifier, `M1 done`.
 
-Open M1 follow-ups found on the way (not blocking M1): VP8 at 1080p still costs this i3 enough
-CPU that the capture source slows while recording (11 fps vs 22 fps idle) → M11 quality profiles;
-`START_TELEMETRY` is still sent to every active http tab, not only the recorded one → M2.
+Open M1 follow-ups found on the way (not blocking M1):
+- M2: `START_TELEMETRY` is still sent to every active http tab, not only the recorded one.
+- M10: transition snapshots for the SOP/widget are now limited to one per 700 ms (they cost
+  39 % of the editor's main thread on an animating page); M10 must check that every step still
+  gets the right screenshot (ideally snapshots taken AT the click).
+- M11: the frame-diff detector still keeps the editor ~20 % busy (2234 ms of 10761 ms) on an
+  animating page; VP8 1080p is software-encoded here (H.264 HW encoder starts in 0.48 s).

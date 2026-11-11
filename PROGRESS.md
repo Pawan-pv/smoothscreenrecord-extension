@@ -2,6 +2,40 @@
 
 One entry per iteration. Newest first.
 
+## M1 Recording core — session 2 (2026-11-11) — NOT DONE, stopped
+
+User decisions: J12 timeout edit reverted (420 s kept; GIF slowness logged as QA-028 for M9);
+M1-03 relative-fps redesign accepted (HC-006 by the user); new AGENTS.md §3.8 capture-marker rule.
+
+**Capture marker (`1635815`)**: random-colour edge strips + token on every test-browser page;
+every recording decoded in memory and checked before it may be viewed or saved. Negative check:
+the same recording against the 3 other palette colours → `178/178` frames rejected.
+
+**M1-03 fix (`93ece99`)**, measured with the desktop free:
+```
+canvas pump:            15.9 fps vs 29.0 plain MediaRecorder (pump read 175)
+zero-copy generator:    20.6 fps vs 28.2   detector busy 4164 ms / 10761 ms, 69 snapshots
++ snapshots >= 700 ms:  28.7 fps vs 31.2   worst hole 99 ms, read 308 / file 309   -> PASS
+```
+
+**Full suite run 1 (HEAD `93ece99`): 27 passed, 11 failed (14.0 min).**
+| Test | Result | Raw evidence |
+|---|---|---|
+| m1 stop paths | FAIL (marker) | `[marker] m1-stop/recording-popup.webm: 127 frames decoded, 34 without the marker` → dropped unviewed, run aborted (QA-031) |
+| m1 crash, m1 idb | not run | `Run aborted: an earlier journey captured content without the test marker` |
+| J1 | FAIL (regression) | `video track length 20.737s vs wall clock 20.142s` (QA-029) |
+| J10 | FAIL | `raw length 11.855s vs wall clock 11.269s` (QA-015/QA-029) |
+| J2 | FAIL | `frames without a readable epoch band: [0]` — frame 0 shows the editor (QA-016/QA-029) |
+| m1 timing | FAIL | `27.7 fps (plain recorder 34.6 fps)` 80 % < 90 % (QA-030) |
+| J3 | FAIL | `moving-window diff {"changed":1751,"blobs":3}` (QA-017; marker overlay to be ruled out) |
+| C1 | FAIL | `acoustic onset … 21.1445s`, known pauses `maxDb null` (QA-032) |
+| C2 | FAIL | `[data-silence-id]` count `Received: 3` (QA-034) |
+| J11 | FAIL | every checked export frame `video clock 2358742351888` (QA-033) |
+| J9, J12, m1 mic, audit, human-sim, popup-interactive | PASS | |
+
+Verifier: aborted before running anything (suite red); static review found no weakening/faking/mocking.
+Lock released, verifier worktree removed. No `M1 done` commit.
+
 ## M1 Recording core — session 1 (2026-11-11) — IN PROGRESS
 
 Module plan and acceptance checks: `MODULES.md` (M1-01..M1-11). Pre-module commit `e289055`.

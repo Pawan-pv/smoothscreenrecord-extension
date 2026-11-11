@@ -121,3 +121,38 @@ screen capture of other applications).
 **What to report:** whether the e-mail address is readable in the recording, and what the
 extension should do when the user captures the whole screen while the privacy shield is
 on.
+
+---
+
+## HC-006 (update, M1) — ≥ 24 fps on normal hardware
+
+The background-editor cause of QA-008 is fixed (frames are read with
+`MediaStreamTrackProcessor`, the file keeps every frame the pump reads). On THIS machine
+(i3-1220P + Intel UHD, busy desktop) Chrome's screen capturer itself only delivers 8–22 fps
+of a 60 fps page (`tests/e2e/helpers/probe-pump.mjs`), so ≥ 24 fps cannot be proven here.
+**Steps:** on a normal machine record `tests/fixtures/clock.html` for 20 s with the editor
+tab in the background, then `ffprobe -select_streams v:0 -count_frames -show_entries
+stream=nb_read_frames` on the raw recording. **Report:** frames / seconds.
+
+---
+
+## HC-008 — Tab and window surfaces in the share picker (M1)
+
+**Why a human:** Chrome for Testing ignores the capture auto-select flags (QA-005), so the
+automated runs can only capture the whole screen.
+**Steps:** start a recording and, in Chrome's share picker, choose (1) a *Chrome tab*, (2) a
+*Window*; record ~10 s each, stop with the HUD.
+**Report:** for each surface — does the editor load the recording, does it show only the
+chosen tab/window, and does stopping via Chrome's own "Stop sharing" button also load it.
+
+---
+
+## HC-009 — The desktop must be free while the screen-capture journeys run
+
+**Why a human:** every journey records the REAL screen. If another application window comes
+above the test browser during a run (it happened in the M1 timing run on 2026-11-11: an IDE
+window covered the fixture half-way through), the recording shows that window — the run is
+invalid, and the captured frames contain whatever that window showed. They are written only to
+the git-ignored `tests/e2e/out/`, and should be deleted after such a run.
+**Steps:** before a full-suite run, minimise other windows (or leave the machine alone) for the
+duration of the run (~25 min).

@@ -2,6 +2,40 @@
 
 One entry per iteration. Newest first.
 
+## M1 Recording core — session 1 (2026-11-11) — IN PROGRESS
+
+Module plan and acceptance checks: `MODULES.md` (M1-01..M1-11). Pre-module commit `e289055`.
+
+**Failing first** (`68c8d50` tests run on the `e289055` build):
+```
+unit tests/unit/recording-storage.test.ts   Tests 11 failed (11)
+  bytes committed to disk before stop: expected 0 to be greater than or equal to 12
+  telemetry of "first" must not be handed to "second": expected { …(5) } to be null
+m1 timing   27 frames in ~11 s (2.4 fps), pts hole 4.225 -> 6.692 s, last frame 1281 ms before the stop
+m1 mic      video ends 9.764 s, audio ends 10.259 s  (0.495 > 0.15)
+m1 stop     no session id on the loaded recording (timeout)
+m1 crash    OPFS while recording: [smoothstudio_recording.webm.crswap 0, smoothstudio_recording.webm 0] (0 bytes)
+m1 idb      no recording after reload without OPFS
+```
+
+**Root causes found (with probes):**
+- QA-024 (CRITICAL): one open `FileSystemWritableFileStream` for the whole recording only commits on `close()` → a crash lost everything.
+- QA-023 (HIGH): `probe-recorder-start.mjs` — first encoded chunk: `vp9 4519 ms`, `vp8 259 ms`, `h264 475 ms` → recordings < 4.5 s had **no video** (`0 encoded frames in 3890ms`).
+- QA-008 (HIGH): the pump was driven by `requestVideoFrameCallback`, which does not fire while the editor is not rendered. `probe-pump.mjs`: the fixture renders at 58–60 fps but the capture SOURCE of this machine only delivers 3–22 fps (raw track, no product code) — the ≥ 24 fps goal moved to HC-006.
+- QA-025 / QA-026: no session ids (stale telemetry), no IndexedDB fallback.
+
+**Fix `39f7756`.** After (real build, real capture, editor in the background):
+```
+unit 88 passed (88), tsc clean, build 0, 0 test hooks in dist/
+m1 mic          PASS  video ends 8.884 s, audio ends 8.999 s
+m1 stop paths   PASS  hud -> ["Alpha Action"], editor -> ["Beta Action"], popup -> ["Open Modal","Close"], 3 session ids, reload keeps the last
+m1 crash        PASS  OPFS while recording: 9 committed parts, 583791 bytes; recovered after a CDP Page.crash at 7.36 s
+m1 idb fallback PASS
+m1 timing       last valid run: pump read 121 / sent 121, file 119 frames, worst hole 215 ms, last page frame -217 ms
+                next run INVALID: an IDE window covered the test browser (frames 63..119) -> HC-009
+```
+Not yet done: valid `timing` run, full suite ×2, verifier, `M1 done` commit.
+
 ## Iteration 4 — privacy made blur-only (QA-013, QA-018), real telemetry check (QA-019)
 
 **Environment notes (raw):**

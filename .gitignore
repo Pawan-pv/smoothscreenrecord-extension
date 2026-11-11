@@ -28,4 +28,7 @@ tests/strict-exports/
 .agents/
 tests/fixtures/*.wav
 tests/fixtures/*.webm
+tests/fixtures/audio/*.wav
 tests/round4/out/
+tests/verify/out/
+tests/e2e/out/

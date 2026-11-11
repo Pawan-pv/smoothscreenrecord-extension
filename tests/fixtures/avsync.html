@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>AV Sync Fixture - SmoothStudio QA</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; background:#000; color:#fff;
+    font-family:"Segoe UI", system-ui, sans-serif; overflow:hidden; }
+  /* ---- Binary epoch readout (48 cells, MSB first, top band) ------------ */
+  #epoch-bits { position:fixed; top:0; left:0; width:100vw; height:4.5vh;
+    display:flex; z-index:2147483000; background:#000; }
+  #epoch-bits > div { flex:1 1 0; min-width:0; height:100%; background:#000; }
+  #epoch-bits > div.on { background:#fff; }
+  #flash { position:fixed; left:35%; top:30%; width:30%; height:40%; background:#000; }
+  #flash.on { background:#fff; }
+  #status { position:fixed; left:24px; bottom:24px; font-size:20px; font-family:Consolas, monospace; }
+</style>
+</head>
+<body>
+  <div id="epoch-bits"></div>
+  <div id="flash"></div>
+  <div id="status">avsync ready</div>
+<script>
+(function () {
+  var BITS = 48;
+  var bitsEl = document.getElementById('epoch-bits');
+  var cells = [];
+  for (var i = 0; i < BITS; i++) { var d = document.createElement('div'); bitsEl.appendChild(d); cells.push(d); }
+  function paintBits(epochMs) {
+    for (var c = 0; c < BITS; c++) {
+      // NOTE: plain arithmetic, not bitwise ops. `epochMs >>> n` truncates the
+      // value to 32 bits first, so a 41-bit epoch could never be encoded.
+      var bit = Math.floor(epochMs / Math.pow(2, BITS - 1 - c)) % 2;
+      var on = bit === 1;
+      if (cells[c].classList.contains('on') !== on) cells[c].classList.toggle('on', on);
+    }
+  }
+  var flashEl = document.getElementById('flash');
+  var statusEl = document.getElementById('status');
+  var PERIOD_MS = 2000;   // one flash every 2 s
+  var FLASH_MS = 120;     // white square visible for 120 ms
+  var onCount = 0;
+
+  function tick() {
+    var epoch = Date.now();
+    paintBits(epoch);
+    var phase = epoch % PERIOD_MS;
+    if (phase < FLASH_MS) {
+      if (!flashEl.classList.contains('on')) { flashEl.classList.add('on'); onCount++; }
+      statusEl.textContent = 'FLASH # ' + onCount + ' at ' + epoch;
+    } else {
+      flashEl.classList.remove('on');
+      statusEl.textContent = 'dark at ' + epoch;
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

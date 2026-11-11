@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Clock Fixture - SmoothStudio QA</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #101216; color: #f5f5f5;
+    font-family: "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+  /* ---- Binary epoch readout -------------------------------------------
+     48 cells across the full viewport width, MSB-first.
+     Cell c (0..47) shows bit (47-c) of Date.now() (milliseconds).
+     This makes the exact wall-clock time of every captured frame
+     machine-readable from the recorded video itself.                    */
+  #epoch-bits { position: fixed; top: 0; left: 0; width: 100vw; height: 4.5vh;
+    display: flex; z-index: 2147483000; background: #000; }
+  #epoch-bits > div { flex: 1 1 0; min-width: 0; height: 100%; background: #000; }
+  #epoch-bits > div.on { background: #fff; }
+  body { padding-top: 4.5vh; }
+  .big { font-family: Consolas, "Courier New", monospace; font-size: 64px;
+    font-weight: 700; letter-spacing: 2px; }
+  .mono { font-family: Consolas, "Courier New", monospace; }
+  #movebar { height: 28px; background: #22d3ee; width: 60px; position: absolute; top: 0; }
+  .card { background: #1b1f27; border: 1px solid #2c313c; border-radius: 10px;
+    padding: 14px 18px; margin: 10px; }
+  button { font-size: 18px; padding: 10px 18px; border-radius: 8px;
+    border: 1px solid #444; background: #262b36; color: #fff; cursor: pointer; }
+  input[type=text] { font-size: 18px; padding: 8px; border-radius: 6px;
+    border: 1px solid #444; background: #0c0e12; color: #fff; width: 320px; }
+  #modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none;
+    align-items: center; justify-content: center; z-index: 1000; }
+  #modal.open { display: flex; }
+  #modal .box { background: #20242e; padding: 30px 40px; border-radius: 12px; font-size: 22px; }
+  canvas { border: 1px solid #333; background: #0b0d11; }
+</style>
+</head>
+<body>
+  <div id="epoch-bits"></div>
+
+  <h1 style="margin:6px 12px 0;font-size:20px;">SmoothStudio QA clock fixture</h1>
+  <div style="padding:0 12px;">
+    <div id="wallclock" class="big">--:--:--.---</div>
+    <div id="epochms" class="big mono">0</div>
+    <div id="framecount" class="big mono">frame 0</div>
+    <div id="fps" class="mono" style="font-size:18px;color:#9aa4b2">fps 0</div>
+  </div>
+
+  <div id="movebar"></div>
+
+  <div style="display:flex;gap:10px;padding:12px;">
+    <div class="card" id="card-1">
+      <div style="font-size:18px">Card A</div>
+      <button id="btn-alpha">Alpha Action</button>
+    </div>
+    <div class="card" id="card-2">
+      <div style="font-size:18px">Card B</div>
+      <button id="btn-beta">Beta Action</button>
+      <input type="text" id="name-input" placeholder="Type your name" />
+    </div>
+    <div class="card" id="card-3">
+      <div style="font-size:18px">Card C</div>
+      <canvas id="grid" width="220" height="140"></canvas>
+    </div>
+  </div>
+
+  <div style="padding:0 12px;">
+    <button id="open-modal">Open Modal</button>
+    <span id="modal-clicks" class="mono" style="margin-left:12px">modal opens: 0</span>
+  </div>
+
+  <div id="modal"><div class="box">Modal Dialog — <span id="modal-title">Hello</span>
+    <div style="margin-top:16px"><button id="close-modal">Close</button></div></div></div>
+
+<script>
+(function () {
+  var BITS = 48;
+  var bitsEl = document.getElementById('epoch-bits');
+  var cells = [];
+  for (var i = 0; i < BITS; i++) {
+    var d = document.createElement('div');
+    bitsEl.appendChild(d);
+    cells.push(d);
+  }
+  function paintBits(epochMs) {
+    for (var c = 0; c < BITS; c++) {
+      // NOTE: plain arithmetic, not bitwise ops. `epochMs >>> n` truncates the
+      // value to 32 bits first, so a 41-bit epoch could never be encoded.
+      var bit = Math.floor(epochMs / Math.pow(2, BITS - 1 - c)) % 2;
+      var on = bit === 1;
+      if (cells[c].classList.contains('on') !== on) {
+        cells[c].classList.toggle('on', on);
+      }
+    }
+  }
+
+  var wallEl = document.getElementById('wallclock');
+  var epochEl = document.getElementById('epochms');
+  var frameEl = document.getElementById('framecount');
+  var fpsEl = document.getElementById('fps');
+  var barEl = document.getElementById('movebar');
+
+  var grid = document.getElementById('grid');
+  var gctx = grid.getContext('2d');
+
+  var frames = 0;
+  var last = performance.now();
+  var fpsAcc = 0, fpsCount = 0, fpsShown = 0;
+  var t0 = performance.timeOrigin;
+
+  function drawGrid(t) {
+    gctx.fillStyle = '#0b0d11';
+    gctx.fillRect(0, 0, grid.width, grid.height);
+    gctx.strokeStyle = '#3b4252';
+    for (var x = 0; x <= grid.width; x += 22) {
+      gctx.beginPath(); gctx.moveTo(x + 0.5, 0); gctx.lineTo(x + 0.5, grid.height); gctx.stroke();
+    }
+    for (var y = 0; y <= grid.height; y += 20) {
+      gctx.beginPath(); gctx.moveTo(0, y + 0.5); gctx.lineTo(grid.width, y + 0.5); gctx.stroke();
+    }
+    gctx.fillStyle = '#f59e0b';
+    var px = (t / 8 % 1) * grid.width;
+    gctx.fillRect(px, 0, 10, grid.height);
+  }
+
+  function frame(now) {
+    var epoch = Date.now();
+    frames++;
+    paintBits(epoch);
+
+    var d = new Date(epoch);
+    var p2 = function (n, w) { return String(n).padStart(w || 2, '0'); };
+    wallEl.textContent = p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds()) + '.' + p2(d.getMilliseconds(), 3);
+    epochEl.textContent = 'epoch ' + epoch + ' ms';
+    frameEl.textContent = 'frame ' + frames;
+
+    fpsCount++;
+    if (now - last >= 1000) {
+      fpsShown = Math.round(fpsCount * 1000 / (now - last));
+      fpsCount = 0; last = now;
+    }
+    fpsEl.textContent = 'fps ' + fpsShown;
+
+    // moving bar: horizontal sweep, 1 cycle / 3s
+    var phase = ((epoch - t0) % 3000) / 3000;
+    barEl.style.left = (phase * (window.innerWidth - 60)) + 'px';
+
+    drawGrid((epoch - t0) / 1000);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  document.getElementById('open-modal').addEventListener('click', function () {
+    document.getElementById('modal').classList.add('open');
+    var c = document.getElementById('modal-clicks');
+    c.textContent = 'modal opens: ' + (parseInt(c.textContent.replace(/\D+/g, ''), 10) + 1);
+  });
+  document.getElementById('close-modal').addEventListener('click', function () {
+    document.getElementById('modal').classList.remove('open');
+  });
+  document.getElementById('btn-alpha').addEventListener('click', function () {
+    this.textContent = 'Alpha clicked ' + Date.now();
+  });
+  document.getElementById('btn-beta').addEventListener('click', function () {
+    this.textContent = 'Beta clicked ' + Date.now();
+  });
+})();
+</script>
+</body>
+</html>

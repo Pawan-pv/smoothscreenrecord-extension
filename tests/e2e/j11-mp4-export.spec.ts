@@ -57,11 +57,22 @@ test.describe.serial('J11 MP4 export', () => {
       fs.writeFileSync(path.join(dir, 'j11-video-state.json'), JSON.stringify(videoState, null, 2));
 
       // ---- export ----------------------------------------------------------
+      // Instrumentation: watch the video element's seek events so a failing
+      // export can be traced (which seek never completed).
+      await session.editor.evaluate(() => {
+        const el = document.querySelector('#smoothstudio-source-video') as HTMLVideoElement | null;
+        const log: any[] = [];
+        (window as any).__seekLog = log;
+        if (!el) return;
+        el.addEventListener('seeking', () => log.push({ ev: 'seeking', t: +el.currentTime.toFixed(3), at: performance.now() }));
+        el.addEventListener('seeked', () => log.push({ ev: 'seeked', t: +el.currentTime.toFixed(3), at: performance.now() }));
+        el.addEventListener('error', () => log.push({ ev: 'error', code: el.error?.code, at: performance.now() }));
+      });
       const mp4 = path.join(dir, 'export.mp4');
       let exported = false;
       let exportError = '';
       try {
-        const downloadPromise = session.editor.waitForEvent('download', { timeout: 420000 });
+        const downloadPromise = session.editor.waitForEvent('download', { timeout: 240000 });
         await session.editor.locator('#export-mp4-btn').click();
         const download = await downloadPromise;
         await download.saveAs(mp4);
@@ -71,8 +82,16 @@ test.describe.serial('J11 MP4 export', () => {
         const bodyText = await session.editor.locator('body').innerText().catch(() => '');
         const m = /MP4 Export Failed\s*(.*)/.exec(bodyText);
         if (m) exportError += ` | editor said: ${m[1].slice(0, 300)}`;
-        const consoleErr = await session.editor.locator('body').innerText().catch(() => '');
-        exportError += ` | body tail: ${consoleErr.slice(-200)}`;
+        const seekLog = await session.editor.evaluate(() => (window as any).__seekLog || []).catch(() => []);
+        const seeking = seekLog.filter((e: any) => e.ev === 'seeking');
+        const seeked = seekLog.filter((e: any) => e.ev === 'seeked');
+        console.log('J11 seek events: seeking=' + seeking.length + ' seeked=' + seeked.length);
+        console.log('J11 first seek events:', JSON.stringify(seekLog.slice(0, 6)));
+        console.log('J11 last seek events:', JSON.stringify(seekLog.slice(-6)));
+        const unmatched = seeking.filter((s: any) => !seeked.some((e: any) => e.t === s.t && e.at >= s.at));
+        console.log('J11 seeks without a matching seeked:', JSON.stringify(unmatched.slice(0, 6)));
+        exportError += ` | seeking=${seeking.length} seeked=${seeked.length}`;
+        fs.writeFileSync(path.join(dir, 'j11-seek-log.json'), JSON.stringify(seekLog.slice(-200), null, 2));
       }
       console.log('J11 export:', exported ? mp4 : exportError);
       expect(exported, `MP4 export failed: ${exportError}`).toBe(true);

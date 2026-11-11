@@ -460,7 +460,19 @@ export async function recordPage(
   const wallClockSec = (Date.now() - startedAt) / 1000;
 
   await editor.bringToFront();
-  await editor.locator('#smoothstudio-source-video').waitFor({ state: 'attached', timeout: 60000 });
+  try {
+    await editor.locator('#smoothstudio-source-video').waitFor({ state: 'attached', timeout: 60000 });
+  } catch (err) {
+    // Diagnostics: what did the editor show when the recording did not arrive?
+    const state = await editor.evaluate(() => ({
+      hasVideo: !!document.querySelector('#smoothstudio-source-video'),
+      bodyStart: (document.body?.innerText || '').slice(0, 200),
+      overlays: Array.from(document.querySelectorAll('#start-capture-prompt-btn, #stop-live-recording-top-btn, #record-new-screen-top-btn'))
+        .map((el) => ({ id: el.id, visible: !!(el as HTMLElement).offsetParent }))
+    })).catch(() => null);
+    console.error('[harness] the recording never reached the editor:', JSON.stringify(state));
+    throw err;
+  }
   return { target, editor, wallClockSec, startedAt };
 }
 

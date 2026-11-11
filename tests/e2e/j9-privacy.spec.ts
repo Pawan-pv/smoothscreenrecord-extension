@@ -151,6 +151,10 @@ test.describe.serial('J9 privacy', () => {
         target,
         editor,
         interact: async (p) => {
+          // clicks on elements the shield covers: the telemetry must not record their text
+          await p.locator('#email-text').click();
+          await p.locator('#key-text').click();
+          await p.locator('#rev-jan').click();
           await p.locator('#load-more').click();
           await p.waitForTimeout(500);
           await p.locator('#echo-submit').click();

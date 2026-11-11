@@ -85,6 +85,27 @@ test.describe.serial('J11 MP4 export', () => {
       try {
         const downloadPromise = session.editor.waitForEvent('download', { timeout: 240000 });
         await session.editor.locator('#export-mp4-btn').click();
+        // Diagnostics only (QA-001): is the editor's main thread alive while exporting?
+        let sampling = true;
+        downloadPromise.then(() => { sampling = false; }, () => { sampling = false; });
+        (async () => {
+          for (let i = 0; sampling && i < 24; i++) {
+            await new Promise((r) => setTimeout(r, 10000));
+            if (!sampling) break;
+            const t0 = Date.now();
+            const st = await Promise.race([
+              session.editor.evaluate(() => ({
+                vis: document.visibilityState, focus: document.hasFocus(),
+                pct: ((document.body.innerText.match(/(\d+)%/) || [])[1]) || null,
+                videos: Array.from(document.querySelectorAll('video')).map((v) => ({
+                  id: v.id, rs: v.readyState, ct: +v.currentTime.toFixed(3), seeking: v.seeking, w: v.videoWidth, ns: v.networkState
+                }))
+              })),
+              new Promise((r) => setTimeout(() => r('EVALUATE TIMED OUT (main thread blocked?)'), 5000))
+            ]).catch((e) => 'evaluate failed: ' + String(e).slice(0, 120));
+            console.log(`[J11 export sample +${(i + 1) * 10}s, ${Date.now() - t0}ms]`, JSON.stringify(st));
+          }
+        })();
         const download = await downloadPromise;
         await download.saveAs(mp4);
         exported = true;

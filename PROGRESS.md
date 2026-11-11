@@ -2,6 +2,45 @@
 
 One entry per iteration. Newest first.
 
+## Iteration 4 — privacy made blur-only (QA-013, QA-018), real telemetry check (QA-019)
+
+**Environment notes (raw):**
+- `npx playwright test` resolves a second Playwright copy → `Error: Playwright Test did not expect test() to be called here.` for every file. The suite must be run as `node node_modules/playwright/cli.js test` (= `npm run test:e2e`).
+- An uncommitted, pre-existing edit of `tests/e2e/j2-tab-content.spec.ts` did not parse (`Identifier 'unreadable' has already been declared. (142:12)`) and relaxed J2 (excluded frames whose clock was off by ≥1 s). Per AGENTS.md §3.4 it was **not** adopted: saved as `uncommitted-j2-weakening.patch` in the session scratchpad, file restored to `75de4bc`.
+- After the first verifier's worktree cleanup, `node_modules/.bin/tsc*` and `vite.bunx` were gone (`npm run build` → `error: could not find bin metadata file`). Restored with `bun install --frozen-lockfile` (`Checked 181 installs across 223 packages (no changes)`); verifiers now install their own deps instead of junctioning `node_modules`.
+
+**Baseline full suite (run 1, product at `75de4bc`, 16.2 min): `5 failed, 28 passed`.**
+
+| Journey | Result | Raw evidence |
+|---|---|---|
+| C2 | FAIL | `A/V skew -0.01699999999999946s exceeds one frame` (skews `[-0.0077,-0.0083,-0.017,-0.0136]`) → QA-011 |
+| J10 | FAIL | `raw length 11.711s vs wall clock 11.286s` (0.425 > 0.3) → QA-015 |
+| J11 | FAIL | `Timeout 240000ms exceeded while waiting for event "download"`, `seeking=0 seeked=0` → QA-001 |
+| J2 | FAIL | `4.21 fps over 88 frames`; `worst clock/frame offset 1357209686422ms at frame 0` → QA-008 / QA-016 |
+| J3 | FAIL | `moving-window diff … {"changed":29,"blobs":1}` (> 50 required) → QA-017 |
+
+**QA-013 (CRITICAL) — the shield rewrote the page text.**
+Failing first (`d9ec47d`, tests that encoded the `•` violation rewritten to spec item 5):
+```
+× blurs the offending elements with filter: blur(8px) and never rewrites the page text (spec item 5)
+-             Account Owner: executive.director@fintech-global.com
++             Account Owner: ••••••@••••.com
+Tests  5 failed | 6 passed (11)
+```
+Fix `514dcfa`. After:
+```
+J9 email text after redaction: "dana.reeves@example-corp.com"
+J9 email region sharpness (luma stddev) before=72.3 after=12.8
+J9 filters after the toggles are off: ["none", … ×11]
+  ✓  J9 … (23.0s)          25 passed (1.1m)   unit: 71 passed (71)
+```
+`tests/e2e/out/j9/recorded_frame.png` inspected: iframe email/amount, rows, re-rendered node, form email/amount unreadable; "Robin Vale", headings, buttons readable.
+Verifier: **APPROVED** (parent J9 failed with `Received "••••••@••••.com"`; fix passed). It found QA-018 and QA-019.
+
+**QA-018 (HIGH) — body-level text was never blurred.** Failing test (`25e4323`): `QA-018: covers sensitive text written directly into <body>… ×` (holder was `<body>`). Fix `f67add7`: unit `72 passed (72)`; J9 + audit + human-sim + popup: `25 passed`. Verifier: pending.
+
+**QA-019 (HIGH, test defect) — J9's telemetry check read an attribute nothing sets.** Now reads the persisted telemetry: `J9 telemetry: opfs=0 bytes, storage=3888 bytes`, clicks `[["span","[hidden input]",…],["span","[hidden input]",…],["td","[hidden input]",…],["button","Load more rows",…],["button","Submit to /echo",…]]`.
+
 ## Iteration 3 — second product bug found and fixed (QA-010), full-suite run
 
 **Full suite (33 tests, 22.3 min):** `6 failed, 27 passed`.

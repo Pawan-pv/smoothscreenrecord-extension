@@ -28,3 +28,4 @@ tests/strict-exports/
 .agents/
 tests/fixtures/*.wav
 tests/fixtures/*.webm
+tests/round4/out/

@@ -142,7 +142,10 @@ export class ScreenCaptureEngine {
     }
 
     // Determine optimal supported WebM mime type based on actual presence of audio tracks
-    const hasAudio = this.mediaStream.getAudioTracks().length > 0;
+    // Display capture is requested with audio:false, so the only audio that can
+    // be recorded is the microphone track. Decide the MIME type from it.
+    const micTracks = this.audioStream ? this.audioStream.getAudioTracks() : [];
+    const hasAudio = micTracks.length > 0;
     let mimeType = hasAudio ? 'video/webm; codecs=vp9,opus' : 'video/webm; codecs=vp9';
     if (!MediaRecorder.isTypeSupported(mimeType)) {
       mimeType = hasAudio ? 'video/webm; codecs=vp8,opus' : 'video/webm; codecs=vp8';
@@ -162,6 +165,12 @@ export class ScreenCaptureEngine {
     // and the recorded timeline stays locked to wall-clock time.
     // ---------------------------------------------------------------------
     this.recorderStream = await this.startFramePump(this.mediaStream);
+
+    // C1: the microphone track must be part of the stream MediaRecorder records.
+    // Previously the mic was acquired but never attached, so no audio was recorded.
+    for (const track of micTracks) {
+      this.recorderStream.addTrack(track);
+    }
 
     this.mediaRecorder = new MediaRecorder(this.recorderStream, {
       mimeType

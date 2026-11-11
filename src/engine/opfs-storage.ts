@@ -9,6 +9,7 @@ let memoryVideoChunks: Blob[] = [];
 let memoryTelemetry: TelemetryData | null = null;
 let opfsWritable: FileSystemWritableFileStream | null = null;
 let useOpfs = true;
+let writeQueue: Promise<void> = Promise.resolve();
 
 export async function isOpfsSupported(): Promise<boolean> {
   return typeof navigator !== 'undefined' && !!navigator.storage && typeof navigator.storage.getDirectory === 'function';
@@ -29,6 +30,8 @@ export function isUseOpfs(): boolean {
 }
 
 export async function initStorage(): Promise<void> {
+  await writeQueue;
+  writeQueue = Promise.resolve();
   memoryVideoChunks = [];
   memoryTelemetry = null;
 
@@ -59,18 +62,23 @@ export async function initStorage(): Promise<void> {
 export async function appendVideoChunk(chunk: Blob): Promise<void> {
   memoryVideoChunks.push(chunk);
   if (isUseOpfs() && opfsWritable) {
-    try {
-      await opfsWritable.write(chunk);
-      return;
-    } catch (err: any) {
-      console.warn('[SmoothStudio OPFS] Error writing chunk to disk, falling back to RAM:', err);
-      useOpfs = false;
-      diagnosticChannel.recordStorageCap(err?.message || String(err));
-    }
+    writeQueue = writeQueue.then(async () => {
+      if (opfsWritable) {
+        try {
+          await opfsWritable.write(chunk);
+        } catch (err: any) {
+          console.warn('[SmoothStudio OPFS] Error writing chunk to disk, falling back to RAM:', err);
+          useOpfs = false;
+          diagnosticChannel.recordStorageCap(err?.message || String(err));
+        }
+      }
+    });
+    await writeQueue;
   }
 }
 
 export async function finalizeVideo(): Promise<void> {
+  await writeQueue;
   if (useOpfs && opfsWritable) {
     try {
       await opfsWritable.close();
@@ -78,6 +86,23 @@ export async function finalizeVideo(): Promise<void> {
       console.log('[SmoothStudio OPFS] Video file finalized on disk.');
     } catch (err) {
       console.warn('[SmoothStudio OPFS] Error closing OPFS stream:', err);
+    }
+  }
+}
+
+export async function overwriteRecordingBlob(blob: Blob): Promise<void> {
+  await writeQueue;
+  memoryVideoChunks = [blob];
+  if (await isOpfsSupported()) {
+    try {
+      const root = await navigator.storage.getDirectory();
+      const videoHandle = await root.getFileHandle(VIDEO_FILE_NAME, { create: true });
+      const writable = await videoHandle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      console.log('[SmoothStudio OPFS] Overwrote recording with patched WebM.');
+    } catch (err) {
+      console.warn('[SmoothStudio OPFS] Could not overwrite recording:', err);
     }
   }
 }
@@ -112,23 +137,28 @@ export async function saveTelemetry(telemetry: TelemetryData): Promise<void> {
 }
 
 export async function getRecordingBlob(): Promise<Blob | null> {
+  await writeQueue;
   if (await isOpfsSupported()) {
     try {
       const root = await navigator.storage.getDirectory();
       const fileHandle = await root.getFileHandle(VIDEO_FILE_NAME);
       const file = await fileHandle.getFile();
+      console.log(`[SmoothStudio OPFS] getRecordingBlob: disk file size = ${file ? file.size : 0}, memory chunks = ${memoryVideoChunks.length}`);
       if (file && file.size > 0) {
         return file;
       }
-    } catch {
-      // Fallback
+    } catch (e: any) {
+      console.warn(`[SmoothStudio OPFS] getRecordingBlob OPFS error:`, e?.message || e);
     }
   }
 
   if (memoryVideoChunks.length > 0) {
-    return new Blob(memoryVideoChunks, { type: 'video/webm' });
+    const memBlob = new Blob(memoryVideoChunks, { type: 'video/webm' });
+    console.log(`[SmoothStudio OPFS] getRecordingBlob: using memory chunks, total size = ${memBlob.size}`);
+    return memBlob;
   }
 
+  console.warn(`[SmoothStudio OPFS] getRecordingBlob: no file and no memory chunks found!`);
   return null;
 }
 
@@ -166,6 +196,7 @@ export async function loadTelemetry(): Promise<TelemetryData | null> {
 }
 
 export async function clearAllStorage(): Promise<void> {
+  await writeQueue;
   memoryVideoChunks = [];
   memoryTelemetry = null;
   if (opfsWritable) {

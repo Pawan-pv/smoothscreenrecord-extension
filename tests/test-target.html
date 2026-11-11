@@ -18,7 +18,7 @@
       border: 1px solid #334155;
       border-radius: 12px;
       padding: 24px;
-      max-width: 600px;
+      max-width: 650px;
       margin-bottom: 24px;
       box-shadow: 0 4px 20px rgba(0,0,0,0.3);
     }
@@ -51,18 +51,115 @@
       border-radius: 8px;
       margin-top: 16px;
     }
+
+    /* Complex structures: Submenu */
+    .menu-bar {
+      display: flex;
+      gap: 16px;
+      background: #1e293b;
+      padding: 10px 16px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      border: 1px solid #334155;
+    }
+    .menu-item {
+      position: relative;
+      cursor: pointer;
+      font-weight: 500;
+      color: #94A3B8;
+    }
+    .menu-item:hover { color: #F8FAFC; }
+    .submenu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      background: #0F172A;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 8px 0;
+      min-width: 180px;
+      z-index: 100;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    .menu-item:hover .submenu, .menu-item.open .submenu {
+      display: block;
+    }
+    .submenu-item {
+      padding: 8px 16px;
+      color: #CBD5E1;
+      font-size: 13px;
+    }
+    .submenu-item:hover {
+      background: #3B82F6;
+      color: white;
+    }
+
+    /* Complex structures: Scrollable popover */
+    .scrollable-popover {
+      max-height: 120px;
+      overflow-y: auto;
+      background: #0F172A;
+      border: 1px solid #475569;
+      border-radius: 8px;
+      padding: 12px;
+      margin-top: 16px;
+    }
+    .popover-item {
+      padding: 6px 10px;
+      border-bottom: 1px solid #1E293B;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .popover-item:hover { background: #1E293B; color: #38BDF8; }
+
+    /* Canvas matrix */
+    #matrix-canvas {
+      background: #020617;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      cursor: crosshair;
+      margin-top: 16px;
+      display: block;
+    }
   </style>
 </head>
 <body>
+  <!--
+    NOTE: This fixture is intentionally FULLY STATIC.
+    No requestAnimationFrame loop, no setInterval, no CSS animation.
+    It exists to prove that the RECORDER (not the page) keeps the encoder fed
+    with frames. Anything that changes on its own would mask recorder-side
+    frame starvation.
+  -->
   <h1>SmoothStudio Live Automation Fixture</h1>
-  <p>This page tests DOM tracking, mouse spline ingestion, and PII redaction.</p>
+  <p>Stress-testing DOM tracking, Catmull-Rom mouse splines, container awareness, and PII masking.</p>
+
+  <!-- Nested Submenu -->
+  <div class="menu-bar" id="primary-nav">
+    <div class="menu-item" id="nav-workspace">
+      <span>Workspace ▼</span>
+      <div class="submenu" id="submenu-workspace">
+        <div class="submenu-item" id="menu-sub-analytics">Analytics Dashboard</div>
+        <div class="submenu-item" id="menu-sub-apikeys">API Key Vault</div>
+        <div class="submenu-item" id="menu-sub-settings">Audit & Settings</div>
+      </div>
+    </div>
+    <div class="menu-item" id="nav-deployments">
+      <span>Deployments ▼</span>
+      <div class="submenu" id="submenu-deploy">
+        <div class="submenu-item" id="menu-sub-canary">Canary Rollout (10%)</div>
+        <div class="submenu-item" id="menu-sub-prod">Full Production Push</div>
+      </div>
+    </div>
+  </div>
 
   <div class="card" id="main-demo-card">
     <h2>Cloud Infrastructure Controls</h2>
     <p>Logged in as: <span id="user-email">ceo@enterprise-saas.com</span></p>
     <p>Monthly Recurring Revenue: <span id="user-revenue">$1,450,000 USD</span></p>
 
-    <div class="sensitive-box">
+    <div class="sensitive-box" id="secret-token-card">
       <strong>Secret API Token:</strong>
       <div id="user-api-key">sk&#95;live_998877665544332211aabbccddeeff</div>
     </div>
@@ -77,10 +174,195 @@
       <button class="btn" id="btn-rollback" style="background: #334155;">Rollback</button>
     </div>
 
+    <!-- Scrollable popover list -->
+    <div style="margin-top: 20px;">
+      <strong>Active Cluster Nodes (Scrollable Popover):</strong>
+      <div class="scrollable-popover" id="node-popover-container">
+        <div class="popover-item" id="node-01">Node us-east-1a: 99.98% Healthy (PID: 10442)</div>
+        <div class="popover-item" id="node-02">Node us-east-1b: 98.42% Healthy (PID: 10892)</div>
+        <div class="popover-item" id="node-03">Node eu-central-1: 100.0% Healthy (PID: 20112)</div>
+        <div class="popover-item" id="node-04">Node ap-southeast-1: 99.45% Healthy (PID: 30122)</div>
+        <div class="popover-item" id="node-05">Node sa-east-1: 96.10% Warning (PID: 40991)</div>
+        <div class="popover-item" id="node-06">Node af-south-1: 99.90% Healthy (PID: 50124)</div>
+      </div>
+    </div>
+
+    <!-- Canvas matrix -->
+    <div style="margin-top: 20px;">
+      <strong>Visual Heatmap / Canvas Matrix:</strong>
+      <canvas id="matrix-canvas" width="550" height="100"></canvas>
+    </div>
+
     <div id="status-log" style="margin-top: 16px; color: #10B981; font-weight: 500;"></div>
   </div>
 
+  <!-- B3 Privacy Redaction Verification Fixture Section -->
+  <div class="card" id="b3-privacy-card">
+    <h2>Privacy Redaction Robustness Verification Suite</h2>
+
+    <!-- (a) Email inside <input> and <textarea> -->
+    <div style="margin-top: 16px;">
+      <label>Email in &lt;input&gt;:</label>
+      <input type="text" id="b3-input-email" value="billing-support@enterprise-saas.com" />
+      <label style="margin-top: 8px; display:block;">Email in &lt;textarea&gt;:</label>
+      <textarea id="b3-textarea-notes" rows="2" style="width:100%; background:#0F172A; color:white; border:1px solid #475569; border-radius:6px; padding:8px;">Contact founder: ceo-private@stealth-corp.io for audit.</textarea>
+    </div>
+
+    <!-- (b) Dynamic Rows (rows added after redaction enabled) -->
+    <div style="margin-top: 16px;">
+      <strong>Dynamic Rows Container:</strong>
+      <div id="b3-dynamic-rows" style="margin-top: 8px; padding: 8px; background: #0F172A; border-radius: 6px;">
+        <div class="dynamic-row">Initial Row: Normal system log</div>
+      </div>
+      <button class="btn" id="b3-add-dynamic-row-btn" style="margin-top: 8px;" onclick="addDynamicSensitiveRow()">Add Dynamic Row</button>
+    </div>
+
+    <!-- (c) Re-render (triggered on demand, never on a timer) -->
+    <div style="margin-top: 16px;">
+      <strong>On-Demand Re-Render Container:</strong>
+      <div id="b3-rerender-container" style="margin-top: 8px; padding: 8px; background: #0F172A; border-radius: 6px;">
+        <span id="b3-rerender-content">API Key: sk&#95;live_rerender_500ms_998877</span>
+      </div>
+      <button class="btn" id="b3-rerender-btn" style="margin-top: 8px;" onclick="rerenderSensitiveContent()">Re-render Content</button>
+    </div>
+
+    <!-- (d) Currencies and Plain Numbers in Revenue Table -->
+    <div style="margin-top: 16px;">
+      <strong>Multi-Currency Badges:</strong>
+      <div id="b3-currencies" style="margin-top: 8px; display: flex; gap: 12px; font-weight: bold;">
+        <span id="curr-inr">₹1,25,000</span>
+        <span id="curr-eur">€4,200.50</span>
+        <span id="curr-gbp">£999</span>
+      </div>
+
+      <strong style="margin-top: 12px; display:block;">Revenue Table with Plain Numbers:</strong>
+      <table id="b3-revenue-table" style="width:100%; margin-top:8px; border-collapse:collapse; background:#0F172A;">
+        <thead>
+          <tr style="border-bottom: 1px solid #334155; text-align: left;">
+            <th style="padding: 6px;">Client Name</th>
+            <th style="padding: 6px;">Monthly Revenue</th>
+            <th style="padding: 6px;">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="padding: 6px;">Acme Corp</td>
+            <td class="revenue-cell" id="rev-cell-1" style="padding: 6px;">125000</td>
+            <td style="padding: 6px;">Active</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px;">Beta Ltd</td>
+            <td class="revenue-cell" id="rev-cell-2" style="padding: 6px;">4200</td>
+            <td style="padding: 6px;">Active</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- (e) Shadow DOM & Same-Origin iframe -->
+    <div style="margin-top: 16px;">
+      <strong>Shadow DOM Host:</strong>
+      <div id="b3-shadow-host" style="margin-top: 8px; padding: 8px; background:#0F172A; border-radius: 6px;"></div>
+
+      <strong style="margin-top: 12px; display:block;">Same-Origin iframe:</strong>
+      <iframe id="b3-test-iframe" style="width: 100%; height: 60px; border: 1px solid #475569; border-radius: 6px; margin-top: 8px; background:#0F172A;"></iframe>
+    </div>
+
+    <!-- (f) Functional Integrity: Form Submission & Button Clicking -->
+    <div style="margin-top: 16px;">
+      <strong>Functional Integrity Form:</strong>
+      <form id="b3-test-form" onsubmit="event.preventDefault(); window.__submittedValues = {
+        email: document.getElementById('b3-form-email').value,
+        token: document.getElementById('b3-form-token').value
+      }; document.getElementById('b3-form-status').innerText = 'Submitted successfully with: ' + window.__submittedValues.email;" style="margin-top: 8px;">
+        <input type="text" id="b3-form-email" value="executive-user@target-app.com" style="margin-bottom:8px;" />
+        <input type="text" id="b3-form-token" value="sk&#95;live_form_token_1122334455" style="margin-bottom:8px;" />
+        <button type="submit" class="btn" id="b3-form-submit-btn">Submit Form</button>
+      </form>
+      <div id="b3-form-status" style="margin-top: 8px; color: #38BDF8;"></div>
+    </div>
+  </div>
+
   <script>
+    // B3 Dynamic row generator
+    let dynCount = 0;
+    function addDynamicSensitiveRow() {
+      dynCount++;
+      const div = document.createElement('div');
+      div.className = 'dynamic-row';
+      div.id = 'dynamic-row-' + dynCount;
+      div.innerText = 'Sensitive dynamic row ' + dynCount + ': user' + dynCount + '@dynamic-client.com paying $45,000 MRR';
+      document.getElementById('b3-dynamic-rows').appendChild(div);
+    }
+
+    // B3 Re-render is triggered ON DEMAND by a button click (never on a timer),
+    // so the page stays completely static while idle.
+    let rerenderCount = 0;
+    function rerenderSensitiveContent() {
+      rerenderCount++;
+      const el = document.getElementById('b3-rerender-content');
+      if (el) {
+        el.innerText = 'Live API Key Token: sk\u005flive_rerender_' + rerenderCount + '_secret_key';
+      }
+    }
+    window.rerenderSensitiveContent = rerenderSensitiveContent;
+
+    // B3 Shadow DOM setup
+    const shadowHost = document.getElementById('b3-shadow-host');
+    if (shadowHost) {
+      const shadowRoot = shadowHost.attachShadow({ mode: 'open' });
+      shadowRoot.innerHTML = '<div id="shadow-sensitive" style="color:white; padding:4px;">Inside Shadow DOM: admin-shadow@cloud-infra.net with API Key: sk\u005flive_shadow_secret_998877</div>';
+    }
+
+    // B3 iframe setup
+    const iframe = document.getElementById('b3-test-iframe');
+    if (iframe) {
+      iframe.srcdoc = '<!DOCTYPE html><body style="background:#0F172A; color:white; font-family:sans-serif; margin:8px;"><div id="iframe-sensitive">Inside iframe: partner@external-vendor.com Revenue: €8,900.00</div></body>';
+    }
+    // Canvas matrix drawing
+    const canvas = document.getElementById('matrix-canvas');
+    const ctx = canvas.getContext('2d');
+    function drawMatrix() {
+      ctx.fillStyle = '#0F172A';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const cols = 11;
+      const rows = 3;
+      const cw = 45;
+      const ch = 24;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const val = ((r * 11 + c) * 17) % 100;
+          ctx.fillStyle = val > 70 ? '#10B981' : (val > 30 ? '#6366F1' : '#F59E0B');
+          ctx.fillRect(c * (cw + 5) + 5, r * (ch + 5) + 6, cw, ch);
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = '10px monospace';
+          ctx.fillText(`M${r},${c}`, c * (cw + 5) + 12, r * (ch + 5) + 22);
+        }
+      }
+    }
+    drawMatrix();
+    // NOTE: the canvas matrix is drawn ONCE. It is deliberately NOT animated:
+    // the recorder must survive a completely static surface.
+
+    canvas.addEventListener('click', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.floor((e.clientX - rect.left) / 50);
+      const y = Math.floor((e.clientY - rect.top) / 29);
+      document.getElementById('status-log').innerText = `Matrix Cell (${x}, ${y}) clicked at ` + new Date().toLocaleTimeString();
+    });
+
+    document.querySelectorAll('.submenu-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        document.getElementById('status-log').innerText = 'Selected Menu: ' + e.target.innerText;
+      });
+    });
+
+    document.querySelectorAll('.popover-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        document.getElementById('status-log').innerText = 'Selected Popover Node: ' + e.target.innerText;
+      });
+    });
+
     document.getElementById('btn-deploy').addEventListener('click', () => {
       document.getElementById('status-log').innerText = 'Deployment initiated at ' + new Date().toLocaleTimeString();
     });

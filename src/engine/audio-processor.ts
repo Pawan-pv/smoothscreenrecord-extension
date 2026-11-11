@@ -14,6 +14,60 @@ export class AudioProcessor {
     return this.audioCtx;
   }
 
+  /**
+   * Decodes the audio track of a recording blob.
+   * Returns null when the recording carries no decodable audio (for example a
+   * screen capture recorded without a microphone).
+   */
+  public async decodeAudioBuffer(videoBlob: Blob): Promise<AudioBuffer | null> {
+    if (!videoBlob || videoBlob.size === 0) return null;
+    try {
+      const arrayBuffer = await videoBlob.arrayBuffer();
+      if (!arrayBuffer || arrayBuffer.byteLength === 0) return null;
+      const ctx = this.getAudioContext();
+      const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
+      if (!decoded || decoded.numberOfChannels === 0 || decoded.length === 0) return null;
+      return decoded;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Builds a real amplitude envelope from the recorded audio track.
+   * Returns an empty array when the recording has no audio, so the UI can
+   * truthfully render "No audio" instead of a simulated waveform.
+   */
+  public async buildWaveformPeaks(videoBlob: Blob, buckets = 160): Promise<number[]> {
+    const audioBuffer = await this.decodeAudioBuffer(videoBlob);
+    if (!audioBuffer) {
+      console.log('[SmoothStudio Audio] No decodable audio track: waveform will not be drawn.');
+      return [];
+    }
+    const channelData = audioBuffer.getChannelData(0);
+    const bucketSize = Math.max(1, Math.floor(channelData.length / buckets));
+    const peaks: number[] = [];
+    let maxAbs = 0;
+    for (let b = 0; b < buckets; b++) {
+      const start = b * bucketSize;
+      const end = Math.min(channelData.length, start + bucketSize);
+      let peak = 0;
+      for (let i = start; i < end; i++) {
+        const v = Math.abs(channelData[i]);
+        if (v > peak) peak = v;
+      }
+      peaks.push(peak);
+      if (peak > maxAbs) maxAbs = peak;
+    }
+    if (maxAbs > 0) {
+      for (let i = 0; i < peaks.length; i++) {
+        peaks[i] = peaks[i] / maxAbs;
+      }
+    }
+    console.log(`[SmoothStudio Audio] Waveform built from ${audioBuffer.duration.toFixed(2)}s of real audio: ${peaks.length} buckets.`);
+    return peaks;
+  }
+
   // Decodes audio from recorded video blob and detects pauses > 1.2s
   public async analyzeSilences(
     videoBlob: Blob,
@@ -25,12 +79,12 @@ export class AudioProcessor {
   ): Promise<SilenceSegment[]> {
     try {
       if (!videoBlob || videoBlob.size === 0) {
-        return this.detectActivityGapSilences(clicks, keystrokes, videoDurationMs, minSilenceDurationMs);
+        return [];
       }
 
       const arrayBuffer = await videoBlob.arrayBuffer();
       if (!arrayBuffer || arrayBuffer.byteLength === 0) {
-        return this.detectActivityGapSilences(clicks, keystrokes, videoDurationMs, minSilenceDurationMs);
+        return [];
       }
 
       const ctx = this.getAudioContext();
@@ -39,8 +93,13 @@ export class AudioProcessor {
       try {
         audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
       } catch {
-        console.warn('[SmoothStudio Audio] Could not decode audio track, falling back to activity gap silence detection.');
-        return this.detectActivityGapSilences(clicks, keystrokes, videoDurationMs, minSilenceDurationMs);
+        console.log('[SmoothStudio Audio] No audio track detected or decode failed. Auto-cut disabled (0 cuts).');
+        return [];
+      }
+
+      if (!audioBuffer || audioBuffer.numberOfChannels === 0 || audioBuffer.length === 0) {
+        console.log('[SmoothStudio Audio] AudioBuffer has 0 channels or empty audio. Auto-cut disabled (0 cuts).');
+        return [];
       }
 
       const channelData = audioBuffer.getChannelData(0); // primary channel
@@ -106,14 +165,10 @@ export class AudioProcessor {
         }
       }
 
-      if (silences.length === 0) {
-        return this.detectActivityGapSilences(clicks, keystrokes, Math.round(audioBuffer.duration * 1000), minSilenceDurationMs);
-      }
-
       return silences;
     } catch (err) {
-      console.warn('[SmoothStudio Audio] Silence analysis exception caught, falling back to activity gaps:', err);
-      return this.detectActivityGapSilences(clicks, keystrokes, videoDurationMs, minSilenceDurationMs);
+      console.warn('[SmoothStudio Audio] Silence analysis exception caught, returning empty silences:', err);
+      return [];
     }
   }
 

@@ -4,13 +4,16 @@ import {
   KeystrokeEvent,
   InputFocusEvent,
   TelemetryData,
+  TypingSession,
   BoundingBox
 } from '../types/telemetry';
 import {
   applyAutoRedaction,
   startElementPicker,
   stopElementPicker,
-  resetRedactions
+  resetRedactions,
+  isSensitiveElement,
+  isSensitiveString
 } from './privacy-redactor';
 
 let isRecording = false;
@@ -19,6 +22,7 @@ let mousePoints: MousePoint[] = [];
 let clicks: ClickEvent[] = [];
 let keystrokes: KeystrokeEvent[] = [];
 let inputEvents: InputFocusEvent[] = [];
+let typingSessions: TypingSession[] = [];
 
 let lastMouseX = 0;
 let lastMouseY = 0;
@@ -26,8 +30,52 @@ let lastCursor = 'default';
 let lastSampleTime = 0;
 const SAMPLE_INTERVAL_MS = 8.33; // ~120Hz sampling
 
+/**
+ * Shared timeline origin.
+ * The recorder publishes the wall-clock timestamp of the first captured video
+ * frame. Every telemetry timestamp is measured against that exact instant so
+ * video time and telemetry time are directly comparable (no per-page drift).
+ */
+let originEpoch = 0;
+
+function epochNow(): number {
+  // performance.timeOrigin + performance.now() is a high resolution wall clock
+  return performance.timeOrigin + performance.now();
+}
+
 function getRelativeTime(): number {
-  return performance.now() - startTime;
+  if (!originEpoch) return 0;
+  return epochNow() - originEpoch;
+}
+
+/** Human readable label for an element (form field name, button caption...). */
+function describeElement(el: HTMLElement | null): string {
+  if (!el) return '';
+  const tag = el.tagName.toLowerCase();
+
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+    const id = el.id || '';
+    if (id) {
+      const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+      if (label && label.textContent) {
+        const t = label.textContent.replace(/[:*]/g, '').trim();
+        if (t) return t;
+      }
+    }
+    const aria = el.getAttribute('aria-label');
+    if (aria) return aria.trim();
+    const ph = el.getAttribute('placeholder');
+    if (ph) return ph.trim();
+    const name = el.getAttribute('name');
+    if (name) return name.trim();
+    return id || tag;
+  }
+
+  const aria = el.getAttribute('aria-label');
+  if (aria) return aria.trim();
+  const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+  if (text) return text.slice(0, 60);
+  return el.id || tag;
 }
 
 // Extract website brand colors to automatically style the video background
@@ -120,7 +168,14 @@ function handleClick(e: MouseEvent) {
 
   const target = e.target as Element | null;
   const tag = target?.tagName.toLowerCase() || 'unknown';
-  const text = target?.textContent?.trim().slice(0, 80) || undefined;
+  let text = target?.textContent?.trim().slice(0, 80) || undefined;
+  if (target instanceof HTMLInputElement && target.value) {
+    text = target.value.trim().slice(0, 80);
+  }
+  const sensitive = isSensitiveElement(target as HTMLElement | null) || Boolean(text && isSensitiveString(text));
+  if (sensitive) {
+    text = '[hidden input]';
+  }
   const containerBounds = findParentContainer(target);
 
   clicks.push({
@@ -130,6 +185,7 @@ function handleClick(e: MouseEvent) {
     button: e.button,
     targetTag: tag,
     targetText: text,
+    targetLabel: sensitive ? '[hidden input]' : describeElement(target as HTMLElement | null),
     containerBounds
   });
 
@@ -146,9 +202,17 @@ function handleClick(e: MouseEvent) {
 function handleKeyDown(e: KeyboardEvent) {
   if (!isRecording) return;
 
-  // Never record passwords or sensitive form inputs
+  // Never record passwords or sensitive form inputs - log as [hidden input]
   const target = e.target as HTMLElement | null;
-  if (target instanceof HTMLInputElement && target.type === 'password') {
+  if (isSensitiveElement(target)) {
+    if (!['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) {
+      keystrokes.push({
+        t: Math.round(getRelativeTime()),
+        key: '[hidden input]',
+        combo: '[hidden input]'
+      });
+    }
+    recordTypingActivity(target, e);
     return;
   }
 
@@ -178,6 +242,78 @@ function handleKeyDown(e: KeyboardEvent) {
       combo
     });
   }
+
+  recordTypingActivity(target, e);
+}
+
+// ---------------------------------------------------------------------------
+// Typing session grouping: a burst of characters typed into one field becomes
+// ONE session so the SOP renderer can emit "Type "x" into "Field"" instead of
+// one step per character.
+// ---------------------------------------------------------------------------
+interface ActiveTypingSession {
+  el: HTMLElement;
+  startT: number;
+  endT: number;
+  chars: string;
+  sensitive: boolean;
+  label: string;
+  tag: string;
+}
+let activeTyping: ActiveTypingSession | null = null;
+const TYPING_SESSION_GAP_MS = 1500;
+
+function closeTypingSession() {
+  if (!activeTyping) return;
+  const s = activeTyping;
+  activeTyping = null;
+  if (!s.chars && !s.sensitive) return;
+  typingSessions.push({
+    t: Math.round(s.startT),
+    endT: Math.round(s.endT),
+    text: s.sensitive ? '' : s.chars,
+    sensitive: s.sensitive,
+    targetLabel: s.sensitive ? '[hidden input]' : s.label,
+    targetTag: s.tag
+  });
+}
+
+function recordTypingActivity(target: HTMLElement | null, e: KeyboardEvent) {
+  const isTextField = Boolean(
+    target &&
+    (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+  );
+  const now = getRelativeTime();
+
+  if (!isTextField || !target) {
+    closeTypingSession();
+    return;
+  }
+
+  const field: HTMLElement = target;
+
+  if (!activeTyping || activeTyping.el !== field || (now - activeTyping.endT) > TYPING_SESSION_GAP_MS) {
+    closeTypingSession();
+    activeTyping = {
+      el: field,
+      startT: now,
+      endT: now,
+      chars: '',
+      sensitive: isSensitiveElement(field),
+      label: describeElement(field),
+      tag: field.tagName.toLowerCase()
+    };
+  }
+
+  const session = activeTyping;
+  session.endT = now;
+  if (session.sensitive) return;
+
+  if (e.key === 'Backspace') {
+    session.chars = session.chars.slice(0, -1);
+  } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    session.chars += e.key;
+  }
 }
 
 // Track input focus & typing for smart camera zoom on text entry (in viewport coordinates)
@@ -197,6 +333,14 @@ function handleFocusIn(e: FocusEvent) {
         height: rect.height
       }
     });
+  }
+}
+
+function handleFocusOut(e: FocusEvent) {
+  if (!isRecording) return;
+  const target = e.target as HTMLElement | null;
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+    closeTypingSession();
   }
 }
 
@@ -222,6 +366,7 @@ let floatingHudEl: HTMLElement | null = null;
 let timerInterval: number | null = null;
 
 function injectRecordingHud() {
+  if (typeof window !== 'undefined' && window.self !== window.top) return;
   if (floatingHudEl || document.getElementById('smoothstudio-floating-hud')) return;
 
   floatingHudEl = document.createElement('div');
@@ -302,14 +447,20 @@ function removeRecordingHud() {
   }
 }
 
-export function startTracking(): void {
+export function startTracking(originEpochMs?: number): void {
   isRecording = true;
   startTime = performance.now();
+  // Use the recorder published origin so telemetry and video share one clock.
+  originEpoch = typeof originEpochMs === 'number' && originEpochMs > 0
+    ? originEpochMs
+    : epochNow();
   mousePoints = [];
   clicks = [];
   keystrokes = [];
   inputEvents = [];
+  typingSessions = [];
   lastSampleTime = 0;
+  activeTyping = null;
 
   injectRecordingHud();
 
@@ -317,22 +468,25 @@ export function startTracking(): void {
   window.addEventListener('click', handleClick, { passive: true, capture: true });
   window.addEventListener('keydown', handleKeyDown, { passive: true, capture: true });
   window.addEventListener('focusin', handleFocusIn, { passive: true, capture: true });
+  window.addEventListener('focusout', handleFocusOut, { passive: true, capture: true });
   window.addEventListener('input', handleInput, { passive: true, capture: true });
 
-  console.log('[SmoothStudio DOM-Tracker] Started 120Hz recording telemetry');
+  console.log('[SmoothStudio DOM-Tracker] Started 120Hz recording telemetry. Origin epoch:', Math.round(originEpoch));
 }
 
 export function stopTracking(): TelemetryData {
   isRecording = false;
   removeRecordingHud();
+  closeTypingSession();
 
   window.removeEventListener('mousemove', handleMouseMove, { capture: true });
   window.removeEventListener('click', handleClick, { capture: true });
   window.removeEventListener('keydown', handleKeyDown, { capture: true });
   window.removeEventListener('focusin', handleFocusIn, { capture: true });
+  window.removeEventListener('focusout', handleFocusOut, { capture: true });
   window.removeEventListener('input', handleInput, { capture: true });
 
-  const durationMs = Math.round(performance.now() - startTime);
+  const durationMs = Math.round(getRelativeTime());
 
   const telemetry: TelemetryData = {
     metadata: {
@@ -350,19 +504,20 @@ export function stopTracking(): TelemetryData {
     mousePoints,
     clicks,
     keystrokes,
-    inputEvents
+    inputEvents,
+    typingSessions
   };
 
   console.log('[SmoothStudio DOM-Tracker] Telemetry captured:', telemetry);
   return telemetry;
 }
 
-// Chrome extension message listener
-if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage && !(window as any).__smoothstudio_dom_listener_registered) {
+// Chrome extension message listener (only on top-level frame)
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage && (typeof window === 'undefined' || window.self === window.top) && !(window as any).__smoothstudio_dom_listener_registered) {
   (window as any).__smoothstudio_dom_listener_registered = true;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'START_TELEMETRY') {
-      startTracking();
+      startTracking(message.originEpoch);
       sendResponse({ status: 'started' });
       return true;
     } else if (message.type === 'STOP_TELEMETRY') {

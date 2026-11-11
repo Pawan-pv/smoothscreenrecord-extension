@@ -19,6 +19,8 @@ export interface ClickEvent {
   button: number;
   targetTag: string;
   targetText?: string;
+  /** Human readable label of the interacted element (form field name, etc.) */
+  targetLabel?: string;
   containerBounds?: BoundingBox;
 }
 
@@ -26,6 +28,20 @@ export interface KeystrokeEvent {
   t: number;
   key: string;
   combo: string; // e.g. "⌘K", "Ctrl+C", "Enter"
+}
+
+/**
+ * A contiguous burst of typing into a single field. Consecutive keystrokes are
+ * grouped into one session so downstream exports can render one meaningful
+ * step ("Type "x" into "Field"") instead of one step per character.
+ */
+export interface TypingSession {
+  t: number;          // start of the burst (ms from recording origin)
+  endT: number;       // end of the burst (ms from recording origin)
+  text: string;       // typed characters (empty when the field is sensitive)
+  sensitive: boolean; // true when the field is a sensitive input
+  targetLabel: string;// e.g. "Deploy Feature Branch"
+  targetTag: string;  // e.g. "input"
 }
 
 export interface InputFocusEvent {
@@ -44,6 +60,7 @@ export interface RecordingMetadata {
   devicePixelRatio: number;
   title: string;
   url?: string;
+  displaySurface?: 'browser' | 'window' | 'monitor' | string;
   brandColors?: {
     primary: string;
     secondary: string;
@@ -76,6 +93,7 @@ export interface TelemetryData {
   clicks: ClickEvent[];
   keystrokes: KeystrokeEvent[];
   inputEvents: InputFocusEvent[];
+  typingSessions?: TypingSession[];
   captions?: CaptionBlock[];
 }
 

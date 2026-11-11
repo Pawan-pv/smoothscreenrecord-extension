@@ -324,7 +324,7 @@ export function generateAutoZoomPills(
       const normY = Math.max(0.1, Math.min(0.9, centerY));
 
       const startTime = Math.max(0, inputEv.t - 400);
-      const endTime = Math.min(videoDurationMs, inputEv.t + 2200);
+      const endTime = Math.max(startTime + 400, Math.min(videoDurationMs, inputEv.t + 2200));
 
       // Check if overlapping an existing pill
       const overlap = pills.some((p) => Math.abs(p.startTime - startTime) < 1500);
@@ -382,7 +382,10 @@ export function generateAutoZoomPills(
 
     const startTime = Math.max(0, primary.t - 300);
     const lastClickTime = cluster[cluster.length - 1].t;
-    const endTime = Math.min(videoDurationMs, Math.max(lastClickTime + 1600, startTime + MIN_HOLD_DURATION_MS));
+    // The pill must never outlive the recording, but it also must never be
+    // collapsed by a bogus duration: clamp against the real video duration.
+    const hold = Math.max(lastClickTime + 1600, startTime + MIN_HOLD_DURATION_MS);
+    const endTime = Math.max(startTime + 400, Math.min(videoDurationMs, hold));
 
     const tilt = calculateIsometricTilt(normX, normY, scale);
 

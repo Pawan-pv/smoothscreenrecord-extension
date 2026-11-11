@@ -1,17 +1,39 @@
 import { TelemetryData } from '../types/telemetry';
+import { redactTextString, isSensitiveString } from '../content/privacy-redactor';
 
 export class HtmlWidgetExporter {
   public static generateInteractiveWidget(
     telemetry: TelemetryData,
-    snapshots: { timestamp: number; dataUrl: string }[] = []
+    snapshots: { timestamp: number; dataUrl: string }[] = [],
+    autoBlur: boolean | { blurEmails?: boolean; blurRevenue?: boolean; blurApiKeys?: boolean } = true
   ): string {
+    const isAutoBlurOn = typeof autoBlur === 'boolean'
+      ? autoBlur
+      : Boolean(autoBlur?.blurEmails || autoBlur?.blurRevenue || autoBlur?.blurApiKeys);
+
     const { metadata, clicks } = telemetry;
 
     const steps = clicks.map((c, idx) => {
-      const snap = snapshots.find((s) => Math.abs(s.timestamp - c.t) < 2000);
+      let snap = snapshots.find((s) => Math.abs(s.timestamp - c.t) < 2500);
+      if (!snap && snapshots.length > 0) {
+        snap = [...snapshots].sort((a, b) => Math.abs(a.timestamp - c.t) - Math.abs(b.timestamp - c.t))[0];
+      }
+      // Mask ONLY genuinely sensitive values. Ordinary labels stay readable.
+      const raw = c.targetText;
+      const sensitive = !raw || raw === '[hidden input]' || (isAutoBlurOn && isSensitiveString(raw));
+      let safeText = raw;
+      if (sensitive) {
+        safeText = redactTextString(raw || '');
+        if (!raw || raw === '[hidden input]' || safeText.includes('••••')) {
+          safeText = '[hidden input]';
+        }
+      }
+      const label = c.targetLabel && c.targetLabel !== '[hidden input]' ? c.targetLabel : undefined;
       return {
         step: idx + 1,
-        title: c.targetText ? `Click "${c.targetText.slice(0, 30)}"` : `Click <${c.targetTag}>`,
+        title: label
+          ? `Click "${label.slice(0, 30)}"`
+          : (safeText ? `Click "${safeText.slice(0, 30)}"` : `Click <${c.targetTag}>`),
         xPercent: ((c.x / metadata.width) * 100).toFixed(1),
         yPercent: ((c.y / metadata.height) * 100).toFixed(1),
         img: snap?.dataUrl || ''
@@ -165,7 +187,7 @@ export class HtmlWidgetExporter {
   </div>
 
   <script>
-    const steps = ${JSON.stringify(steps)};
+    const steps = window.steps = ${JSON.stringify(steps)};
     let currentIdx = 0;
 
     function renderStep() {

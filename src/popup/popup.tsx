@@ -95,27 +95,37 @@ export function PopupApp() {
   const handleStartRecording = () => {
     if (typeof chrome !== 'undefined' && chrome.tabs && chrome.runtime) {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        const activeTab = tabs[0];
-        const activeTabId = activeTab?.id;
+        const currentActive = tabs[0];
 
-        // Apply privacy settings first if on a web page
-        if (activeTabId && activeTab?.url && (activeTab.url.startsWith('http://') || activeTab.url.startsWith('https://'))) {
-          chrome.tabs.sendMessage(activeTabId, {
-            type: 'APPLY_PRIVACY_OPTIONS',
-            options: { blurEmails, blurRevenue, blurApiKeys }
-          }, () => {
-            if (chrome.runtime?.lastError) {}
+        const launchWithTarget = (targetTab?: chrome.tabs.Tab) => {
+          const targetTabId = targetTab?.id;
+          if (targetTabId && targetTab?.url && (targetTab.url.startsWith('http://') || targetTab.url.startsWith('https://'))) {
+            chrome.tabs.sendMessage(targetTabId, {
+              type: 'APPLY_PRIVACY_OPTIONS',
+              options: { blurEmails, blurRevenue, blurApiKeys }
+            }, () => {
+              void chrome.runtime?.lastError;
+            });
+          }
+
+          const url = chrome.runtime.getURL(`editor.html?record=true&includeMic=${includeMic}&sourceTab=${targetTabId || ''}`);
+          chrome.tabs.create({ url });
+          window.close();
+        };
+
+        if (currentActive && currentActive.url && (currentActive.url.startsWith('http://') || currentActive.url.startsWith('https://'))) {
+          launchWithTarget(currentActive);
+        } else {
+          // If the active tab is not an HTTP/HTTPS page (e.g. popup opened as its own tab), find the target web tab
+          chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }, (webTabs) => {
+            const chosen = webTabs.find((t) => t.active) || webTabs[webTabs.length - 1];
+            launchWithTarget(chosen);
           });
         }
-
-        // Open studio tab with live recording prompt and sourceTab id
-        const url = chrome.runtime.getURL(`editor.html?record=true&sourceTab=${activeTabId || ''}`);
-        chrome.tabs.create({ url });
-        window.close();
       });
     } else {
       // In standalone browser mode, redirect to studio editor with recording prompt
-      window.open('/editor.html?record=true', '_blank');
+      window.open(`/editor.html?record=true&includeMic=${includeMic}`, '_blank');
     }
   };
 

@@ -450,7 +450,7 @@ export class StudioRenderer {
       // Draw Diffused Drop Shadow
       ctx.save();
       ctx.shadowColor = preset.shadowColor;
-      ctx.shadowBlur = preset.shadowBlur;
+      ctx.shadowBlur = canvasW > 2560 ? Math.min(30, preset.shadowBlur) : preset.shadowBlur;
       ctx.shadowOffsetX = 0;
       ctx.shadowOffsetY = 24;
       ctx.fillStyle = '#0F1117';

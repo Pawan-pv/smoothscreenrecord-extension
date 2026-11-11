@@ -99,41 +99,55 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // 3. Start Studio Recording
   if (message.type === 'START_STUDIO_RECORDING' || message.type === 'START_RECORDING') {
-    const recordingTabId = message.tabId || state.activeRecordingTabId;
+    let recordingTabId = message.tabId || state.activeRecordingTabId;
     let editorTabId = message.editorTabId || state.activeEditorTabId;
     if (sender.tab?.id && sender.tab.id !== recordingTabId) {
       editorTabId = sender.tab.id;
     }
     const quality = message.payload?.quality || message.quality || '1080p';
 
-    persistSessionState({
-      isRecording: true,
-      activeRecordingTabId: recordingTabId,
-      activeEditorTabId: editorTabId,
-      quality
-    }).then(() => {
-      // Broadcast START_TELEMETRY to target tab and active web page tabs (http/https only)
-      chrome.tabs.query({}, (tabs) => {
-        for (const tab of tabs) {
-          if (tab.id && (tab.id === recordingTabId || tab.active)) {
-            // Guard: Content scripts only run on http/https web pages. Never dispatch to chrome:// or extension pages.
-            if (!tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) {
-              continue;
+    const dispatchStart = (targetRecordingTabId: number | null) => {
+      persistSessionState({
+        isRecording: true,
+        activeRecordingTabId: targetRecordingTabId,
+        activeEditorTabId: editorTabId,
+        quality
+      }).then(() => {
+        // Broadcast START_TELEMETRY to target tab and active web page tabs (http/https only).
+        // `originEpoch` is the wall-clock timestamp of the first captured video
+        // frame: sharing it makes telemetry time and video time use ONE clock.
+        const originEpoch = message.originEpoch;
+        chrome.tabs.query({}, (tabs) => {
+          for (const tab of tabs) {
+            if (tab.id && (tab.id === targetRecordingTabId || tab.active)) {
+              // Guard: Content scripts only run on http/https web pages. Never dispatch to chrome:// or extension pages.
+              if (!tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) {
+                continue;
+              }
+              chrome.tabs.sendMessage(tab.id, { type: 'START_TELEMETRY', originEpoch }, () => {
+                void chrome.runtime?.lastError;
+              });
             }
-            chrome.tabs.sendMessage(tab.id, { type: 'START_TELEMETRY' }, () => {
-              void chrome.runtime?.lastError;
-            });
           }
+        });
+
+        // Focus target tab if requested
+        if (message.focusTarget && targetRecordingTabId) {
+          chrome.tabs.update(targetRecordingTabId, { active: true }).catch(() => {});
         }
+
+        sendResponse({ status: 'recording_started', activeRecordingTabId: targetRecordingTabId, quality });
       });
+    };
 
-      // Focus target tab if requested
-      if (message.focusTarget && recordingTabId) {
-        chrome.tabs.update(recordingTabId, { active: true }).catch(() => {});
-      }
-
-      sendResponse({ status: 'recording_started', activeRecordingTabId: recordingTabId, quality });
-    });
+    if (recordingTabId) {
+      dispatchStart(recordingTabId);
+    } else {
+      chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }, (webTabs) => {
+        const chosen = webTabs.find((t) => t.active) || webTabs[0];
+        dispatchStart(chosen?.id || null);
+      });
+    }
     return true;
   }
 

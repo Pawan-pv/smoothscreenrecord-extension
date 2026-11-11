@@ -7,3 +7,24 @@ tests/run-audit.mjs
 tests/artifacts/
 coverage/
 test-results/
+
+# Binaries and generated artifacts (never commit)
+ffmpeg.exe
+ffprobe.exe
+*.exe
+*.mp4
+*.webm
+*.gif
+*.zip
+test-results/
+playwright-report/
+coverage/
+tests/artifacts/
+tests/**/artifacts/
+.playwright-extension-profile/
+*.log
+tests/legacy/run-*.mjs
+tests/strict-exports/
+.agents/
+tests/fixtures/*.wav
+tests/fixtures/*.webm

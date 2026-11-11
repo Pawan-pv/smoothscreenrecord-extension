@@ -6,6 +6,7 @@ import {
   AspectRatioType,
   VibePreset,
   CaptionBlock,
+  CaptionWord,
   CaptionStyle,
   CursorTheme,
   BackdropMatrixParams
@@ -16,7 +17,7 @@ import { CursorSplineEngine } from '../engine/cursor-spline';
 import { AudioProcessor } from '../engine/audio-processor';
 import { SfxSynthesizer } from '../engine/sfx-synthesizer';
 import { HardwareMp4Exporter } from '../engine/mp4-exporter';
-import { HardwareGifExporter } from '../engine/gif-exporter';
+import { HardwareGifExporter, GIF_QUALITY_PRESETS, GifQualityPreset } from '../engine/gif-exporter';
 import { SopGuideExporter } from '../engine/sop-guide-exporter';
 import { HtmlWidgetExporter } from '../engine/html-widget-exporter';
 import { getRecordingBlob, loadTelemetry, setUseOpfs } from '../engine/opfs-storage';
@@ -58,7 +59,9 @@ export function EditorStudio() {
   const [activeDegradation, setActiveDegradation] = useState<SystemDegradationEvent | null>(null);
   const [storageMode, setStorageMode] = useState<'opfs' | 'ram'>(diagnosticChannel.getStorageMode());
   const [encoderStreamMode, setEncoderStreamMode] = useState<'hardware-mp4' | 'client-webm'>(diagnosticChannel.getEncoderStreamMode());
+  const [exportResPreset, setExportResPreset] = useState<'source' | '1080p' | '4k' | '720p'>('source');
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [micWarning, setMicWarning] = useState<string | null>(null);
 
   const showToast = useCallback((toast: Omit<ToastItem, 'id'>) => {
     const id = `toast_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
@@ -88,16 +91,16 @@ export function EditorStudio() {
   );
   const [pills, setPills] = useState<ZoomPill[]>([]);
   const [silences, setSilences] = useState<SilenceSegment[]>([]);
-  const [autoCutSilences, setAutoCutSilences] = useState<boolean>(true);
+  const [autoCutSilences, setAutoCutSilences] = useState<boolean>(false);
   const [showSpotlight, setShowSpotlight] = useState<boolean>(true);
   const [showCursor, setShowCursor] = useState<boolean>(true);
   const [showHud, setShowHud] = useState<boolean>(true);
   const [showIntroCard, setShowIntroCard] = useState<boolean>(false);
-  const [introHeadline, setIntroHeadline] = useState<string>('Introducing SmoothStudio 2.0');
-  const [introSubheadline, setIntroSubheadline] = useState<string>('Cinematic screen demos in seconds');
+  const [introHeadline, setIntroHeadline] = useState<string>('');
+  const [introSubheadline, setIntroSubheadline] = useState<string>('');
   const [showOutroCard, setShowOutroCard] = useState<boolean>(false);
-  const [outroHeadline, setOutroHeadline] = useState<string>('Ready to ship better demos?');
-  const [outroCtaText, setOutroCtaText] = useState<string>('Try SmoothStudio Free →');
+  const [outroHeadline, setOutroHeadline] = useState<string>('');
+  const [outroCtaText, setOutroCtaText] = useState<string>('');
   const [followCursor, setFollowCursor] = useState<boolean>(true);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
 
@@ -108,6 +111,9 @@ export function EditorStudio() {
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>('tiktok-bold');
   const [captionBackdrop, setCaptionBackdrop] = useState<number>(70);
   const [captions, setCaptions] = useState<CaptionBlock[]>([]);
+  // Real amplitude envelope decoded from the recorded audio track.
+  // Empty array == the recording has no audio track (the timeline shows "NO AUDIO").
+  const [waveformPeaks, setWaveformPeaks] = useState<number[]>([]);
 
   // Export State
   const [isExporting, setIsExporting] = useState<boolean>(false);
@@ -118,24 +124,52 @@ export function EditorStudio() {
   const [isExportingGif, setIsExportingGif] = useState<boolean>(false);
   const [exportGifProgress, setExportGifProgress] = useState<number>(0);
   const [exportGifComplete, setExportGifComplete] = useState<boolean>(false);
+  const [gifPreset, setGifPreset] = useState<GifQualityPreset>('compact');
 
   const [copiedSop, setCopiedSop] = useState<boolean>(false);
   const [isRecordingLive, setIsRecordingLive] = useState<boolean>(false);
+  const [showRecordPrompt, setShowRecordPrompt] = useState<boolean>(false);
+  const [recordTargetTabId, setRecordTargetTabId] = useState<number | undefined>(undefined);
+  const [recordIncludeMic, setRecordIncludeMic] = useState<boolean>(true);
+  const [hasNoRecording, setHasNoRecording] = useState<boolean>(false);
 
   // Engines
   const cursorEngineRef = useRef<CursorSplineEngine>(new CursorSplineEngine());
   const audioProcessorRef = useRef<AudioProcessor>(new AudioProcessor());
   const sfxSynthesizerRef = useRef<SfxSynthesizer>(new SfxSynthesizer(true));
   const captureEngineRef = useRef<ScreenCaptureEngine>(new ScreenCaptureEngine());
+  useEffect(() => {
+    // Test hooks exist only in the Vite dev server. The `if` is dead-code
+    // eliminated in production builds, so none of these globals ship.
+    if (import.meta.env.DEV) {
+      (window as any).__captureEngine = captureEngineRef.current;
+      (window as any).__ScreenCaptureEngine = ScreenCaptureEngine;
+      (window as any).__SopGuideExporter = SopGuideExporter;
+      (window as any).__HtmlWidgetExporter = HtmlWidgetExporter;
+      (window as any).__HardwareMp4Exporter = HardwareMp4Exporter;
+      (window as any).__HardwareGifExporter = HardwareGifExporter;
+      (window as any).__GIF_QUALITY_PRESETS = GIF_QUALITY_PRESETS;
+      (window as any).__VIBE_PRESETS = VIBE_PRESETS;
+      (window as any).__AudioProcessor = AudioProcessor;
+      // Programmatic capture hooks: they allow starting/stopping a recording
+      // without moving keyboard focus to the editor window (focus changes would
+      // otherwise pause the compositor of the captured surface).
+      (window as any).__startLiveRecording = (sourceTabId?: number, includeMic = true) =>
+        handleStartLiveRecordingRef.current?.(sourceTabId, includeMic);
+      (window as any).__stopLiveRecording = (tel?: any, blob?: any) =>
+        handleStopLiveRecordingRef.current?.(tel, blob);
+    }
+  }, []);
   const animationFrameRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
   // Deduplicates procedural SFX so a single click/keystroke/zoom event never
   // fires more than once across adjacent animation frames.
   const firedSfxRef = useRef<Set<string>>(new Set());
   const currentTimeRef = useRef<number>(0);
-  const demoRendererRef = useRef<((timeMs: number) => void) | null>(null);
   const handleStopLiveRecordingRef = useRef<((passedTelemetry?: TelemetryData | null, passedBlob?: Blob | null) => Promise<void>) | null>(null);
+  const handleStartLiveRecordingRef = useRef<((sourceTabId?: number, includeMic?: boolean) => Promise<void>) | null>(null);
   const isStoppingRef = useRef<boolean>(false);
+  const hasFinalizedRef = useRef<boolean>(false);
   const telemetryReceivedRef = useRef<boolean>(false);
 
   // 1. Initial Load: Try OPFS / storage or generate interactive demo
@@ -248,21 +282,16 @@ export function EditorStudio() {
   }, []);
 
   useEffect(() => {
-    // Immediately load demo workspace so canvas is active on initial render
-    if (typeof window !== 'undefined' && !window.location.search.includes('record=true')) {
-      loadDemoWorkspace();
-    }
-
     async function loadInitial() {
       if (typeof window !== 'undefined' && window.location.search.includes('record=true')) {
         const urlParams = new URLSearchParams(window.location.search);
         const sourceTabStr = urlParams.get('sourceTab');
         const sourceTabId = sourceTabStr ? parseInt(sourceTabStr) : undefined;
-        loadDemoWorkspace();
-        // Automatically prompt capture after initial render
-        setTimeout(() => {
-          handleStartLiveRecording(sourceTabId);
-        }, 400);
+        const micParam = urlParams.get('includeMic');
+        const shouldIncludeMic = micParam === null ? true : micParam === 'true';
+        setRecordTargetTabId(sourceTabId);
+        setRecordIncludeMic(shouldIncludeMic);
+        setShowRecordPrompt(true);
         return;
       }
 
@@ -270,91 +299,41 @@ export function EditorStudio() {
         const storedTelemetry = await loadTelemetry();
         const storedBlob = await getRecordingBlob();
 
-        if (storedBlob && storedTelemetry) {
-          setupLoadedRecording(storedBlob, storedTelemetry);
+        if (storedBlob && storedBlob.size > 0) {
+          const defaultTel: TelemetryData = storedTelemetry || {
+            metadata: {
+              id: 'rec_' + Date.now(),
+              startTime: Date.now() - 15000,
+              endTime: Date.now(),
+              durationMs: 15000,
+              width: 1920,
+              height: 1080,
+              devicePixelRatio: 1,
+              title: 'Screen Recording'
+            },
+            mousePoints: [],
+            clicks: [],
+            keystrokes: [],
+            inputEvents: []
+          };
+          setupLoadedRecording(storedBlob, defaultTel);
+          setHasNoRecording(false);
+        } else {
+          setHasNoRecording(true);
         }
       } catch (err) {
         console.warn('[SmoothStudio] Failed to load stored recording:', err);
+        setHasNoRecording(true);
       }
     }
     loadInitial();
   }, []);
 
-  const seedCaptionsFromTelemetry = (data: TelemetryData, durMs: number): CaptionBlock[] => {
-    const seeded: CaptionBlock[] = [];
-    const title = data.metadata?.title || 'Screen Walkthrough';
-
-    const introEnd = Math.min(3200, Math.round(durMs * 0.28));
-    const introText = `Welcome to ${title.length > 28 ? title.slice(0, 28) + '...' : title}`;
-    const introWords = introText.split(' ').map((w, idx, arr) => {
-      const step = (introEnd - 600) / arr.length;
-      return {
-        word: w,
-        startTime: 600 + idx * step,
-        endTime: 600 + (idx + 1) * step
-      };
-    });
-    seeded.push({
-      id: 'cap_intro',
-      startTime: 600,
-      endTime: introEnd,
-      text: introText,
-      words: introWords
-    });
-
-    data.clicks.forEach((c, idx) => {
-      if (c.targetText && c.targetText.trim().length > 2) {
-        const start = Math.max(0, c.t - 300);
-        const end = Math.min(durMs, c.t + 2400);
-        const text = `Interacting with ${c.targetText.trim().slice(0, 32)}`;
-        const words = text.split(' ').map((w, wIdx, arr) => {
-          const step = (end - start) / arr.length;
-          return {
-            word: w,
-            startTime: start + wIdx * step,
-            endTime: start + (wIdx + 1) * step
-          };
-        });
-        seeded.push({
-          id: `cap_click_${idx}`,
-          startTime: start,
-          endTime: end,
-          text,
-          words
-        });
-      }
-    });
-
-    data.keystrokes.forEach((k, idx) => {
-      if (k.combo) {
-        const start = Math.max(0, k.t - 200);
-        const end = Math.min(durMs, k.t + 2200);
-        const text = `Executing shortcut ${k.combo}`;
-        const words = text.split(' ').map((w, wIdx, arr) => {
-          const step = (end - start) / arr.length;
-          return {
-            word: w,
-            startTime: start + wIdx * step,
-            endTime: start + (wIdx + 1) * step
-          };
-        });
-        seeded.push({
-          id: `cap_key_${idx}`,
-          startTime: start,
-          endTime: end,
-          text,
-          words
-        });
-      }
-    });
-
-    return seeded.sort((a, b) => a.startTime - b.startTime);
-  };
-
   const setupLoadedRecording = (blob: Blob, data: TelemetryData, measuredDurationMs?: number) => {
     firedSfxRef.current.clear();
     setVideoBlob(blob);
     setTelemetry(data);
+    if (import.meta.env.DEV) (window as any).__lastLoadedTelemetry = data;
 
     // Compute safe, finite duration fallback
     const safeDuration = (measuredDurationMs && measuredDurationMs > 0)
@@ -376,6 +355,34 @@ export function EditorStudio() {
     video.playsInline = true;
     video.preload = 'auto';
 
+    // Mount video element in DOM so standard element queries (e.g. document.querySelector('video')) and browser decoders resolve it
+    const existingVideo = document.getElementById('smoothstudio-source-video');
+    if (existingVideo) existingVideo.remove();
+    video.id = 'smoothstudio-source-video';
+    video.style.cssText = 'position: fixed; bottom: 0; right: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; z-index: -1;';
+    document.body.appendChild(video);
+    if (import.meta.env.DEV) {
+      (window as any).__smoothstudio_video = video;
+      (window as any).__lastLoadedVideoBlob = blob;
+      (window as any).__lastLoadedVideoElement = video;
+    }
+
+    const durationSec = safeDuration / 1000;
+    try {
+      Object.defineProperty(video, 'duration', {
+        get: () => durationSec,
+        configurable: true
+      });
+    } catch {}
+
+    video.addEventListener('play', () => setIsPlaying(true));
+    video.addEventListener('pause', () => setIsPlaying(false));
+    const markReady = () => {
+      video.setAttribute('data-ready', 'true');
+    };
+    video.addEventListener('loadeddata', markReady);
+    video.addEventListener('canplay', markReady);
+
     video.onloadedmetadata = () => {
       let resolvedDur = safeDuration;
       // Guard against Chrome MediaRecorder WebM bug where video.duration === Infinity or NaN
@@ -394,6 +401,10 @@ export function EditorStudio() {
       console.log('[SmoothStudio] Video element metadata loaded. Duration:', resolvedDur, 'Dimensions:', video.videoWidth, 'x', video.videoHeight);
       setDurationMs(resolvedDur);
       setVideoElement(video);
+      // Nudge Chromium video decoder to decode the first frame so readyState advances to HAVE_CURRENT_DATA (2) / HAVE_ENOUGH_DATA (4)
+      try {
+        video.currentTime = 0.001;
+      } catch {}
     };
 
     video.onerror = (err) => {
@@ -405,9 +416,13 @@ export function EditorStudio() {
       });
     };
 
+    // Initiate frame decoding
+    try { video.load(); } catch {}
+
     // Fallback: if onloadedmetadata hasn't fired after 250ms, ensure videoElement is set
     setTimeout(() => {
       setVideoElement((curr) => curr || video);
+      try { video.currentTime = 0.001; } catch {}
     }, 300);
 
     cursorEngineRef.current.setData(data.mousePoints || [], data.clicks || []);
@@ -421,12 +436,22 @@ export function EditorStudio() {
       data.metadata?.height || 1080
     );
     setPills(autoPills);
+    if (import.meta.env.DEV) (window as any).__smoothstudio_pills = autoPills;
 
-    if (data.captions && data.captions.length > 0) {
-      setCaptions(data.captions);
-    } else {
-      setCaptions(seedCaptionsFromTelemetry(data, safeDuration));
-    }
+    // Captions are only ever sourced from a REAL transcription supplied with the
+    // recording. Nothing is invented: without transcription there are no
+    // captions at all.
+    setCaptions(data.captions && data.captions.length > 0 ? data.captions : []);
+
+    // Build the timeline waveform from the REAL audio track of the recording.
+    // Without an audio track the timeline renders "NO AUDIO" instead of bars.
+    audioProcessorRef.current
+      .buildWaveformPeaks(blob, 160)
+      .then((peaks) => setWaveformPeaks(peaks))
+      .catch((err) => {
+        console.warn('[SmoothStudio] Waveform extraction failed:', err);
+        setWaveformPeaks([]);
+      });
 
     // Analyze silences safely wrapped in try/catch
     try {
@@ -439,262 +464,26 @@ export function EditorStudio() {
     } catch (err) {
       console.warn('[SmoothStudio] Audio processor initiation error caught:', err);
     }
+    // Configure cursor visibility: in window or desktop capture, the OS compositor bakes the cursor into the stream
+    const displaySurface = data.metadata?.displaySurface || captureEngineRef.current.getTrackSettings()?.displaySurface;
+    if (displaySurface === 'window' || displaySurface === 'monitor') {
+      setShowCursor(false);
+    } else {
+      setShowCursor(true);
+    }
   };
 
-  // Synthesize a high-res demo recording with mock DOM events and video
-  const loadDemoWorkspace = () => {
-    firedSfxRef.current.clear();
-    setIsPlaying(false);
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      (window as any).__setupLoadedRecording = setupLoadedRecording;
+      (window as any).__setSilences = setSilences;
+      (window as any).__silences = silences;
+      (window as any).__autoCutSilences = autoCutSilences;
+      (window as any).__setAutoCutSilences = setAutoCutSilences;
+      (window as any).__durationMs = durationMs;
+      (window as any).__captions = captions;
     }
-    if (prevBlobUrlRef.current) {
-      URL.revokeObjectURL(prevBlobUrlRef.current);
-      prevBlobUrlRef.current = null;
-    }
-    if (currentBlobUrlRef.current) {
-      URL.revokeObjectURL(currentBlobUrlRef.current);
-      currentBlobUrlRef.current = null;
-    }
-
-    const demoCanvas = document.createElement('canvas');
-    demoCanvas.width = 1920;
-    demoCanvas.height = 1080;
-    const ctx = demoCanvas.getContext('2d')!;
-
-    // Draw realistic mock modern SaaS application dashboard
-    function renderDemoFrame(timeMs: number) {
-      // Background
-      ctx.fillStyle = '#0F1117';
-      ctx.fillRect(0, 0, 1920, 1080);
-
-      // Top Navbar
-      ctx.fillStyle = '#161922';
-      ctx.fillRect(0, 0, 1920, 72);
-      ctx.fillStyle = '#8B5CF6';
-      ctx.beginPath();
-      ctx.arc(60, 36, 16, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = '600 20px Inter, sans-serif';
-      ctx.fillText('Acme Cloud Studio', 95, 43);
-
-      // Search Bar with keystroke target
-      ctx.fillStyle = '#202431';
-      ctx.roundRect(1400, 18, 320, 38, 8);
-      ctx.fill();
-      ctx.fillStyle = '#9CA3AF';
-      ctx.font = '14px Inter, sans-serif';
-      ctx.fillText('Quick Search (Cmd + K)...', 1420, 42);
-
-      // Metric Cards Grid
-      const cards = [
-        { label: 'Active Deployments', val: '1,428', change: '+18.4%' },
-        { label: 'Hardware GPU Units', val: '64/64', change: '100% Load' },
-        { label: 'Monthly API Cost', val: '$0.00', change: '100% Free' }
-      ];
-
-      cards.forEach((c, idx) => {
-        const x = 120 + idx * 560;
-        ctx.fillStyle = '#1A1D27';
-        ctx.roundRect(x, 140, 520, 200, 16);
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
-        ctx.stroke();
-
-        ctx.fillStyle = '#9CA3AF';
-        ctx.font = '14px Inter, sans-serif';
-        ctx.fillText(c.label, x + 32, 185);
-
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 36px Inter, sans-serif';
-        ctx.fillText(c.val, x + 32, 245);
-
-        ctx.fillStyle = '#10B981';
-        ctx.font = '500 14px Inter, sans-serif';
-        ctx.fillText(c.change, x + 32, 285);
-      });
-
-      // Animated Chart in Main Card
-      ctx.fillStyle = '#1A1D27';
-      ctx.roundRect(120, 380, 1680, 620, 16);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
-      ctx.stroke();
-
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = '600 22px Inter, sans-serif';
-      ctx.fillText('Real-Time WebGPU Render Throughput (60 FPS)', 160, 435);
-
-      // Animated wave lines
-      ctx.beginPath();
-      ctx.strokeStyle = '#8B5CF6';
-      ctx.lineWidth = 4;
-      for (let x = 160; x <= 1740; x += 10) {
-        const y = 720 + Math.sin(x * 0.008 + timeMs * 0.003) * 120;
-        if (x === 160) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    }
-
-    renderDemoFrame(0);
-    demoRendererRef.current = renderDemoFrame;
-    setVideoElement(demoCanvas);
-
-    // Generate mock telemetry
-    const demoDuration = 12000;
-    setDurationMs(demoDuration);
-
-    const mockMousePoints = [];
-    for (let t = 0; t <= demoDuration; t += 20) {
-      const progress = t / demoDuration;
-      mockMousePoints.push({
-        t,
-        x: 400 + Math.sin(progress * Math.PI * 4) * 600,
-        y: 300 + Math.cos(progress * Math.PI * 3) * 250,
-        c: t > 4000 && t < 7000 ? 'pointer' : 'default'
-      });
-    }
-
-    const mockClicks = [
-      {
-        t: 2200,
-        x: 380,
-        y: 240,
-        button: 0,
-        targetTag: 'div',
-        targetText: 'Active Deployments Metric',
-        containerBounds: { x: 120, y: 140, width: 520, height: 200 }
-      },
-      {
-        t: 6500,
-        x: 1240,
-        y: 240,
-        button: 0,
-        targetTag: 'button',
-        targetText: '$0.00 Server Cost Card',
-        containerBounds: { x: 1240, y: 140, width: 520, height: 200 }
-      }
-    ];
-
-    const mockKeystrokes = [
-      { t: 4200, key: 'k', combo: '⌘ + K' },
-      { t: 9000, key: 'Enter', combo: 'Enter' }
-    ];
-
-    const mockInputEvents = [
-      {
-        t: 4400,
-        type: 'focus' as const,
-        bounds: { x: 1400, y: 18, width: 320, height: 38 }
-      }
-    ];
-
-    const mockTelemetry: TelemetryData = {
-      metadata: {
-        id: 'demo_recording',
-        startTime: Date.now() - demoDuration,
-        endTime: Date.now(),
-        durationMs: demoDuration,
-        width: 1920,
-        height: 1080,
-        devicePixelRatio: 2,
-        title: 'Acme SaaS Demo Walkthrough',
-        url: 'https://app.acme.io/dashboard',
-        brandColors: {
-          primary: '#8B5CF6',
-          secondary: '#6366F1',
-          accent: '#EC4899',
-          background: '#0F1117'
-        }
-      },
-      mousePoints: mockMousePoints,
-      clicks: mockClicks,
-      keystrokes: mockKeystrokes,
-      inputEvents: mockInputEvents
-    };
-
-    setTelemetry(mockTelemetry);
-    cursorEngineRef.current.setData(mockMousePoints, mockClicks);
-
-    const autoPills = generateAutoZoomPills(
-      mockClicks,
-      mockInputEvents,
-      demoDuration,
-      1920,
-      1080
-    );
-    setPills(autoPills);
-
-    // Mock silences (>1.2s without clicks or typing)
-    setSilences([
-      {
-        id: 'silence_demo_1',
-        startTime: 4800,
-        endTime: 6200,
-        duration: 1400,
-        markedForCut: true
-      },
-      {
-        id: 'silence_demo_2',
-        startTime: 7800,
-        endTime: 9600,
-        duration: 1800,
-        markedForCut: true
-      }
-    ]);
-
-    // Mock viral TikTok/Linear auto-captions
-    const mockCaptions: CaptionBlock[] = [
-      {
-        id: 'cap_1',
-        startTime: 800,
-        endTime: 3600,
-        text: 'Welcome to Acme Cloud Studio dashboard',
-        words: [
-          { word: 'Welcome', startTime: 800, endTime: 1200 },
-          { word: 'to', startTime: 1200, endTime: 1400 },
-          { word: 'Acme', startTime: 1400, endTime: 1800 },
-          { word: 'Cloud', startTime: 1800, endTime: 2200 },
-          { word: 'Studio', startTime: 2200, endTime: 2800 },
-          { word: 'dashboard', startTime: 2800, endTime: 3600 }
-        ]
-      },
-      {
-        id: 'cap_2',
-        startTime: 4000,
-        endTime: 7000,
-        text: 'Checking real-time WebGPU throughput at 60 FPS',
-        words: [
-          { word: 'Checking', startTime: 4000, endTime: 4500 },
-          { word: 'real-time', startTime: 4500, endTime: 5100 },
-          { word: 'WebGPU', startTime: 5100, endTime: 5700 },
-          { word: 'throughput', startTime: 5700, endTime: 6300 },
-          { word: 'at', startTime: 6300, endTime: 6500 },
-          { word: '60 FPS', startTime: 6500, endTime: 7000 }
-        ]
-      },
-      {
-        id: 'cap_3',
-        startTime: 7500,
-        endTime: 11000,
-        text: 'Zero server cost with hardware accelerated local export',
-        words: [
-          { word: 'Zero', startTime: 7500, endTime: 8000 },
-          { word: 'server', startTime: 8000, endTime: 8400 },
-          { word: 'cost', startTime: 8400, endTime: 8800 },
-          { word: 'with', startTime: 8800, endTime: 9100 },
-          { word: 'hardware', startTime: 9100, endTime: 9600 },
-          { word: 'accelerated', startTime: 9600, endTime: 10200 },
-          { word: 'local', startTime: 10200, endTime: 10600 },
-          { word: 'export', startTime: 10600, endTime: 11000 }
-        ]
-      }
-    ];
-    setCaptions(mockCaptions);
-  };
+  });
 
   // 2. Playback Loop (60 FPS)
   useEffect(() => {
@@ -711,6 +500,9 @@ export function EditorStudio() {
 
       const safeDur = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000;
       let next = currentTimeRef.current + dt;
+      if (videoElement instanceof HTMLVideoElement && !videoElement.paused) {
+        next = videoElement.currentTime * 1000;
+      }
 
       if (autoCutSilences) {
         const activeSilence = silences.find(
@@ -897,16 +689,30 @@ export function EditorStudio() {
 
   // Synchronize HTML5 video element currentTime if source is a real video
   useEffect(() => {
+    if (isExporting || isExportingGif) return;
     if (videoElement instanceof HTMLVideoElement) {
-      videoElement.currentTime = currentTimeMs / 1000;
-    } else if (videoElement instanceof HTMLCanvasElement && demoRendererRef.current) {
-      demoRendererRef.current(currentTimeMs);
+      if (Math.abs(videoElement.currentTime - currentTimeMs / 1000) > 0.08) {
+        videoElement.currentTime = currentTimeMs / 1000;
+      }
     }
-  }, [currentTimeMs, videoElement]);
+  }, [currentTimeMs, videoElement, isExporting, isExportingGif]);
+
+  // Synchronize HTML5 video play/pause state
+  useEffect(() => {
+    if (isExporting || isExportingGif) return;
+    if (videoElement instanceof HTMLVideoElement) {
+      if (isPlaying) {
+        if (videoElement.paused) videoElement.play().catch(() => {});
+      } else {
+        if (!videoElement.paused) videoElement.pause();
+      }
+    }
+  }, [isPlaying, videoElement, isExporting, isExportingGif]);
 
   // Handle Live Screen Recording within the browser tab
-  const handleStartLiveRecording = async (sourceTabId?: number) => {
+  const handleStartLiveRecording = async (sourceTabId?: number, includeMic = true) => {
     try {
+      hasFinalizedRef.current = false;
       isStoppingRef.current = false;
       telemetryReceivedRef.current = false;
       setIsPlaying(false);
@@ -914,10 +720,17 @@ export function EditorStudio() {
         cancelAnimationFrame(animationFrameRef.current);
         animationFrameRef.current = null;
       }
-      setIsRecordingLive(true);
       await captureEngineRef.current.start({
-        includeMic: true,
+        includeMic,
         frameRate: 60,
+        onMicWarning: (msg) => {
+          showToast({
+            type: 'warning',
+            title: 'Microphone not recorded',
+            message: msg
+          });
+          setMicWarning(msg);
+        },
         onStop: (stoppedBlob) => {
           console.log('[SmoothStudio] captureEngine onStop triggered with blob size:', stoppedBlob?.size);
           setIsRecordingLive(false);
@@ -926,11 +739,19 @@ export function EditorStudio() {
           }
         }
       });
+      setIsRecordingLive(true);
 
       // Clear record=true query param without refreshing page
       if (typeof window !== 'undefined' && window.history) {
         window.history.replaceState({}, '', window.location.pathname);
       }
+
+      // The recorder publishes the wall-clock instant of the FIRST captured
+      // video frame. Handing it to the content script gives clicks,
+      // keystrokes, zoom pills and badges the exact same time origin as the
+      // video timeline.
+      const originEpoch = captureEngineRef.current.getTimelineOriginEpoch();
+      console.log('[SmoothStudio] Recording timeline origin (epoch ms):', originEpoch);
 
       // Notify service worker to initiate 120Hz DOM tracking on target tab
       if (typeof chrome !== 'undefined' && chrome.runtime) {
@@ -938,7 +759,8 @@ export function EditorStudio() {
           {
             type: 'START_STUDIO_RECORDING',
             tabId: sourceTabId,
-            focusTarget: Boolean(sourceTabId)
+            focusTarget: Boolean(sourceTabId),
+            originEpoch
           },
           () => {
             void chrome.runtime?.lastError;
@@ -961,16 +783,48 @@ export function EditorStudio() {
       latestTelemetryRef.current = passedTelemetry;
     }
 
-    // If already in-flight stopping, do not run concurrent pass
-    if (isStoppingRef.current) {
+    // If already finalized or in-flight stopping, do not run duplicate pass
+    if (hasFinalizedRef.current || isStoppingRef.current) {
+      if (passedTelemetry && (!telemetry || telemetry.mousePoints.length === 0)) {
+        setTelemetry(passedTelemetry);
+        if (import.meta.env.DEV) (window as any).__lastLoadedTelemetry = passedTelemetry;
+        // Use the MEASURED recording duration. The previous code used the
+        // React `durationMs` state, which is still the 10000ms default at this
+        // point and therefore clamped every zoom pill to a bogus end time.
+        const measuredForPills = captureEngineRef.current.getDurationMs() || durationMs;
+        const autoPills = generateAutoZoomPills(
+          passedTelemetry.clicks || [],
+          passedTelemetry.inputEvents || [],
+          measuredForPills,
+          passedTelemetry.metadata?.width || window.innerWidth,
+          passedTelemetry.metadata?.height || window.innerHeight
+        );
+        setPills(autoPills);
+        if (import.meta.env.DEV) (window as any).__smoothstudio_pills = autoPills;
+      }
       return;
     }
+    hasFinalizedRef.current = true;
     isStoppingRef.current = true;
     setIsRecordingLive(false);
 
     try {
       // 1. Ensure capture engine stops and gives us the finalized blob
-      let blob = passedBlob || (await captureEngineRef.current.stop());
+      let blob = passedBlob || null;
+      if (!blob) {
+        try {
+          blob = await captureEngineRef.current.stop();
+        } catch (stopErr: any) {
+          console.error('[SmoothStudio] Recorder reported a failure:', stopErr);
+          showToast({
+            type: 'error',
+            title: 'Recording Failed',
+            message: stopErr?.message || 'Recording failed: no video was captured.'
+          });
+          hasFinalizedRef.current = false;
+          return;
+        }
+      }
       if (!blob) {
         blob = captureEngineRef.current.getLastBlob() || (await getRecordingBlob());
       }
@@ -991,10 +845,18 @@ export function EditorStudio() {
       }
 
       const measuredDur = captureEngineRef.current.getDurationMs() || 10000;
+      const trackSettings = captureEngineRef.current.getTrackSettings();
+      const displaySurface = trackSettings?.displaySurface || tel?.metadata?.displaySurface || 'browser';
 
       // 3. Prepare complete telemetry with metadata
       const finalTelemetry: TelemetryData = (tel && tel.mousePoints && tel.mousePoints.length > 0)
-        ? tel
+        ? {
+            ...tel,
+            metadata: {
+              ...tel.metadata,
+              displaySurface
+            }
+          }
         : {
             metadata: {
               id: 'live_' + Date.now(),
@@ -1004,7 +866,8 @@ export function EditorStudio() {
               width: window.innerWidth,
               height: window.innerHeight,
               devicePixelRatio: window.devicePixelRatio || 1,
-              title: tel?.metadata?.title || 'Screen Recording'
+              title: tel?.metadata?.title || 'Screen Recording',
+              displaySurface
             },
             mousePoints: tel?.mousePoints || [],
             clicks: tel?.clicks || [],
@@ -1023,9 +886,9 @@ export function EditorStudio() {
       } else {
         console.warn('[SmoothStudio] Finished recording but no video frames were captured.');
         showToast({
-          type: 'warning',
-          title: 'Empty Recording',
-          message: 'The screen recording stream produced zero bytes.'
+          type: 'error',
+          title: 'Recording Failed',
+          message: 'Recording failed: no video was captured. The display capture stream produced zero encoded frames.'
         });
       }
     } catch (err: any) {
@@ -1044,6 +907,7 @@ export function EditorStudio() {
   // Keep the latest stop handler in the ref so the message listener never uses a stale closure
   useEffect(() => {
     handleStopLiveRecordingRef.current = handleStopLiveRecording;
+    handleStartLiveRecordingRef.current = handleStartLiveRecording;
   });
 
   const handleUpdatePill = (updated: ZoomPill) => {
@@ -1072,15 +936,9 @@ export function EditorStudio() {
   const handleAddCaptionAtPlayhead = () => {
     const start = Math.max(0, currentTimeMs - 100);
     const end = Math.min(durationMs, currentTimeMs + 2500);
-    const text = 'Highlighting key product interaction';
-    const words = text.split(' ').map((w, idx, arr) => {
-      const step = (end - start) / arr.length;
-      return {
-        word: w,
-        startTime: start + idx * step,
-        endTime: start + (idx + 1) * step
-      };
-    });
+    // No pre-filled caption text: the operator types the real transcription.
+    const text = '';
+    const words: CaptionWord[] = [];
     const newCaption: CaptionBlock = {
       id: 'cap_' + Date.now(),
       startTime: start,
@@ -1100,6 +958,41 @@ export function EditorStudio() {
   };
 
   // MULTI-FORMAT ASSET EXPORTS (MP4, GIF, Notion SOP, Interactive HTML)
+
+  const sourceWidth = (videoElement instanceof HTMLVideoElement && videoElement.videoWidth > 0)
+    ? videoElement.videoWidth
+    : (telemetry?.metadata?.width || 1920);
+  const sourceHeight = (videoElement instanceof HTMLVideoElement && videoElement.videoHeight > 0)
+    ? videoElement.videoHeight
+    : (telemetry?.metadata?.height || 1080);
+
+  const getResLabel = (w: number, h: number) => {
+    if (w >= 3840 || h >= 2160) return '4K';
+    if (w >= 2560 || h >= 1440) return '1440p';
+    if (w >= 1920 || h >= 1080) return '1080p';
+    if (w >= 1280 || h >= 720) return '720p';
+    return `${w}x${h}`;
+  };
+
+  const sourceResLabel = getResLabel(sourceWidth, sourceHeight);
+
+  let targetExportWidth = sourceWidth;
+  let targetResLabel = sourceResLabel;
+  if (exportResPreset === '4k') {
+    targetExportWidth = 3840;
+    targetResLabel = '4K';
+  } else if (exportResPreset === '1080p') {
+    targetExportWidth = 1920;
+    targetResLabel = '1080p';
+  } else if (exportResPreset === '720p') {
+    targetExportWidth = 1280;
+    targetResLabel = '720p';
+  } else {
+    targetExportWidth = sourceWidth;
+    targetResLabel = sourceResLabel;
+  }
+
+  const isUpscaled = targetExportWidth > sourceWidth;
 
   // 1. Hardware 60fps MP4 Export (with safe fail-over path to client WebM)
   const handleExportMp4 = async () => {
@@ -1135,11 +1028,6 @@ export function EditorStudio() {
       const mp4Blob = await exporter.exportMp4({
         videoSource: videoElement,
         videoBlob,
-        onRenderCanvasFrame: (timeMs) => {
-          if (demoRendererRef.current) {
-            demoRendererRef.current(timeMs);
-          }
-        },
         durationMs,
         aspectRatio,
         preset,
@@ -1164,12 +1052,19 @@ export function EditorStudio() {
         showOutroCard,
         outroHeadline,
         outroCtaText,
+        targetWidth: targetExportWidth,
         onProgress: (pct) => setExportProgress(pct)
       });
 
       HardwareMp4Exporter.downloadBlob(mp4Blob, `${telemetry?.metadata.title || 'SmoothStudio'}_Cinematic.mp4`);
       setExportComplete(true);
-      showToast({ type: 'success', title: 'MP4 Exported', message: 'Hardware encoded 4K/60fps video downloaded.' });
+      showToast({
+        type: 'success',
+        title: 'MP4 Exported',
+        message: isUpscaled
+          ? `Hardware encoded ${targetResLabel}/60fps video downloaded (Upscaled from ${sourceResLabel}).`
+          : `Hardware encoded ${targetResLabel}/60fps video downloaded.`
+      });
     } catch (err: any) {
       console.error('MP4 export failed:', err);
       diagnosticChannel.recordFrameDrop(err?.message || 'VideoEncoder runtime error during export');
@@ -1188,13 +1083,9 @@ export function EditorStudio() {
 
     try {
       const exporter = new HardwareGifExporter();
+      const config = GIF_QUALITY_PRESETS[gifPreset] || GIF_QUALITY_PRESETS.compact;
       const gifBlob = await exporter.exportGif({
         videoSource: videoElement,
-        onRenderCanvasFrame: (timeMs) => {
-          if (demoRendererRef.current) {
-            demoRendererRef.current(timeMs);
-          }
-        },
         durationMs,
         aspectRatio,
         preset,
@@ -1219,8 +1110,10 @@ export function EditorStudio() {
         showOutroCard,
         outroHeadline,
         outroCtaText,
-        fps: 20,
-        maxDimension: 840,
+        qualityPreset: gifPreset,
+        fps: config.fps,
+        maxDimension: config.maxDimension,
+        maxColors: config.maxColors,
         onProgress: (pct) => setExportGifProgress(pct)
       });
 
@@ -1280,15 +1173,16 @@ export function EditorStudio() {
               SmoothStudio <span className="text-[10px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full font-mono">v1.0 Pro</span>
             </h1>
             <p className="text-[11px] text-gray-400">
-              {telemetry?.metadata.title || 'Cinematic 3D Video Studio'} • 60 FPS WebGPU
+              {telemetry?.metadata.title || 'Cinematic 3D Video Studio'} • 60 FPS Canvas 2D
             </p>
           </div>
         </div>
 
-        {/* Live Recording / Demo Switcher */}
+        {/* Live Recording Switcher */}
         <div className="flex items-center gap-2">
           {isRecordingLive ? (
             <button
+              id="stop-live-recording-top-btn"
               onClick={() => handleStopLiveRecording()}
               className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-medium flex items-center gap-2 shadow-lg shadow-red-600/30 animate-pulse"
             >
@@ -1297,6 +1191,7 @@ export function EditorStudio() {
             </button>
           ) : (
             <button
+              id="record-new-screen-top-btn"
               onClick={() => handleStartLiveRecording()}
               className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-medium flex items-center gap-1.5 border border-white/10 transition-colors"
             >
@@ -1304,14 +1199,6 @@ export function EditorStudio() {
               Record New Screen
             </button>
           )}
-
-          <button
-            onClick={loadDemoWorkspace}
-            className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-medium flex items-center gap-1.5 border border-white/10 transition-colors"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-            Reload Demo
-          </button>
 
           <button
             onClick={() => setShowDoctor(true)}
@@ -1398,7 +1285,7 @@ export function EditorStudio() {
             onClick={handleExportGif}
             disabled={isExportingGif || isExporting}
             className="px-3.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-purple-200 text-xs font-medium flex items-center gap-1.5 border border-purple-500/30 transition-all disabled:opacity-50"
-            title="Export animated lightweight 20fps GIF"
+            title="Export animated lightweight GIF"
           >
             {isExportingGif ? (
               <>
@@ -1418,8 +1305,52 @@ export function EditorStudio() {
             )}
           </button>
 
+          {/* GIF Quality Preset Selector */}
+          <select
+            id="gif-preset-select"
+            value={gifPreset}
+            onChange={(e) => setGifPreset(e.target.value as GifQualityPreset)}
+            disabled={isExporting || isExportingGif}
+            className="px-2 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-purple-200 text-xs font-medium border border-purple-500/30 focus:outline-none focus:border-purple-400 cursor-pointer disabled:opacity-50"
+            title="GIF Quality Preset"
+          >
+            <option value="compact" className="bg-[#14161D] text-white">
+              GIF: Compact (&lt;5 MB)
+            </option>
+            <option value="web" className="bg-[#14161D] text-white">
+              GIF: Web (720p / 15fps)
+            </option>
+            <option value="high" className="bg-[#14161D] text-white">
+              GIF: High (840px / 20fps)
+            </option>
+          </select>
+
+          {/* Resolution Selector Dropdown with Honest Labels */}
+          <select
+            id="export-resolution-select"
+            value={exportResPreset}
+            onChange={(e) => setExportResPreset(e.target.value as any)}
+            disabled={isExporting || isExportingGif}
+            className="px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-gray-200 text-xs font-medium border border-white/10 focus:outline-none focus:border-purple-500 cursor-pointer disabled:opacity-50"
+            title="Export Resolution"
+          >
+            <option value="source" className="bg-[#14161D] text-white">
+              {sourceResLabel} (Source Default)
+            </option>
+            <option value="1080p" className="bg-[#14161D] text-white">
+              1080p {1920 > sourceWidth ? `(Upscaled from ${sourceResLabel})` : ''}
+            </option>
+            <option value="4k" className="bg-[#14161D] text-white">
+              4K {3840 > sourceWidth ? `(Upscaled from ${sourceResLabel})` : ''}
+            </option>
+            <option value="720p" className="bg-[#14161D] text-white">
+              720p {1280 > sourceWidth ? `(Upscaled from ${sourceResLabel})` : ''}
+            </option>
+          </select>
+
           {/* Hardware MP4 Exporter */}
           <button
+            id="export-mp4-btn"
             onClick={handleExportMp4}
             disabled={isExporting || isExportingGif}
             className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-medium flex items-center gap-2 shadow-lg shadow-purple-600/30 transition-all disabled:opacity-50"
@@ -1437,12 +1368,29 @@ export function EditorStudio() {
             ) : (
               <>
                 <Download className="w-3.5 h-3.5" />
-                Export 4K/60fps MP4
+                {isUpscaled
+                  ? `Export ${targetResLabel}/60fps (Upscaled from ${sourceResLabel})`
+                  : `Export ${targetResLabel}/60fps MP4`}
               </>
             )}
           </button>
         </div>
       </header>
+      {micWarning && (
+        <div id="mic-warning-banner" className="bg-amber-500/20 border-b border-amber-500/30 px-5 py-2 flex items-center justify-between text-xs text-amber-200 z-30 shrink-0">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span><strong>Microphone not recorded:</strong> {micWarning}</span>
+          </div>
+          <button
+            id="dismiss-mic-warning-btn"
+            onClick={() => setMicWarning(null)}
+            className="text-amber-400 hover:text-white px-2 py-0.5 rounded transition-colors text-xs font-semibold cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Main Studio Body: Sidebar + Center Canvas */}
       <div className="flex flex-1 overflow-hidden">
@@ -1527,6 +1475,51 @@ export function EditorStudio() {
           onCanvasClickToAddZoom={handleAddPillAtPlayhead}
           showCaptions={showCaptions}
         />
+
+        {/* Record Prompt Dialog Overlay */}
+        {showRecordPrompt && !isRecordingLive && (
+          <div className="absolute inset-0 z-40 bg-[#0B0C10]/95 flex flex-col items-center justify-center p-6 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center mb-5 text-purple-400">
+              <Video className="w-8 h-8" />
+            </div>
+            <h2 className="text-xl font-bold text-white mb-2">Ready to Record Screen</h2>
+            <p className="text-sm text-gray-400 max-w-md mb-6">
+              SmoothStudio is ready to capture high-definition 60 FPS video with 120 Hz DOM telemetry and cursor smoothing.
+            </p>
+            <button
+              id="start-capture-prompt-btn"
+              onClick={() => {
+                setShowRecordPrompt(false);
+                handleStartLiveRecording(recordTargetTabId, recordIncludeMic);
+              }}
+              className="px-6 py-3 rounded-xl bg-gradient-to-r from-red-600 to-purple-600 hover:from-red-500 hover:to-purple-500 text-white font-semibold text-sm flex items-center gap-2.5 shadow-xl shadow-red-600/30 transition-all cursor-pointer"
+            >
+              <CircleDot className="w-5 h-5 text-white animate-pulse" />
+              Select Screen / Tab to Record
+            </button>
+          </div>
+        )}
+
+        {/* Empty State Overlay when No Recording Exists */}
+        {hasNoRecording && !videoElement && !isRecordingLive && !showRecordPrompt && (
+          <div className="absolute inset-0 z-30 bg-[#0B0C10]/95 flex flex-col items-center justify-center p-6 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-center mb-5 text-red-400">
+              <AlertTriangle className="w-8 h-8" />
+            </div>
+            <h2 className="text-xl font-bold text-white mb-2">No Screen Recording Found</h2>
+            <p className="text-sm text-gray-400 max-w-md mb-6">
+              No recording was found in local storage. Start a new recording session to generate cinematic videos.
+            </p>
+            <button
+              id="record-new-screen-empty-btn"
+              onClick={() => handleStartLiveRecording(undefined, true)}
+              className="px-6 py-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold text-sm flex items-center gap-2 shadow-lg shadow-purple-600/30 transition-all cursor-pointer"
+            >
+              <CircleDot className="w-5 h-5 text-red-400" />
+              Record New Screen
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Bottom Magnetic Pill Multi-Track Timeline */}
@@ -1546,6 +1539,7 @@ export function EditorStudio() {
         autoCutSilences={autoCutSilences}
         onToggleAutoCutSilences={setAutoCutSilences}
         keystrokes={telemetry?.keystrokes || []}
+        waveformPeaks={waveformPeaks}
         captions={captions}
         showCaptions={showCaptions}
         onAddCaptionAtPlayhead={handleAddCaptionAtPlayhead}

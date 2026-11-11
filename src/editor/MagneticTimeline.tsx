@@ -18,6 +18,8 @@ interface MagneticTimelineProps {
   autoCutSilences?: boolean;
   onToggleAutoCutSilences?: (val: boolean) => void;
   keystrokes: KeystrokeEvent[];
+  /** Real amplitude envelope decoded from the recorded audio track. */
+  waveformPeaks?: number[];
   captions?: CaptionBlock[];
   showCaptions?: boolean;
   onAddCaptionAtPlayhead?: () => void;
@@ -38,9 +40,10 @@ export function MagneticTimeline({
   silences,
   onToggleSilenceCut,
   onCutAllSilences,
-  autoCutSilences = true,
+  autoCutSilences = false,
   onToggleAutoCutSilences,
   keystrokes,
+  waveformPeaks = [],
   captions = [],
   showCaptions = false,
   onAddCaptionAtPlayhead,
@@ -316,16 +319,22 @@ export function MagneticTimeline({
       >
         {/* Track 1: Audio Waveform & Silences & Keystrokes */}
         <div className={`absolute top-0 left-0 right-0 ${showCaptions ? 'h-8' : 'h-10'} border-b border-white/5 flex items-center px-2`}>
-          {/* Simulated Waveform bars */}
-          <div className="w-full h-5 flex items-center gap-[2px] opacity-40">
-            {Array.from({ length: 80 }).map((_, i) => (
-              <div
-                key={i}
-                className="flex-1 bg-purple-400 rounded-full"
-                style={{ height: `${20 + Math.sin(i * 0.4) * 30 + ((i % 4) * 10)}%` }}
-              />
-            ))}
-          </div>
+          {/* Real waveform: drawn only from the decoded audio track of the recording */}
+          {waveformPeaks.length > 0 ? (
+            <div className="w-full h-5 flex items-center gap-[1px] opacity-70" data-waveform="real">
+              {waveformPeaks.map((peak, i) => (
+                <div
+                  key={i}
+                  className="flex-1 bg-purple-400 rounded-full"
+                  style={{ height: `${Math.max(4, peak * 100)}%` }}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="w-full h-5 flex items-center justify-center" data-waveform="none">
+              <span className="text-[9px] font-mono text-gray-500 tracking-wider">NO AUDIO</span>
+            </div>
+          )}
 
           {/* Subtle Red/Amber Hatched Silence Regions */}
           {silences.map((silence) => {
@@ -335,11 +344,13 @@ export function MagneticTimeline({
             return (
               <div
                 key={silence.id}
+                data-silence-id={silence.id}
+                data-cut-active={isCutActive ? 'true' : 'false'}
                 onClick={(e) => {
                   e.stopPropagation();
                   onToggleSilenceCut(silence.id);
                 }}
-                className={`absolute top-0 bottom-0 flex items-center justify-center transition-all cursor-pointer group/silence ${
+                className={`silence-cut-region absolute top-0 bottom-0 flex items-center justify-center transition-all cursor-pointer group/silence ${
                   isCutActive
                     ? 'border-x border-dashed border-amber-400/70 hover:brightness-125'
                     : 'border-x border-white/10 opacity-40 hover:opacity-80'
@@ -368,6 +379,8 @@ export function MagneticTimeline({
             return (
               <div
                 key={i}
+                data-keystroke-badge={k.combo}
+                data-keystroke-time={k.t}
                 className="absolute top-1 -translate-x-1/2 px-1.5 py-0.5 bg-white/20 border border-white/30 rounded text-[9px] font-mono text-white pointer-events-none"
                 style={{ left: `${left}%` }}
               >
@@ -441,6 +454,8 @@ export function MagneticTimeline({
             return (
               <div
                 key={pill.id}
+                data-zoom-pill={pill.id}
+                data-start-time={pill.startTime}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();

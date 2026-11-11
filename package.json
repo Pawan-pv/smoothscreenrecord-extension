@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
-    "test:live": "npm run build && bun build tests/autonomous-extension-audit.ts --outfile tests/run-audit.mjs --target node && node tests/run-audit.mjs",
+    "test:live": "npm run build && bun build tests/legacy/autonomous-extension-audit.ts --outfile tests/legacy/run-audit.mjs --target node && node tests/legacy/run-audit.mjs",
+    "test:qa": "npm run build && bun build tests/legacy/autonomous-qa-suite.ts --outfile tests/legacy/run-qa-suite.mjs --target node && node tests/legacy/run-qa-suite.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

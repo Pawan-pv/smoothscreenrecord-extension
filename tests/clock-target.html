@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SmoothStudio Clock Target</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: #05070D; color: #F8FAFC; font-family: 'Courier New', monospace; }
+    /* Machine readable binary clock strip: 24 contiguous 26x26 blocks at (0,0).
+       Block i encodes bit (23-i) of floor(performance.now()) - MSB first.
+       White (#FFFFFF) = 1, Black (#000000) = 0. */
+    #binary-clock { position: fixed; left: 0; top: 0; width: 624px; height: 26px; z-index: 99999; }
+    #binary-clock .bit { position: absolute; top: 0; width: 26px; height: 26px; }
+    .panel { margin: 60px 40px 0 40px; }
+    .digit { font-size: 72px; font-weight: bold; color: #38BDF8; letter-spacing: 2px; }
+    .sub { font-size: 28px; color: #94A3B8; margin-top: 8px; }
+    .frame { font-size: 28px; color: #4ADE80; margin-top: 8px; }
+    .box { margin-top: 24px; width: 420px; height: 140px; background: #0F172A; border: 2px solid #8B5CF6; border-radius: 12px; padding: 16px; }
+    .box h2 { margin: 0 0 8px 0; font-size: 22px; }
+    .box p { margin: 4px 0; font-size: 16px; color: #CBD5E1; }
+    #target-btn { margin-top: 18px; background: #8B5CF6; color: white; border: none; border-radius: 8px; padding: 10px 20px; font-size: 18px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div id="binary-clock"></div>
+
+  <div class="panel">
+    <div class="digit" id="clock-text">0.0 ms</div>
+    <div class="sub">SmoothStudio Clock Target &mdash; page performance.now() rendered into video</div>
+    <div class="frame" id="frame-text">Frame: 0</div>
+
+    <div class="box">
+      <h2>Clock Target App</h2>
+      <p id="status">Idle. Press the button to change the panel (user interaction only).</p>
+      <button id="target-btn">Press Me</button>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const BITS = 24;
+      const BLOCK = 26;
+      const strip = document.getElementById('binary-clock');
+      const blocks = [];
+      for (let i = 0; i < BITS; i++) {
+        const d = document.createElement('div');
+        d.className = 'bit';
+        d.style.left = (i * BLOCK) + 'px';
+        d.style.background = '#000000';
+        strip.appendChild(d);
+        blocks.push(d);
+      }
+
+      const clockText = document.getElementById('clock-text');
+      const frameText = document.getElementById('frame-text');
+      let frameCount = 0;
+
+      function paint() {
+        const now = performance.now();
+        const value = Math.floor(now);
+        for (let i = 0; i < BITS; i++) {
+          const bit = (value >> (BITS - 1 - i)) & 1;
+          blocks[i].style.background = bit ? '#FFFFFF' : '#000000';
+        }
+        clockText.textContent = now.toFixed(1) + ' ms';
+        frameCount++;
+        frameText.textContent = 'Frame: ' + frameCount;
+      }
+
+      document.getElementById('target-btn').addEventListener('click', () => {
+        document.getElementById('status').textContent = 'Pressed at ' + performance.now().toFixed(1) + ' ms';
+        paint();
+      });
+
+      paint();
+      // The clock page is intentionally animated: it is the F3 timebase fixture.
+      setInterval(paint, 50);
+    })();
+  </script>
+</body>
+</html>

@@ -40,16 +40,50 @@ export interface GifExportOptions {
   showOutroCard?: boolean;
   outroHeadline?: string;
   outroCtaText?: string;
-  fps?: number; // defaults to 20fps for optimal GIF size/smoothness
-  maxDimension?: number; // defaults to 800px width
+  qualityPreset?: GifQualityPreset;
+  fps?: number; // defaults to 12fps (Compact preset) for optimal GIF size (<5MB)
+  maxDimension?: number; // defaults to 640px (Compact preset)
+  maxColors?: number; // defaults to 128 colors (Compact preset)
+  enableDeduplication?: boolean; // defaults to true
   onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
 }
 
-// Fast 256-color RGB quantizer with palette extraction
+export type GifQualityPreset = 'compact' | 'web' | 'high';
+
+export interface GifPresetConfig {
+  fps: number;
+  maxDimension: number;
+  maxColors: number;
+  description: string;
+}
+
+export const GIF_QUALITY_PRESETS: Record<GifQualityPreset, GifPresetConfig> = {
+  compact: {
+    fps: 12,
+    maxDimension: 640,
+    maxColors: 128,
+    description: 'Compact (<5 MB, 12fps, 640px)'
+  },
+  web: {
+    fps: 15,
+    maxDimension: 720,
+    maxColors: 192,
+    description: 'Web (15fps, 720px)'
+  },
+  high: {
+    fps: 20,
+    maxDimension: 840,
+    maxColors: 256,
+    description: 'High Quality (20fps, 840px)'
+  }
+};
+
+// Fast adaptive RGB quantizer with palette extraction and variable color depth (e.g. 128 or 256 colors)
 function quantizeFrame(
   rgba: Uint8ClampedArray,
   width: number,
-  height: number
+  height: number,
+  maxColors = 128
 ): { indexed: Uint8Array; palette: number[] } {
   const numPixels = width * height;
   const indexed = new Uint8Array(numPixels);
@@ -66,10 +100,11 @@ function quantizeFrame(
     colorCounts.set(key, (colorCounts.get(key) || 0) + 1);
   }
 
-  // Sort by popularity and select top 256 colors
+  // Sort by popularity and select top maxColors (clamped 2..256)
+  const effectiveMaxColors = Math.min(256, Math.max(2, maxColors));
   const sorted = Array.from(colorCounts.entries())
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 256);
+    .slice(0, effectiveMaxColors);
 
   // Fallback if image has fewer colors
   const palette: number[] = [];
@@ -134,6 +169,25 @@ function quantizeFrame(
   return { indexed, palette };
 }
 
+// Frame similarity check for GIF frame deduplication.
+// Compares RGB channels of adjacent frames; returns true if pixel differences are below threshold.
+function areFramesSimilar(prev: Uint8ClampedArray, curr: Uint8ClampedArray, threshold = 0.002): boolean {
+  if (prev.length !== curr.length) return false;
+  let diffCount = 0;
+  const maxDiff = Math.floor((prev.length / 4) * threshold);
+
+  for (let i = 0; i < prev.length; i += 4) {
+    const dr = Math.abs(prev[i] - curr[i]);
+    const dg = Math.abs(prev[i + 1] - curr[i + 1]);
+    const db = Math.abs(prev[i + 2] - curr[i + 2]);
+    if (dr > 4 || dg > 4 || db > 4) {
+      diffCount++;
+      if (diffCount > maxDiff) return false;
+    }
+  }
+  return true;
+}
+
 export class HardwareGifExporter {
   private renderer: StudioRenderer;
 
@@ -169,10 +223,18 @@ export class HardwareGifExporter {
       showOutroCard,
       outroHeadline,
       outroCtaText,
-      fps = 20,
-      maxDimension = 840,
+      qualityPreset = 'compact',
+      fps: explicitFps,
+      maxDimension: explicitMaxDimension,
+      maxColors: explicitMaxColors,
+      enableDeduplication = true,
       onProgress
     } = options;
+
+    const presetConfig = GIF_QUALITY_PRESETS[qualityPreset] || GIF_QUALITY_PRESETS.compact;
+    const fps = explicitFps ?? presetConfig.fps;
+    const maxDimension = explicitMaxDimension ?? presetConfig.maxDimension;
+    const maxColors = explicitMaxColors ?? presetConfig.maxColors;
 
     const { width: fullW, height: fullH } = getAspectDimensions(aspectRatio, 1920);
     const scale = maxDimension / Math.max(fullW, fullH);
@@ -229,6 +291,22 @@ export class HardwareGifExporter {
       );
       springCamera.snapTo(firstTarget);
     }
+
+    // Frame deduplication state machine:
+    // When adjacent frames are visual duplicates, accumulate their delay instead of encoding redundant frames.
+    let pendingFrameData: Uint8ClampedArray | null = null;
+    let pendingDelayHundredths = 0;
+
+    const flushPendingFrame = () => {
+      if (!pendingFrameData) return;
+      const { indexed, palette } = quantizeFrame(pendingFrameData, outW, outH, maxColors);
+      gifWriter.addFrame(0, 0, outW, outH, indexed as unknown as number[], {
+        palette,
+        delay: Math.min(65535, pendingDelayHundredths)
+      });
+      pendingFrameData = null;
+      pendingDelayHundredths = 0;
+    };
 
     for (let f = 0; f < totalFrames; f++) {
       const currentMs = timestamps[f];
@@ -296,12 +374,14 @@ export class HardwareGifExporter {
       downscaleCtx.drawImage(exportCanvas, 0, 0, outW, outH);
       const imgData = downscaleCtx.getImageData(0, 0, outW, outH).data;
 
-      // Quantize & add frame to GIF
-      const { indexed, palette } = quantizeFrame(imgData, outW, outH);
-      gifWriter.addFrame(0, 0, outW, outH, indexed as unknown as number[], {
-        palette,
-        delay: delayHundredths
-      });
+      if (enableDeduplication && pendingFrameData && areFramesSimilar(pendingFrameData, imgData)) {
+        // Increment delay of pending frame rather than writing a duplicate frame
+        pendingDelayHundredths += delayHundredths;
+      } else {
+        flushPendingFrame();
+        pendingFrameData = new Uint8ClampedArray(imgData);
+        pendingDelayHundredths = delayHundredths;
+      }
 
       if (f % 5 === 0) {
         await new Promise((r) => setTimeout(r, 1));
@@ -312,6 +392,9 @@ export class HardwareGifExporter {
         onProgress(percent, f + 1, totalFrames);
       }
     }
+
+    // Flush any pending trailing frame
+    flushPendingFrame();
 
     if (onProgress) {
       onProgress(100, totalFrames, totalFrames);

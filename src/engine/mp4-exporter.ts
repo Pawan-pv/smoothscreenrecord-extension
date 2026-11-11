@@ -42,14 +42,82 @@ export interface ExportOptions {
   showOutroCard?: boolean;
   outroHeadline?: string;
   outroCtaText?: string;
+  targetWidth?: number;
   onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
 }
 
 export class HardwareMp4Exporter {
   private renderer: StudioRenderer;
 
+  /** Hard safety limit for a single video seek. Exceeding it is an error, never a silent wrong frame. */
+  private static readonly SEEK_TIMEOUT_MS = 2000;
+
   constructor() {
     this.renderer = new StudioRenderer();
+  }
+
+  /**
+   * Waits until the video element really holds the frame at `targetTimeSec`.
+   *
+   * The previous implementation raced `seeked` / `requestVideoFrameCallback`
+   * against a 25ms timer. Under load (e.g. 4x CPU throttling) the timer won
+   * and the encoder silently wrote the PREVIOUS frame, producing duplicated
+   * frames in the export. Now we wait for the real frame and throw a visible
+   * error when the seek does not complete within 2 seconds.
+   */
+  private async seekToFrame(video: HTMLVideoElement, targetTimeSec: number): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let rafHandle: number | null = null;
+      let timer: number | null = null;
+
+      const cleanup = () => {
+        video.removeEventListener('seeked', onSeeked);
+        if (rafHandle !== null && typeof (video as any).cancelVideoFrameCallback === 'function') {
+          try { (video as any).cancelVideoFrameCallback(rafHandle); } catch { /* ignore */ }
+        }
+        if (timer !== null) clearTimeout(timer);
+      };
+
+      const succeed = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+
+      const fail = (reason: string) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error(reason));
+      };
+
+      const onSeeked = () => {
+        if (settled) return;
+        // `seeked` guarantees the decoder produced the frame for the new
+        // currentTime. requestVideoFrameCallback additionally guarantees the
+        // frame was presented to the compositor.
+        if (typeof (video as any).requestVideoFrameCallback === 'function') {
+          rafHandle = (video as any).requestVideoFrameCallback(() => succeed());
+        } else {
+          succeed();
+        }
+      };
+
+      video.addEventListener('seeked', onSeeked);
+      timer = window.setTimeout(() => {
+        fail(
+          `Seek timeout: the video frame at ${targetTimeSec.toFixed(3)}s was not presented within ${HardwareMp4Exporter.SEEK_TIMEOUT_MS}ms.`
+        );
+      }, HardwareMp4Exporter.SEEK_TIMEOUT_MS);
+
+      try {
+        video.currentTime = targetTimeSec;
+      } catch (err) {
+        fail(`Seek failed at ${targetTimeSec.toFixed(3)}s: ${(err as any)?.message || err}`);
+      }
+    });
   }
 
   public async exportMp4(options: ExportOptions): Promise<Blob> {
@@ -71,14 +139,42 @@ export class HardwareMp4Exporter {
       onProgress
     } = options;
 
-    const { width: outW, height: outH } = getAspectDimensions(aspectRatio, 1920);
+    const sourceW = (options.metadata?.width && options.metadata.width > 0) ? options.metadata.width : 1920;
+    const targetBaseW = options.targetWidth || sourceW;
+    const { width: outW, height: outH } = getAspectDimensions(aspectRatio, targetBaseW);
 
     // Create offscreen export canvas
     const exportCanvas = document.createElement('canvas');
     exportCanvas.width = outW;
     exportCanvas.height = outH;
 
-    const video = videoSource;
+    let video: HTMLVideoElement | HTMLCanvasElement = videoSource;
+    let exportVideoUrl: string | null = null;
+    let attachedExportVideo: HTMLVideoElement | null = null;
+    if (videoBlob) {
+      try {
+        const dedicatedVideo = document.createElement('video');
+        dedicatedVideo.muted = true;
+        dedicatedVideo.playsInline = true;
+        dedicatedVideo.preload = 'auto';
+        // The element must live in the document, otherwise the compositor never
+        // presents its frames and requestVideoFrameCallback never fires.
+        dedicatedVideo.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1;';
+        document.body.appendChild(dedicatedVideo);
+        attachedExportVideo = dedicatedVideo;
+        exportVideoUrl = URL.createObjectURL(videoBlob);
+        dedicatedVideo.src = exportVideoUrl;
+        await new Promise<void>((resolve) => {
+          if (dedicatedVideo.readyState >= 1) return resolve();
+          dedicatedVideo.onloadedmetadata = () => resolve();
+          dedicatedVideo.onerror = () => resolve();
+          setTimeout(resolve, 1000);
+        });
+        video = dedicatedVideo;
+      } catch (err) {
+        console.warn('[SmoothStudio MP4 Exporter] Could not create dedicated video element:', err);
+      }
+    }
 
     const fps = 60;
     const frameIntervalMs = 1000 / fps;
@@ -112,8 +208,8 @@ export class HardwareMp4Exporter {
     // Check if WebCodecs VideoEncoder is available
     const hasWebCodecs = typeof VideoEncoder !== 'undefined';
 
-    if (hasWebCodecs) {
-      try {
+    try {
+      if (hasWebCodecs) {
         return await this.exportWithWebCodecs({
           video,
           onRenderCanvasFrame,
@@ -139,49 +235,54 @@ export class HardwareMp4Exporter {
           captionStyle: options.captionStyle,
           captionBackdrop: options.captionBackdrop,
           showCaptions: options.showCaptions,
-           showIntroCard: options.showIntroCard,
-           introHeadline: options.introHeadline,
-           introSubheadline: options.introSubheadline,
-           showOutroCard: options.showOutroCard,
-           outroHeadline: options.outroHeadline,
-           outroCtaText: options.outroCtaText,
+          showIntroCard: options.showIntroCard,
+          introHeadline: options.introHeadline,
+          introSubheadline: options.introSubheadline,
+          showOutroCard: options.showOutroCard,
+          outroHeadline: options.outroHeadline,
+          outroCtaText: options.outroCtaText,
           onProgress
         });
-      } catch (err) {
-        console.warn('[SmoothStudio MP4 Exporter] WebCodecs hardware export failed, using media recorder fallback:', err);
+      }
+
+      // Fallback exporter only if WebCodecs is completely unavailable
+      return await this.exportWithCanvasStream({
+        video,
+        onRenderCanvasFrame,
+        exportCanvas,
+        durationMs,
+        timelineTimestamps,
+        pills,
+        preset,
+        aspectRatio,
+        cursorEngine,
+        keystrokes,
+        showSpotlight,
+        showCursor,
+        showHud,
+        metadata: options.metadata,
+        cursorTheme: options.cursorTheme,
+        cursorScale: options.cursorScale,
+        captions: options.captions,
+        captionStyle: options.captionStyle,
+        captionBackdrop: options.captionBackdrop,
+        showCaptions: options.showCaptions,
+        showIntroCard: options.showIntroCard,
+        introHeadline: options.introHeadline,
+        introSubheadline: options.introSubheadline,
+        showOutroCard: options.showOutroCard,
+        outroHeadline: options.outroHeadline,
+        outroCtaText: options.outroCtaText,
+        onProgress
+      });
+    } finally {
+      if (exportVideoUrl) {
+        URL.revokeObjectURL(exportVideoUrl);
+      }
+      if (attachedExportVideo) {
+        try { attachedExportVideo.remove(); } catch { /* ignore */ }
       }
     }
-
-    // Fallback exporter
-    return await this.exportWithCanvasStream({
-      video,
-      onRenderCanvasFrame,
-      exportCanvas,
-      durationMs,
-      timelineTimestamps,
-      pills,
-      preset,
-      aspectRatio,
-      cursorEngine,
-      keystrokes,
-      showSpotlight,
-      showCursor,
-      showHud,
-      metadata: options.metadata,
-      cursorTheme: options.cursorTheme,
-      cursorScale: options.cursorScale,
-      captions: options.captions,
-      captionStyle: options.captionStyle,
-      captionBackdrop: options.captionBackdrop,
-      showCaptions: options.showCaptions,
-      showIntroCard: options.showIntroCard,
-      introHeadline: options.introHeadline,
-      introSubheadline: options.introSubheadline,
-      showOutroCard: options.showOutroCard,
-      outroHeadline: options.outroHeadline,
-      outroCtaText: options.outroCtaText,
-      onProgress
-    });
   }
 
   private async exportWithWebCodecs(params: {
@@ -251,7 +352,12 @@ export class HardwareMp4Exporter {
       onProgress
     } = params;
 
+    if (totalFrames <= 0) {
+      throw new Error('No timeline frames to encode into MP4.');
+    }
+
     let isFinalized = false;
+    let encodedChunksCount = 0;
     const muxer = new Muxer({
       target: new ArrayBufferTarget(),
       video: {
@@ -266,9 +372,16 @@ export class HardwareMp4Exporter {
       output: (chunk, meta) => {
         if (!isFinalized) {
           try {
-            muxer.addVideoChunk(chunk, meta);
-          } catch {
-            // Closed or finalized
+            encodedChunksCount++;
+            const data = new Uint8Array(chunk.byteLength);
+            chunk.copyTo(data);
+            const durationMicros = (typeof chunk.duration === 'number' && Number.isFinite(chunk.duration) && chunk.duration > 0)
+              ? chunk.duration
+              : Math.round((1 / fps) * 1_000_000);
+
+            muxer.addVideoChunkRaw(data, chunk.type, chunk.timestamp, durationMicros, meta);
+          } catch (muxErr) {
+            console.error('[SmoothStudio VideoEncoder Output Mux Error]', muxErr);
           }
         }
       },
@@ -278,12 +391,39 @@ export class HardwareMp4Exporter {
       }
     });
 
-    // Configure H.264 hardware profile with low-latency direct GPU encoding
+    const is4K = outW >= 3840 || outH >= 2160;
+    let targetBitrate = 14_000_000;
+    if (is4K) {
+      targetBitrate = 38_000_000; // 4K60 ~38 Mbps (35-40 Mbps)
+    } else if (outW >= 2560 || outH >= 1440) {
+      targetBitrate = 22_000_000; // 1440p ~22 Mbps
+    } else if (outW >= 1920 || outH >= 1080) {
+      targetBitrate = 14_000_000; // 1080p ~14 Mbps
+    } else {
+      targetBitrate = 6_000_000;  // 720p ~6 Mbps
+    }
+    let chosenCodec = is4K ? 'avc1.640033' : 'avc1.640028';
+    try {
+      const support = await VideoEncoder.isConfigSupported({
+        codec: chosenCodec,
+        width: outW,
+        height: outH,
+        bitrate: targetBitrate,
+        framerate: fps
+      });
+      if (!support.supported) {
+        chosenCodec = is4K ? 'avc1.4d0033' : 'avc1.4D002A';
+      }
+    } catch {
+      chosenCodec = is4K ? 'avc1.4d0033' : 'avc1.4D002A';
+    }
+
+    // Configure H.264 profile
     videoEncoder.configure({
-      codec: 'avc1.640028',
+      codec: chosenCodec,
       width: outW,
       height: outH,
-      bitrate: 14_000_000,
+      bitrate: targetBitrate,
       framerate: fps,
       hardwareAcceleration: 'prefer-hardware',
       latencyMode: 'realtime'
@@ -320,17 +460,11 @@ export class HardwareMp4Exporter {
 
       // Seek video to frame timestamp or render canvas frame
       if (video instanceof HTMLVideoElement) {
-        video.currentTime = currentMs / 1000;
-        await new Promise<void>((r) => {
-          const onSeeked = () => {
-            video.removeEventListener('seeked', onSeeked);
-            r();
-          };
-          video.addEventListener('seeked', onSeeked, { once: true });
-          if (Math.abs(video.currentTime - currentMs / 1000) < 0.01) {
-            r();
-          }
-        });
+        const targetTimeSec = currentMs / 1000;
+        if (Math.abs(video.currentTime - targetTimeSec) > 0.005) {
+          video.currentTime = targetTimeSec;
+          await this.seekToFrame(video, targetTimeSec);
+        }
       } else if (onRenderCanvasFrame) {
         onRenderCanvasFrame(currentMs);
       }
@@ -367,24 +501,30 @@ export class HardwareMp4Exporter {
 
       // Encode frame
       const frameTimestampMicroseconds = Math.round((f / fps) * 1_000_000);
+      const frameDurationMicroseconds = Math.round((1 / fps) * 1_000_000);
       const videoFrame = new VideoFrame(exportCanvas, {
-        timestamp: frameTimestampMicroseconds
+        timestamp: frameTimestampMicroseconds,
+        duration: frameDurationMicroseconds
       });
 
-      const isKeyFrame = f % 120 === 0;
+      const isKeyFrame = f === 0 || f % 120 === 0;
       videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
       videoFrame.close();
 
-      // Yield to the event loop and apply backpressure if encoder queue is filling
-      if (videoEncoder.encodeQueueSize > 5) {
-        while (videoEncoder.encodeQueueSize > 2) {
-          await new Promise((r) => setTimeout(r, 4));
+      // Yield to the event loop and apply backpressure only if encoder queue is filling excessively
+      if (videoEncoder.encodeQueueSize > 30) {
+        while (videoEncoder.encodeQueueSize > 15) {
+          await new Promise((r) => setTimeout(r, 2));
         }
-      } else if (f % 10 === 0) {
-        await new Promise((r) => setTimeout(r, 1));
       }
 
-      if (f % 15 === 0 && onProgress) {
+      if (f % 60 === 0) {
+        const percent = Math.round(((f + 1) / totalFrames) * 100);
+        console.log(`[SmoothStudio MP4 Exporter] Encoded frame ${f}/${totalFrames} (${percent}%)`);
+        if (onProgress) {
+          onProgress(percent, f + 1, totalFrames);
+        }
+      } else if (f % 15 === 0 && onProgress) {
         const percent = Math.round(((f + 1) / totalFrames) * 100);
         onProgress(percent, f + 1, totalFrames);
       }
@@ -408,6 +548,10 @@ export class HardwareMp4Exporter {
       ]);
     } catch (flushErr) {
       console.warn('[SmoothStudio MP4 Exporter] Flush completed or notice:', flushErr);
+    }
+
+    if (encodedChunksCount === 0) {
+      throw new Error(`VideoEncoder did not produce any encoded video chunks for ${totalFrames} frames.`);
     }
 
     isFinalized = true;
@@ -486,9 +630,22 @@ export class HardwareMp4Exporter {
 
     const stream = exportCanvas.captureStream(60);
     const chunks: Blob[] = [];
+    let fallbackBps = 14_000_000;
+    const canW = exportCanvas.width;
+    const canH = exportCanvas.height;
+    if (canW >= 3840 || canH >= 2160) {
+      fallbackBps = 38_000_000;
+    } else if (canW >= 2560 || canH >= 1440) {
+      fallbackBps = 22_000_000;
+    } else if (canW >= 1920 || canH >= 1080) {
+      fallbackBps = 14_000_000;
+    } else {
+      fallbackBps = 6_000_000;
+    }
+
     const mediaRecorder = new MediaRecorder(stream, {
       mimeType: MediaRecorder.isTypeSupported('video/webm; codecs=vp9') ? 'video/webm; codecs=vp9' : 'video/webm',
-      videoBitsPerSecond: 12_000_000
+      videoBitsPerSecond: fallbackBps
     });
 
     mediaRecorder.ondataavailable = (e) => {
@@ -527,7 +684,9 @@ export class HardwareMp4Exporter {
       const camera = f === 0 ? targetCamera : springCameraFallback.update(1 / 60);
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
       if (video instanceof HTMLVideoElement) {
-        video.currentTime = currentMs / 1000;
+        const targetTimeSec = currentMs / 1000;
+        video.currentTime = targetTimeSec;
+        await this.seekToFrame(video, targetTimeSec);
       } else if (onRenderCanvasFrame) {
         onRenderCanvasFrame(currentMs);
       }

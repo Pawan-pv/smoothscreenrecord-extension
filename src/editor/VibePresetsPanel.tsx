@@ -21,7 +21,8 @@ import {
   Subtitles,
   Scissors,
   Layers,
-  RotateCcw
+  RotateCcw,
+  Info
 } from 'lucide-react';
 
 interface VibePresetsPanelProps {
@@ -87,7 +88,7 @@ export function VibePresetsPanel({
   onToggleFollowCursor,
   soundEnabled,
   onToggleSound,
-  autoCutSilences = true,
+  autoCutSilences = false,
   onToggleAutoCutSilences,
   onUpdatePresetBorderRadius,
   cursorTheme,
@@ -624,12 +625,24 @@ export function VibePresetsPanel({
         <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
           <span>Vector 4K Cursor & Blur</span>
           <input
+            id="vector-cursor-checkbox"
             type="checkbox"
             checked={showCursor}
             onChange={(e) => onToggleCursor(e.target.checked)}
-            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+            disabled={metadata?.displaySurface === 'window' || metadata?.displaySurface === 'monitor'}
+            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0 disabled:opacity-40"
+            title={metadata?.displaySurface === 'window' || metadata?.displaySurface === 'monitor' ? 'Disabled in window/monitor capture (native cursor baked by OS)' : undefined}
           />
         </label>
+
+        {(metadata?.displaySurface === 'window' || metadata?.displaySurface === 'monitor') && (
+          <div id="cursor-mode-hint" className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-[11px] text-indigo-200 flex items-start gap-2 leading-relaxed">
+            <Info className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
+            <span>
+              For the smooth cinematic cursor, share a browser tab.
+            </span>
+          </div>
+        )}
 
         <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
           <span>3D Keystroke HUD (Cmd+K)</span>
@@ -670,6 +683,7 @@ export function VibePresetsPanel({
             Auto-Cut Silences (&gt;1.2s)
           </span>
           <input
+            id="autocut-silences-checkbox"
             type="checkbox"
             checked={!!autoCutSilences}
             onChange={(e) => onToggleAutoCutSilences?.(e.target.checked)}

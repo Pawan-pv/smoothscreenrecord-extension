@@ -288,7 +288,17 @@ export class AudioProcessor {
 
 /**
  * Pure silence detector over one channel of PCM: pauses of at least
- * `minSilenceDurationMs` below `dbThreshold`, without clicks/keystrokes.
+ * `minSilenceDurationMs` during which the user neither clicked nor typed.
+ *
+ * QA-021: a REAL microphone in a real room never delivers digital silence: the
+ * AGC lifts the room noise, so the pauses of a voice-over sit 20-25 dB under
+ * the speech but well above a fixed -42 dBFS (measured: speech -15 dBFS,
+ * pauses -33..-41 dBFS). The threshold therefore adapts to the recording: it is
+ * the midpoint between the recording's speech level (90th percentile of the
+ * 50 ms windows) and its quiet level (10th percentile) whenever the two differ
+ * by at least 12 dB, and never stricter than `dbThreshold`. Without that
+ * contrast (nobody speaks) the fixed `dbThreshold` applies, so room noise alone
+ * is never cut. A single blip of up to 100 ms does not end a pause.
  */
 export function detectSilenceSegments(
   channelData: Float32Array,
@@ -301,63 +311,71 @@ export function detectSilenceSegments(
   const windowSize = Math.floor(sampleRate * 0.05); // 50ms window
   const totalWindows = Math.floor(channelData.length / windowSize);
   const totalMs = (channelData.length * 1000) / sampleRate;
+  const windowMs = (windowSize * 1000) / sampleRate;
+  const MIN_CONTRAST_DB = 12;
+  const MAX_BLIP_WINDOWS = 2; // 100 ms
 
-  const silences: SilenceSegment[] = [];
-  let silenceStartMs: number | null = null;
-
+  const levels = new Float32Array(totalWindows);
   for (let w = 0; w < totalWindows; w++) {
     const startIdx = w * windowSize;
     let sumSquares = 0;
-
     for (let i = 0; i < windowSize; i++) {
       const val = channelData[startIdx + i];
       sumSquares += val * val;
     }
-
     const rms = Math.sqrt(sumSquares / windowSize);
-    const db = rms > 0.00001 ? 20 * Math.log10(rms) : -100;
-    const currentMs = (w * windowSize * 1000) / sampleRate;
+    levels[w] = rms > 0.00001 ? 20 * Math.log10(rms) : -100;
+  }
 
-    if (db < dbThreshold) {
-      if (silenceStartMs === null) {
-        silenceStartMs = currentMs;
-      }
-    } else {
-      if (silenceStartMs !== null) {
-        const duration = currentMs - silenceStartMs;
-        if (duration >= minSilenceDurationMs) {
-          // Check if user was clicking or typing during this pause
-          const hasActivity =
-            clicks.some((c) => c.t >= silenceStartMs! && c.t <= currentMs) ||
-            keystrokes.some((k) => k.t >= silenceStartMs! && k.t <= currentMs);
+  let threshold = dbThreshold;
+  if (totalWindows >= 20) {
+    const sorted = Array.from(levels).sort((x, y) => x - y);
+    const quiet = sorted[Math.floor(sorted.length * 0.1)];
+    const speech = sorted[Math.floor(sorted.length * 0.9)];
+    if (speech - quiet >= MIN_CONTRAST_DB) {
+      threshold = Math.max(dbThreshold, (quiet + speech) / 2);
+    }
+  }
 
-          if (!hasActivity) {
-            silences.push({
-              id: 'silence_' + Math.round(silenceStartMs),
-              startTime: Math.round(silenceStartMs),
-              endTime: Math.round(currentMs),
-              duration: Math.round(duration),
-              markedForCut: true
-            });
-          }
-        }
-        silenceStartMs = null;
+  const silences: SilenceSegment[] = [];
+  const push = (startMs: number, endMs: number) => {
+    const duration = endMs - startMs;
+    if (duration < minSilenceDurationMs) return;
+    // Check if user was clicking or typing during this pause
+    const hasActivity =
+      clicks.some((c) => c.t >= startMs && c.t <= endMs) ||
+      keystrokes.some((k) => k.t >= startMs && k.t <= endMs);
+    if (hasActivity) return;
+    silences.push({
+      id: 'silence_' + Math.round(startMs),
+      startTime: Math.round(startMs),
+      endTime: Math.round(endMs),
+      duration: Math.round(duration),
+      markedForCut: true
+    });
+  };
+
+  let silenceStartW: number | null = null;
+  let loudRun = 0;
+  for (let w = 0; w < totalWindows; w++) {
+    if (levels[w] < threshold) {
+      if (silenceStartW === null) silenceStartW = w;
+      loudRun = 0;
+    } else if (silenceStartW !== null) {
+      loudRun++;
+      if (loudRun > MAX_BLIP_WINDOWS) {
+        // the pause ended where the loud run began
+        push(silenceStartW * windowMs, (w - loudRun + 1) * windowMs);
+        silenceStartW = null;
+        loudRun = 0;
       }
     }
   }
 
   // Flush trailing silence
-  if (silenceStartMs !== null) {
-    const duration = totalMs - silenceStartMs;
-    if (duration >= minSilenceDurationMs) {
-      silences.push({
-        id: 'silence_' + Math.round(silenceStartMs),
-        startTime: Math.round(silenceStartMs),
-        endTime: Math.round(totalMs),
-        duration: Math.round(duration),
-        markedForCut: true
-      });
-    }
+  if (silenceStartW !== null) {
+    const endMs = loudRun > 0 ? (totalWindows - loudRun) * windowMs : totalMs;
+    push(silenceStartW * windowMs, endMs);
   }
 
   return silences;

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Injection Fixture - SmoothStudio QA</title>
+<style>
+  body { margin:0; padding:40px; background:#101216; color:#eef1f6;
+    font-family:"Segoe UI", system-ui, sans-serif; }
+  h1 { font-size:30px; margin:0 0 10px; }
+  #payload-text { font-size:18px; border:1px solid #3a4252; border-radius:8px;
+    padding:12px; background:#0b0d12; white-space:pre-wrap; word-break:break-all; }
+  button { font-size:20px; padding:12px 20px; border-radius:10px; margin-top:20px;
+    border:1px solid #3f4757; background:#232936; color:#fff; cursor:pointer; }
+  #window-probe { margin-top:20px; font-family:Consolas, monospace; font-size:15px; color:#7dd3fc; }
+</style>
+</head>
+<body>
+  <h1 id="page-title">Injection fixture</h1>
+
+  <p>The page title and the button caption below contain literal script payloads.
+     They must be shown as TEXT and never executed.</p>
+
+  <div id="payload-text"></div>
+
+  <button id="payload-button"></button>
+
+  <div id="window-probe">window.__probe = undefined</div>
+
+<script>
+(function () {
+  var PAYLOAD_SCRIPT = '</script><script>alert(1)</script>';
+  var PAYLOAD_IMG = '<img src=x onerror=alert(1)>';
+
+  // Title carries the payload as a literal string.
+  document.title = 'Injection Fixture ' + PAYLOAD_SCRIPT + ' ' + PAYLOAD_IMG;
+
+  // Visible text carries the payloads as literal strings.
+  document.getElementById('payload-text').textContent =
+    'title payload: ' + PAYLOAD_SCRIPT + '\nimg payload: ' + PAYLOAD_IMG;
+
+  document.getElementById('payload-button').textContent =
+    'Click me ' + PAYLOAD_SCRIPT + ' ' + PAYLOAD_IMG;
+
+  // Probe: if anything on this page executes script, this flag flips.
+  window.__probe = 'not-executed';
+  document.getElementById('window-probe').textContent = 'window.__probe = ' + window.__probe;
+})();
+</script>
+</body>
+</html>

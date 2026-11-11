@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Static Fixture - SmoothStudio QA</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #101216; color: #f5f5f5;
+    font-family: "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+  body { padding: 24px; }
+  h1 { font-size: 26px; margin: 0 0 12px; }
+  p { font-size: 18px; color: #c3c9d4; line-height: 1.6; }
+  .box { border: 1px solid #2c313c; background: #1b1f27; border-radius: 10px;
+    padding: 18px 22px; margin-bottom: 14px; }
+  code { font-family: Consolas, monospace; color: #7dd3fc; }
+</style>
+</head>
+<body>
+  <h1>Static fixture — no animation at all</h1>
+  <div class="box" id="box-1">
+    <p>This page never changes. No requestAnimationFrame loop, no CSS transition,
+       no timer, no video, no canvas repaint. It exists so the QA suite can prove
+       that the recorder keeps a continuous timeline even when the captured
+       surface never produces a new frame.</p>
+  </div>
+  <div class="box" id="box-2">
+    <p>Static content only. <code>const x = 1;</code></p>
+  </div>
+</body>
+</html>

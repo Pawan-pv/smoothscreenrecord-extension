@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SmoothStudio Sync Flash Target</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #flash { position: fixed; inset: 0; background: #000; }
+  #flash.on { background: #fff; }
+</style>
+</head>
+<body>
+<!-- The whole viewport flashes white for 300ms every 3000ms. Used to measure
+     video event times in recordings/exports (A/V sync tests). -->
+<div id="flash"></div>
+<script>
+  const el = document.getElementById('flash');
+  const PERIOD = 3000, ON = 300;
+  const t0 = performance.now();
+  function tick() {
+    const phase = (performance.now() - t0) % PERIOD;
+    el.classList.toggle('on', phase < ON);
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+</script>
+</body>
+</html>

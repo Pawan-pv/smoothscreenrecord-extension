@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { AddressInfo } from 'net';
 import { REPO } from './extension';
+import { prepareSpeaker } from './speaker';
 
 export const FFMPEG = path.join(REPO, 'ffmpeg.exe');
 
@@ -37,6 +38,8 @@ export interface RecordedSession {
   target: Page;
   editor: Page;
   wallClockSec: number;
+  /** Seconds between "recording live" and the start of the speaker audio (null without speakerWav). */
+  audioOffsetSec: number | null;
 }
 
 /**
@@ -73,15 +76,22 @@ export async function recordSession(
   extensionId: string,
   targetUrl: string,
   seconds: number,
-  opts: { includeMic: boolean }
+  opts: { includeMic: boolean; speakerWav?: string }
 ): Promise<RecordedSession> {
+  const speaker = opts.speakerWav ? await prepareSpeaker(opts.speakerWav) : null;
   const { target, editor, startedAt } = await startRecording(context, extensionId, targetUrl, opts);
   await expect(target.locator('#smoothstudio-stop-btn')).toBeVisible({ timeout: 15000 });
+  let audioOffsetSec: number | null = null;
+  if (speaker) {
+    audioOffsetSec = ((await speaker.go()) - startedAt) / 1000;
+    console.log(`[session] speaker playback started ${audioOffsetSec.toFixed(3)} s after the recording went live`);
+  }
   await target.waitForTimeout(seconds * 1000);
   await target.locator('#smoothstudio-stop-btn').click();
   const wallClockSec = (Date.now() - startedAt) / 1000;
+  speaker?.stop();
   await expect(editor.locator('#smoothstudio-source-video')).toHaveCount(1, { timeout: 60000 });
-  return { target, editor, wallClockSec };
+  return { target, editor, wallClockSec, audioOffsetSec };
 }
 
 /** silence_start / silence_end times (seconds) from ffmpeg silencedetect. */

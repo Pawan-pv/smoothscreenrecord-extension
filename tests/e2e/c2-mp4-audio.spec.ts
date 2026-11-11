@@ -1,13 +1,14 @@
 // C2: the exported MP4 must contain the recording's audio (AAC), in sync with
 // the video, and auto-cut must remove the same span from audio AND video.
-// Real Chromium + real extension + real screen capture; mic fed from the fixture WAV.
+// Real Chromium + real extension + real screen capture + REAL microphone: the fixture
+// WAV is played through the real speakers (QA-020: no fake capture device).
 // Visual events: tests/fixtures/sync-flash.html flashes white every 3s.
-// Audio events: the fixture WAV has silent gaps at 5-7s and 13-15s.
+// Audio events: the speech-like fixture WAV has silent gaps at 4-6s and 14-16s (WAV time).
 import { test, expect } from '@playwright/test';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
-import { launchExtension, readOpfsFile, ffprobeStreams, writeScratch, FFPROBE } from './helpers/extension';
+import { launchExtension, readOpfsFile, ffprobeStreams, writeScratch, FFPROBE, SPEECH_WAV } from './helpers/extension';
 import { serveFixtures, recordSession, detectSilences, detectFlashOnsets, ffprobeRaw } from './helpers/session';
 
 const FRAME = 1 / 60;
@@ -38,9 +39,9 @@ function nearest(values: number[], t: number): number {
 test('C2: MP4 export contains AAC audio in sync with video; auto-cut cuts audio and video together', async () => {
   test.setTimeout(900000);
   const site = await serveFixtures();
-  const ext = await launchExtension({ fakeMicFile: true });
+  const ext = await launchExtension({ realMic: true, raiseWindow: true });
   try {
-    const { editor } = await recordSession(ext.context, ext.extensionId, `${site.base}/sync-flash.html`, 20, { includeMic: true });
+    const { editor } = await recordSession(ext.context, ext.extensionId, `${site.base}/sync-flash.html`, 20, { includeMic: true, speakerWav: SPEECH_WAV });
     editor.on('console', (m) => { if (m.type() === 'error' || /Exporter|Seek|Muxed/.test(m.text())) console.log(`[editor ${m.type()}] ${m.text().slice(0, 300)}`); });
     editor.on('crash', () => console.log('[editor] PAGE CRASHED'));
     editor.on('close', () => console.log('[editor] page closed'));

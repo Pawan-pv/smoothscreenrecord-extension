@@ -16,7 +16,7 @@ import { test, expect } from '@playwright/test';
 import path from 'path';
 import fs from 'fs';
 import {
-  AUDIO, launchApp, serveFixtures, recordPage, mediaInfo, detectSilences,
+  AUDIO, launchApp, serveFixtures, recordPage, mediaInfo, detectSilences, detectAudioOnset,
   saveRawRecording, outDir, collectPageProblems, streamEndTime
 } from './helpers/harness';
 
@@ -36,7 +36,9 @@ test.describe.serial('J1 tab recording + mic', () => {
       const session = await recordPage(app.context, app.extensionId, `${site.base}/clock.html`, {
         seconds: 20,
         includeMic: true,
-        target
+        target,
+        // QA-020: real mic + the fixture WAV through the real speakers
+        speakerWav: AUDIO.file
       });
 
       // ---- raw file --------------------------------------------------------
@@ -79,9 +81,12 @@ test.describe.serial('J1 tab recording + mic', () => {
 
       const durationSec = info.durationSec || 0;
       const starts = regions.map((r) => (parseFloat(r.left) / 100) * durationSec);
-      // the WAV's silences start at 4.0 s and 14.0 s; the recording starts a
-      // little before the WAV does, so allow +-300 ms
-      for (const expected of AUDIO.silences.map((s) => s[0])) {
+      // the WAV's silences start at 4.0 s and 14.0 s of the WAV, and the WAV
+      // starts audioOffsetSec after the recording went live (measured): +-300 ms
+      const offset = detectAudioOnset(rawPath!);
+      console.log(`J1 acoustic onset of the speaker WAV: ${offset}s (START line said ${session.audioOffsetSec}s)`);
+      expect(offset, 'the speaker audio must be audible in the real-mic recording').not.toBeNull();
+      for (const expected of AUDIO.silences.map((s) => s[0] + offset!)) {
         const hit = starts.find((s) => Math.abs(s - expected) < 0.3);
         expect(hit, `no silence detected near ${expected}s (detected ${JSON.stringify(starts)})`)
           .toBeTruthy();

@@ -16,11 +16,23 @@ if (!fs.existsSync(path.join(REPO, 'package.json'))) {
 export const DIST = path.join(REPO, 'dist');
 export const FFPROBE = path.join(REPO, 'ffprobe.exe');
 export const AUDIO_FIXTURE = path.join(REPO, 'tests', 'fixtures', 'test-audio.wav');
+/**
+ * QA-020: the speech-like fixture (2.00 s digital silences at 4-6 s and 14-16 s).
+ * Used for the real-mic journeys: test-audio.wav is STATIONARY noise, which the
+ * product's (correct) WebRTC noise suppression treats as room noise in a real room.
+ */
+export const SPEECH_WAV = path.join(REPO, 'tests', 'fixtures', 'audio', 'test.wav');
 export const TARGET_PAGE = path.join(REPO, 'tests', 'fixtures', 'test-page.html');
 
 export interface LaunchOptions {
-  /** Feed the microphone from AUDIO_FIXTURE. Only for mic/audio tests (rule 4). */
-  fakeMicFile?: boolean;
+  /**
+   * Mic journeys: grant the REAL microphone without a prompt. (QA-020: the fake
+   * capture device must never be used - it replaces the screen picture too.
+   * Play AUDIO_FIXTURE through the speakers with helpers/speaker.ts.)
+   */
+  realMic?: boolean;
+  /** Raise the browser window above every other window so the screen capture records it. */
+  raiseWindow?: boolean;
 }
 
 export async function launchExtension(opts: LaunchOptions = {}): Promise<{
@@ -37,28 +49,58 @@ export async function launchExtension(opts: LaunchOptions = {}): Promise<{
     `--load-extension=${DIST}`,
     // Auto-pick the entire screen in the getDisplayMedia picker (real capture, no fake device).
     '--auto-select-desktop-capture-source=Entire screen',
+    '--start-maximized',
   ];
-  if (opts.fakeMicFile) {
+  if (opts.realMic) {
     if (!fs.existsSync(AUDIO_FIXTURE)) {
       throw new Error(`Audio fixture missing: ${AUDIO_FIXTURE}. Run: python tests/fixtures/generate_audio.py`);
     }
-    args.push('--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
-      `--use-file-for-fake-audio-capture=${AUDIO_FIXTURE}`);
+    // Only the permission prompt is auto-accepted; the devices are real.
+    args.push('--use-fake-ui-for-media-stream');
   }
   const context = await chromium.launchPersistentContext(profile, {
     headless: false,
     channel: 'chromium',
+    viewport: null,
+    acceptDownloads: true,
     args,
   });
   let sw = context.serviceWorkers()[0];
   if (!sw) sw = await context.waitForEvent('serviceworker', { timeout: 20000 });
   const extensionId = sw.url().split('/')[2];
+  // Real screen capture records whatever is on top: raise the browser window
+  // (same helper as harness.ts) so the capture is the page under test.
+  const raise = (mode: 'top' | 'normal') => {
+    if (!opts.raiseWindow) return;
+    try {
+      execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        path.join(REPO, 'tests', 'e2e', 'helpers', 'raise-window.ps1'), '-ProfileDir', profile, '-Mode', mode],
+        { encoding: 'utf8', timeout: 20000 });
+    } catch (e) { console.log('[launchExtension] could not raise the window:', String(e).slice(0, 200)); }
+  };
+  raise('top');
   return {
     context,
     extensionId,
     cleanup: async () => {
-      await context.close();
-      fs.rmSync(profile, { recursive: true, force: true });
+      raise('normal');
+      // If the browser already died, report it but let the test's own error surface.
+      await context.close().catch((e) => console.log('[cleanup] context.close failed:', String(e).slice(0, 200)));
+      // Windows keeps the profile directory locked for a short while after the
+      // browser exits. Retry the delete so a teardown race cannot mask the
+      // real assertion failure that ended the test.
+      for (let attempt = 0; attempt < 10; attempt++) {
+        try {
+          fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+          return;
+        } catch (err) {
+          if (attempt === 9) {
+            console.log('[cleanup] profile delete failed:', String(err).slice(0, 200));
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 300));
+        }
+      }
     },
   };
 }

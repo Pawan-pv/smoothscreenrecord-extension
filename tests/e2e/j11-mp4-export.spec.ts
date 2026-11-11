@@ -34,8 +34,19 @@ test.describe.serial('J11 MP4 export', () => {
       const session = await recordPage(app.context, app.extensionId, `${site.base}/avsync.html`, {
         seconds: 20,
         includeMic: true,
-        target
+        target,
+        // QA-020: real mic + the fixture WAV through the real speakers
+        speakerWav: AUDIO.file
       });
+      // Diagnostics only: surface the exporter's own log lines, errors and crashes.
+      session.editor.on('console', (m) => {
+        if (m.type() === 'error' || m.type() === 'warning' || /Exporter|Seek|Muxed|AAC|audio/i.test(m.text())) {
+          console.log(`[editor ${m.type()}] ${m.text().slice(0, 300)}`);
+        }
+      });
+      session.editor.on('pageerror', (e) => console.log('[editor pageerror]', String(e.message).slice(0, 300)));
+      session.editor.on('crash', () => console.log('[editor] PAGE CRASHED'));
+      session.editor.on('close', () => console.log('[editor] page closed'));
       const rawPath = await saveRawRecording(session.editor, dir);
       expect(rawPath).toBeTruthy();
       const raw = mediaInfo(rawPath!);

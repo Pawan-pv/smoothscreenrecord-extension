@@ -14,6 +14,7 @@ import os from 'os';
 import path from 'path';
 import { AddressInfo } from 'net';
 import { fileURLToPath } from 'url';
+import { prepareSpeaker } from './speaker';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -90,6 +91,22 @@ export function detectSilences(file: string, noise = '-42dB', minDur = 0.5) {
   const starts = [...text.matchAll(/silence_start: (-?[\d.]+)/g)].map((m) => parseFloat(m[1]));
   const ends = [...text.matchAll(/silence_end: (-?[\d.]+)/g)].map((m) => parseFloat(m[1]));
   return starts.map((s, i) => ({ start: s, end: ends[i] ?? NaN }));
+}
+/**
+ * QA-020: the instant (s) at which the speaker-played fixture WAV becomes
+ * audible in a real-mic recording - the end of the leading room-quiet span.
+ * Measured by ffmpeg on the recording itself (independent of the product), so
+ * the playback latency of the OS player (~1 s measured) does not matter.
+ * Returns null when the recording does not start with a quiet span.
+ */
+export function detectAudioOnset(file: string, noise = '-30dB'): number | null {
+  const r = spawnSync(FFMPEG, ['-hide_banner', '-i', file, '-vn', '-af',
+    `silencedetect=noise=${noise}:d=0.2`, '-f', 'null', '-'], { encoding: 'utf8', maxBuffer: 1 << 28 });
+  const text = (r.stderr || '') + (r.stdout || '');
+  const s = /silence_start: (-?[\d.]+)/.exec(text);
+  const e = /silence_end: (-?[\d.]+)/.exec(text);
+  if (!s || !e || parseFloat(s[1]) > 0.1) return null;
+  return parseFloat(e[1]);
 }
 /** Extracts one frame as PNG. Output seeking (-ss after -i) is used on purpose:
  *  input seeking lands on the nearest keyframe, which can be hundreds of
@@ -335,11 +352,12 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<{
     // A separate app window (no browser chrome) that covers the whole screen.
     args.push(`--app=${opts.appUrl}`, '--window-position=0,0');
   }
-  if (opts.mic) {
-    // ONLY for mic journeys: the fake device replaces the microphone only.
-    // The captured video surface is never faked.
-    args.push('--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${AUDIO.file}`);
-  }
+  // QA-020: `mic` journeys use the REAL microphone. The old
+  // --use-fake-device-for-media-stream flag also replaced the SCREEN capture
+  // with Chromium's synthetic test pattern (AGENTS.md §3.3), so it is gone.
+  // The fixture audio is played through the real speakers instead
+  // (recordPage's `speakerWav`, see helpers/speaker.ts).
+  void opts.mic;
   if (opts.extraArgs) args.push(...opts.extraArgs);
 
   const context = await chromium.launchPersistentContext(profile, {
@@ -431,6 +449,8 @@ export interface RecordedSession {
   editor: Page;
   wallClockSec: number;
   startedAt: number;
+  /** Seconds between "recording live" and the start of the speaker audio (null without speakerWav). */
+  audioOffsetSec: number | null;
 }
 
 /**
@@ -442,8 +462,13 @@ export async function recordPage(
   context: BrowserContext,
   extensionId: string,
   targetUrl: string,
-  opts: { seconds: number; includeMic: boolean; target?: Page; editor?: Page; interact?: (p: Page) => Promise<void> }
+  opts: {
+    seconds: number; includeMic: boolean; target?: Page; editor?: Page; interact?: (p: Page) => Promise<void>;
+    /** Played through the REAL speakers while recording (real-mic journeys). */
+    speakerWav?: string;
+  }
 ): Promise<RecordedSession> {
+  const speaker = opts.speakerWav ? await prepareSpeaker(opts.speakerWav) : null;
   const target = opts.target || (await context.newPage());
   if (!opts.target) {
     await target.goto(targetUrl, { waitUntil: 'domcontentloaded' });
@@ -474,11 +499,18 @@ export async function recordPage(
   // here, not from the click that started it.
   await target.locator('#smoothstudio-stop-btn').waitFor({ state: 'visible', timeout: 20000 });
   const startedAt = Date.now();
+  let audioOffsetSec: number | null = null;
+  if (speaker) {
+    const audioStartedAt = await speaker.go();
+    audioOffsetSec = (audioStartedAt - startedAt) / 1000;
+    console.log(`[harness] speaker playback started ${audioOffsetSec.toFixed(3)} s after the recording went live`);
+  }
 
   if (opts.interact) await opts.interact(target);
   await target.waitForTimeout(opts.seconds * 1000);
   await target.locator('#smoothstudio-stop-btn').click();
   const wallClockSec = (Date.now() - startedAt) / 1000;
+  speaker?.stop();
 
   await editor.bringToFront();
   try {
@@ -494,7 +526,7 @@ export async function recordPage(
     console.error('[harness] the recording never reached the editor:', JSON.stringify(state));
     throw err;
   }
-  return { target, editor, wallClockSec, startedAt };
+  return { target, editor, wallClockSec, startedAt, audioOffsetSec };
 }
 
 /** Reads the recorder's own output file out of OPFS (verification only). */

@@ -7,7 +7,9 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { AddressInfo } from 'net';
-import { launchExtension, readOpfsFile, ffprobeStreams, writeScratch, REPO } from './helpers/extension';
+import { launchExtension, readOpfsFile, ffprobeStreams, writeScratch, REPO, SPEECH_WAV } from './helpers/extension';
+import { detectAudioOnset } from './helpers/harness';
+import { prepareSpeaker } from './helpers/speaker';
 
 function serveFixtures(): Promise<{ url: string; close: () => Promise<void> }> {
   const dir = path.join(REPO, 'tests', 'fixtures');
@@ -34,7 +36,9 @@ function serveFixtures(): Promise<{ url: string; close: () => Promise<void> }> {
 test('C1: a recording made with the mic ON contains an Opus audio stream of the recording length', async () => {
   test.setTimeout(180000);
   const site = await serveFixtures();
-  const ext = await launchExtension({ fakeMicFile: true });
+  const ext = await launchExtension({ realMic: true, raiseWindow: true });
+  // QA-020: the REAL mic records the fixture WAV played through the REAL speakers.
+  const speaker = await prepareSpeaker(SPEECH_WAV);
   try {
     const target = await ext.context.newPage();
     await target.goto(site.url);
@@ -48,8 +52,11 @@ test('C1: a recording made with the mic ON contains an Opus audio stream of the 
     // Recorded page comes to the front; the editor is now in the background.
     await target.bringToFront();
     await expect(target.locator('#smoothstudio-stop-btn')).toBeVisible({ timeout: 15000 });
+    const audioOffsetSec = ((await speaker.go()) - startedAt) / 1000;
+    console.log(`C1 speaker playback started ${audioOffsetSec.toFixed(3)} s after the recording went live`);
     await target.waitForTimeout(20000);
     await target.locator('#smoothstudio-stop-btn').click();
+    speaker.stop();
     const stoppedAt = Date.now();
     const wallClockSec = (stoppedAt - startedAt) / 1000;
 
@@ -78,8 +85,11 @@ test('C1: a recording made with the mic ON contains an Opus audio stream of the 
     const barCount = await waveform.locator(':scope > div').count();
     expect(barCount, 'waveform should have one bar per bucket').toBeGreaterThanOrEqual(100);
 
-    // Silence detection must find the two known gaps in tests/fixtures/test-audio.wav:
-    // 5s-7s and 13s-15s (2s each). Tolerance +-1s for capture start offset.
+    // Silence detection must find the two known gaps of tests/fixtures/audio/test.wav
+    // (WAV time 4-6 s and 14-16 s, 2 s each), shifted by the measured acoustic onset.
+    const onset = detectAudioOnset(file);
+    console.log(`C1 acoustic onset of the speaker WAV in the recording: ${onset}s (START line said ${audioOffsetSec.toFixed(3)}s)`);
+    expect(onset, 'the speaker audio must be audible in the real-mic recording').not.toBeNull();
     const silences = editor.locator('[data-silence-id]');
     await expect.poll(() => silences.count(), { timeout: 60000 }).toBe(2);
     const titles = await silences.evaluateAll((els) => els.map((e) => e.getAttribute('title') || ''));
@@ -91,9 +101,11 @@ test('C1: a recording made with the mic ON contains an Opus audio stream of the 
     const lefts = await silences.evaluateAll((els) => els.map((e) => parseFloat((e as HTMLElement).style.left)));
     // Timeline position: left% of the timeline == start / duration.
     const starts = lefts.map((l) => (l / 100) * durationSec);
-    expect(Math.abs(starts[0] - 5), `first gap starts at ${starts[0]}s`).toBeLessThan(1);
-    expect(Math.abs(starts[1] - 13), `second gap starts at ${starts[1]}s`).toBeLessThan(1);
+    console.log('C1 product silence starts:', JSON.stringify(starts), 'durations:', JSON.stringify(durations));
+    expect(Math.abs(starts[0] - (4 + onset!)), `first gap starts at ${starts[0]}s`).toBeLessThan(1);
+    expect(Math.abs(starts[1] - (14 + onset!)), `second gap starts at ${starts[1]}s`).toBeLessThan(1);
   } finally {
+    speaker.stop();
     await ext.cleanup();
     await site.close();
   }

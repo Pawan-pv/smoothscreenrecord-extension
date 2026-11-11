@@ -37,6 +37,8 @@ Leads from `CODE_REVIEW.md` (copied from `.planning/REVIEW.md`, 2026-11-09) are 
 | QA-026 | HIGH | Without OPFS the recording only lived in memory (spec item 1 requires an IndexedDB fallback) — a reload lost it | OPFS unavailable on the extension pages, record, reload the editor | `src/engine/opfs-storage.ts` fell back to `memoryVideoChunks` only; no IndexedDB code existed (`grep -ri indexedDB src/` → 0 hits) | OPEN — fix: OPFS → IndexedDB → memory |
 | QA-027 | MEDIUM | The frame pump could paint an invented black frame before the first real capture frame | — | `screen-recorder.ts` (pre-M1) `ctx.fillStyle = '#000000'; ctx.fillRect(...)` "Nothing decoded yet: paint a neutral frame" — a frame nobody recorded (spec item 1 "nothing may be faked") | OPEN — fix: nothing is sent before the first real frame |
 
+| QA-028 | HIGH | GIF export is far too slow: three presets of a 10 s clip need more than 7 minutes (M9) | J12: record 10 s, export the three GIF presets | J12's 420 s budget was exceeded; an uncommitted edit had raised the J12 timeout to 1200 s ("renders every frame through the 2D canvas renderer and quantises it by hand: three presets of a 10 s clip take several minutes"). Per the user (2026-11-11) that is a performance bug, not a test problem: the edit was reverted, J12 keeps 420 s | OPEN — M9 |
+
 ## Leads from CODE_REVIEW.md (not yet reproduced)
 
 | Lead | Severity | Title | File | Status |

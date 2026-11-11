@@ -32,6 +32,11 @@ const PUMP_SAFETY_INTERVAL_MS = 500;  // re-push the last frame if the source st
 const FIRST_FRAME_TIMEOUT_MS = 3000;  // never block the start on the first frame
 const RECORDER_TIMESLICE_MS = 250;    // flush encoded data to storage 4x/second
 const MAX_SNAPSHOTS = 160;
+// A 1280 px JPEG costs tens of ms on the main thread: on an animating page
+// the detector took 6.4 snapshots/s and kept the editor busy 39 % of the
+// time, which slowed the capture itself (M1-03). At most one transition
+// snapshot per SNAPSHOT_MIN_INTERVAL_MS.
+const SNAPSHOT_MIN_INTERVAL_MS = 700;
 
 export class ScreenCaptureEngine {
   private mediaStream: MediaStream | null = null;          // raw display-capture stream
@@ -44,6 +49,8 @@ export class ScreenCaptureEngine {
   private frameDiffCtx: CanvasRenderingContext2D | null = null;
   private lastFrameData: Uint8ClampedArray | null = null;
   private frameDiffInterval: number | null = null;
+  private detectorBusyMs = 0;
+  private snapshotCount = 0;
   private snapshots: { timestamp: number; dataUrl: string }[] = [];
   private recordingStartTime = 0;
   private recordingDurationMs = 0;
@@ -65,7 +72,9 @@ export class ScreenCaptureEngine {
   private firstFrameResolve: (() => void) | null = null;
   private firstFramePromise: Promise<void> | null = null;
   private pumpReader: ReadableStreamDefaultReader<any> | null = null;
-  private pumpDriver: 'processor' | 'video-frame-callback' = 'video-frame-callback';
+  private pumpDriver: 'generator' | 'processor' | 'video-frame-callback' = 'video-frame-callback';
+  private pumpLastFrame: (() => any) | null = null;
+  private pumpReleaseLast: (() => void) | null = null;
   private pumpRepeatFrame: (() => void) | null = null;
   private pumpSourceFrames = 0;
   private sessionId = '';
@@ -273,6 +282,20 @@ export class ScreenCaptureEngine {
   // Frame pump: capture -> <video> -> <canvas> -> captureStream(0) -> recorder
   // -----------------------------------------------------------------------
   private async startFramePump(source: MediaStream): Promise<MediaStream> {
+    // ZERO-COPY path first: hand the captured frames themselves to the
+    // encoder. The canvas copy below costs a 1080p draw + readback per frame,
+    // which on a low-spec machine slowed the CAPTURE itself to about half the
+    // rate a plain recorder gets (M1-03: 15.9 vs 29.0 fps). Odd capture sizes
+    // go through the canvas, which makes them even.
+    {
+      const t = source.getVideoTracks()[0];
+      const st = (t && t.getSettings) ? t.getSettings() : ({} as MediaTrackSettings);
+      if ((st.width || 0) > 0 && (st.height || 0) > 0 && st.width! % 2 === 0 && st.height! % 2 === 0) {
+        const generated = this.startGeneratorPump(source, t);
+        if (generated) return generated;
+      }
+    }
+
     const video = document.createElement('video');
     video.srcObject = source;
     video.muted = true;
@@ -411,6 +434,106 @@ export class ScreenCaptureEngine {
     return pumped;
   }
 
+  /**
+   * MediaStreamTrackProcessor -> MediaStreamTrackGenerator: every captured
+   * VideoFrame goes to the encoder as is (no copy). One clone of the last real
+   * frame is kept to hold a static picture and to end the video at the stop
+   * instant. Returns null when the browser lacks either API.
+   */
+  private startGeneratorPump(source: MediaStream, track: MediaStreamTrack | undefined): MediaStream | null {
+    const Processor = (typeof window !== 'undefined') ? (window as any).MediaStreamTrackProcessor : undefined;
+    const Generator = (typeof window !== 'undefined') ? (window as any).MediaStreamTrackGenerator : undefined;
+    const VF = (typeof window !== 'undefined') ? (window as any).VideoFrame : undefined;
+    if (!Processor || !Generator || !VF || !track) return null;
+    let generator: any;
+    let writer: WritableStreamDefaultWriter<any>;
+    let reader: ReadableStreamDefaultReader<any>;
+    try {
+      generator = new Generator({ kind: 'video' });
+      writer = generator.writable.getWriter();
+      reader = new Processor({ track }).readable.getReader();
+    } catch (err) {
+      console.warn('[SmoothStudio CaptureEngine] Zero-copy pump unavailable, using the canvas pump:', err);
+      return null;
+    }
+    this.pumpDriver = 'generator';
+    this.pumpReader = reader;
+    this.pumpTrack = generator as MediaStreamTrack;
+    const pumped = new MediaStream([generator]);
+    source.getAudioTracks().forEach((t) => {
+      try { pumped.addTrack(t); } catch {}
+    });
+
+    this.firstFramePromise = new Promise<void>((resolve) => { this.firstFrameResolve = resolve; });
+    this.pumpSourceFrames = 0;
+    let last: any = null;        // clone of the last REAL captured frame
+    let lastAt = 0;              // performance.now() when it arrived
+    let lastSourceFrameAt = 0;
+    let writing: Promise<void> = Promise.resolve();
+    const counted = () => {
+      this.pumpFrameCount++;
+      if (this.pumpFrameCount === 1) {
+        this.timelineOriginEpoch = Date.now();
+        this.firstFrameResolve?.();
+        this.firstFrameResolve = null;
+      }
+    };
+    const send = (frame: any) => {
+      writing = writing.then(() => writer.write(frame)).catch(() => {
+        try { frame.close(); } catch {}
+      });
+      counted();
+    };
+    this.pumpLastFrame = () => last;
+    // Re-sends the last real picture with a timestamp advanced by the real
+    // elapsed time (the capture clock keeps running). Never invents a picture.
+    this.pumpRepeatFrame = () => {
+      if (!last) return;
+      try {
+        const ts = last.timestamp + Math.round((performance.now() - lastAt) * 1000);
+        send(new VF(last, { timestamp: ts }));
+      } catch (err) {
+        console.warn('[SmoothStudio CaptureEngine] Frame pump repeat failed:', err);
+      }
+    };
+
+    (async () => {
+      for (;;) {
+        const { value: frame, done } = await reader.read();
+        if (done || !frame) break;
+        this.pumpSourceFrames++;
+        lastSourceFrameAt = performance.now();
+        if (!this.pumpTrack) { try { frame.close(); } catch {} continue; }
+        try {
+          const keep = frame.clone();
+          if (last) { try { last.close(); } catch {} }
+          last = keep;
+          lastAt = lastSourceFrameAt;
+        } catch { /* keep the previous clone */ }
+        send(frame); // the generator takes ownership of the frame
+      }
+    })().catch((err) => console.warn('[SmoothStudio CaptureEngine] Frame reader ended:', err));
+    this.pumpReleaseLast = () => {
+      if (last) { try { last.close(); } catch {} }
+      last = null;
+    };
+    console.log(`[SmoothStudio CaptureEngine] Frame pump driver: generator (zero-copy), ${track.getSettings?.().width}x${track.getSettings?.().height}`);
+
+    this.pumpTimer = window.setInterval(() => {
+      if (!this.isRecording) return;
+      if (performance.now() - lastSourceFrameAt > PUMP_SAFETY_INTERVAL_MS) this.pumpRepeatFrame?.();
+    }, PUMP_SAFETY_INTERVAL_MS);
+    return pumped;
+  }
+
+  /** The most recent captured picture (for snapshots / frame-diff), or null. */
+  private latestPicture(): { src: CanvasImageSource; w: number; h: number } | null {
+    const f = this.pumpLastFrame?.();
+    if (f) return { src: f, w: f.displayWidth || f.codedWidth, h: f.displayHeight || f.codedHeight };
+    if (this.pumpCanvas) return { src: this.pumpCanvas, w: this.pumpCanvas.width, h: this.pumpCanvas.height };
+    return null;
+  }
+
   private waitForFirstFrame(): Promise<void> {
     if (!this.firstFramePromise) return Promise.resolve();
     // Never block the UI on the first frame: if the captured surface does not
@@ -436,6 +559,9 @@ export class ScreenCaptureEngine {
     } catch {}
     this.pumpReader = null;
     this.pumpRepeatFrame = null;
+    this.pumpLastFrame = null;
+    this.pumpReleaseLast?.();
+    this.pumpReleaseLast = null;
     try {
       this.pumpTrack?.stop();
     } catch {}
@@ -451,25 +577,17 @@ export class ScreenCaptureEngine {
   private startFrameDiffDetector() {
     if (!this.frameDiffCtx || !this.mediaStream) return;
 
-    const video = this.pumpVideo || document.createElement('video');
-    if (!this.pumpVideo) {
-      video.srcObject = this.mediaStream;
-      video.muted = true;
-      video.play().catch(() => {});
-    }
-
+    this.detectorBusyMs = 0;
+    this.snapshotCount = 0;
     this.frameDiffInterval = window.setInterval(() => {
       if (!this.isRecording || !this.frameDiffCtx) return;
+      const tickStart = performance.now();
 
       try {
-        if (this.pumpCanvas && this.pumpCtx) {
-          // Use the already-pumped frame: it is guaranteed to hold the most
-          // recent capture even when the source stopped producing frames.
-          this.frameDiffCtx.drawImage(this.pumpCanvas, 0, 0, 160, 90);
-        } else {
-          if (video.videoWidth === 0 || video.readyState < 2) return;
-          this.frameDiffCtx.drawImage(video, 0, 0, 160, 90);
-        }
+        // The most recent REAL captured picture (no extra <video> decoder).
+        const pic = this.latestPicture();
+        if (!pic) return;
+        this.frameDiffCtx.drawImage(pic.src, 0, 0, 160, 90);
         const currentData = this.frameDiffCtx.getImageData(0, 0, 160, 90).data;
 
         const now = performance.now();
@@ -488,7 +606,8 @@ export class ScreenCaptureEngine {
 
           const avgDiff = diffSum / (currentData.length / 16);
           // If a visual transition occurred (>4 avg or >20 changed sampled pixels) or periodic cadence reached
-          if (avgDiff > 4 || changedPixels > 20 || timeSinceLastSnap >= 1800) {
+          const transition = avgDiff > 4 || changedPixels > 20;
+          if ((transition && timeSinceLastSnap >= SNAPSHOT_MIN_INTERVAL_MS) || timeSinceLastSnap >= 1800) {
             this.captureSnapshot();
           }
         } else {
@@ -500,22 +619,25 @@ export class ScreenCaptureEngine {
       } catch {
         // Video frame might be temporarily unavailable
       }
+      this.detectorBusyMs += performance.now() - tickStart;
     }, 150);
   }
 
   private captureSnapshot() {
     try {
-      if (!this.pumpCanvas) return;
+      const pic = this.latestPicture();
+      if (!pic || !pic.w || !pic.h) return;
       // Keep the documentation screenshot reasonably small: 1280px wide JPEG.
       const maxWidth = 1280;
-      const scale = Math.min(1, maxWidth / this.pumpCanvas.width);
+      const scale = Math.min(1, maxWidth / pic.w);
       const snapCanvas = document.createElement('canvas');
-      snapCanvas.width = Math.max(1, Math.round(this.pumpCanvas.width * scale));
-      snapCanvas.height = Math.max(1, Math.round(this.pumpCanvas.height * scale));
+      snapCanvas.width = Math.max(1, Math.round(pic.w * scale));
+      snapCanvas.height = Math.max(1, Math.round(pic.h * scale));
       const ctx = snapCanvas.getContext('2d');
       if (!ctx) return;
-      ctx.drawImage(this.pumpCanvas, 0, 0, snapCanvas.width, snapCanvas.height);
+      ctx.drawImage(pic.src, 0, 0, snapCanvas.width, snapCanvas.height);
       const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.62);
+      this.snapshotCount++;
       this.snapshots.push({
         // Snapshot timestamps use the SAME origin as the telemetry timeline.
         timestamp: this.timelineOriginEpoch > 0
@@ -595,7 +717,7 @@ export class ScreenCaptureEngine {
       });
     }
 
-    console.log(`[SmoothStudio CaptureEngine] Frame pump (${this.pumpDriver}): ${this.pumpSourceFrames} captured frames read, ${this.pumpFrameCount} frames sent to the encoder in ${this.recordingDurationMs}ms`);
+    console.log(`[SmoothStudio CaptureEngine] Frame pump (${this.pumpDriver}): ${this.pumpSourceFrames} captured frames read, ${this.pumpFrameCount} frames sent to the encoder in ${this.recordingDurationMs}ms; snapshots ${this.snapshotCount}, detector busy ${Math.round(this.detectorBusyMs)}ms`);
     this.stopFramePump();
 
     if (this.pendingWrites.length > 0) {

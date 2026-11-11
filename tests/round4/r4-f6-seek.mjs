@@ -16,6 +16,7 @@ import { execFileSync } from 'child_process';
 import { launch, extensionId, outDir, sleep, frameMd5, videoSize, REPO_ROOT, FFMPEG, FFPROBE } from './r4-lib.mjs';
 
 const OUT = outDir('r4-f6');
+const PORT = 8822;
 const SRC = path.join(OUT, 'r4_f6_source_60s_1080p60.webm');
 
 // ---------------------------------------------------------------------------
@@ -40,6 +41,20 @@ console.log('[F6] Source stream:', JSON.stringify({
 
 const context = await launch({ viewport: { width: 1280, height: 720 } });
 let failed = false;
+
+// Serve the source recording so the page can fetch it (no 48MB CDP payload).
+const http = await import('http');
+const server = http.createServer((req, res) => {
+  if (req.url === '/source.webm') {
+    res.writeHead(200, { 'Content-Type': 'video/webm', 'Content-Length': fs.statSync(SRC).size });
+    fs.createReadStream(SRC).pipe(res);
+  } else {
+    res.writeHead(404); res.end();
+  }
+});
+await new Promise((r) => server.listen(PORT, r));
+console.log('[F6] Source server on http://localhost:' + PORT + '/source.webm');
+
 try {
   const extId = await extensionId(context);
   const editor = await context.newPage();
@@ -49,14 +64,17 @@ try {
   await editor.goto(`chrome-extension://${extId}/editor.html`);
   await editor.waitForLoadState('networkidle');
 
-  // Inject the source recording into OPFS and reload the editor
-  const bytes = Array.from(fs.readFileSync(SRC));
+  // Inject the source recording into OPFS and reload the editor.
+  // The bytes are fetched inside the page (a 48 MB array over CDP would
+  // exhaust the node heap).
   console.log('[F6] Injecting the source recording into OPFS...');
-  await editor.evaluate(async (arr) => {
+  await editor.evaluate(async (url) => {
+    const res = await fetch(url);
+    const blob = await res.blob();
     const root = await navigator.storage.getDirectory();
     const handle = await root.getFileHandle('smoothstudio_recording.webm', { create: true });
     const writable = await handle.createWritable();
-    await writable.write(new Uint8Array(arr));
+    await writable.write(blob);
     await writable.close();
     const tel = {
       metadata: {
@@ -69,7 +87,7 @@ try {
     const tw = await th.createWritable();
     await tw.write(JSON.stringify(tel));
     await tw.close();
-  }, bytes);
+  }, `http://localhost:${PORT}/source.webm`);
   await editor.reload();
   await editor.waitForFunction(() => {
     const v = document.querySelector('video#smoothstudio-source-video');
@@ -138,5 +156,6 @@ try {
   failed = true;
 } finally {
   try { await context.close(); } catch {}
+  try { server.close(); } catch {}
 }
 process.exit(failed ? 1 : 0);

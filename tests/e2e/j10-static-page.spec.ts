@@ -13,7 +13,7 @@ import { test, expect } from '@playwright/test';
 import path from 'path';
 import fs from 'fs';
 import {
-  launchApp, serveFixtures, recordPage, mediaInfo, outDir, saveRawRecording, streamEndTime
+  launchApp, serveFixtures, recordPage, mediaInfo, outDir, saveRawRecording, streamEndTime, logConsole
 } from './helpers/harness';
 
 test.describe.serial('J10 static page', () => {
@@ -23,6 +23,7 @@ test.describe.serial('J10 static page', () => {
     const dir = outDir('j10');
     const site = await serveFixtures();
     const app = await launchApp({ capture: 'screen', raiseWindow: true });
+    logConsole(app.context, dir);
     try {
       const target = await app.context.newPage();
       await target.goto(`${site.base}/static.html`, { waitUntil: 'domcontentloaded' });

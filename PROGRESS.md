@@ -2,6 +2,26 @@
 
 One entry per iteration. Newest first.
 
+## M1 Recording core — session 3 (2026-11-18) — IN PROGRESS
+
+**Committed the unit-verified batch (3 commits, working tree from session 2):**
+| Commit | Bugs | Unit evidence (2026-11-18) |
+|---|---|---|
+| `c86a5bf` | QA-001, QA-002, QA-011 | with `src/` stashed: 35 of the 73 tests in the 10 new/updated files fail; restored: 10 files / 73 tests pass |
+| `eaec3c4` | QA-021 | same batch; full unit suite 24 files / 172 tests |
+| `4a854d8` | QA-025, QA-035, QA-007, QA-001 | same batch; `npx tsc --noEmit` exit 0; `npm run build` exit 0; `grep dist/ "__captureEngine\|__setSilences\|__startLiveRecording\|__lastLoadedTelemetry\|__smoothstudio_pills\|__HardwareMp4Exporter"` 0 hits |
+
+**QA-035 verified directly:** removing the new guard from `appendVideoChunk()` gives
+`FAIL tests/unit/recording-storage-guards.test.ts > drops a chunk that arrives after finalizeVideo()`
+`AssertionError: expected 'p1-late' to be 'p1'` (`1 failed | 2 passed`); restored, `3 passed`.
+
+**QA-031 triage so far (no frame viewed):** the aborted popup recording had 127 frames (34 without the
+marker). The same run's console log (`tests/e2e/out/m1-stop/console.log`) shows the three recordings ran
+`3721 ms`, `3576 ms`, `5363 ms` against a ~3.6 s test live window; the popup one over-ran by ~1.7 s.
+The marker guard now records only aggregates (first missing PTS, left/right hit ratios, mean RGB/luma) in
+`MARKER_ABORT.json`; it never writes or logs frame data. The old abort file was deleted so the instrumented
+rerun could start; the bytes it described had already been dropped unviewed.
+
 ## M1 Recording core — session 2 (2026-11-11) — NOT DONE, stopped
 
 User decisions: J12 timeout edit reverted (420 s kept; GIF slowness logged as QA-028 for M9);

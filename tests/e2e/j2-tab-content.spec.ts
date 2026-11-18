@@ -18,7 +18,7 @@ import path from 'path';
 import fs from 'fs';
 import {
   launchApp, serveFixtures, recordPage, mediaInfo, extractFrame, extractFrameByIndex,
-  decodeEpochBits, decodeEpochCandidates, framePts, rawPixels, outDir, saveRawRecording, countFrames
+  decodeEpochBits, decodeEpochCandidates, framePts, rawPixels, outDir, saveRawRecording, countFrames, logConsole
 } from './helpers/harness';
 
 function frameDiffPixels(a: string, b: string): number {
@@ -41,6 +41,7 @@ test.describe.serial('J2 tab recording with real content', () => {
     const site = await serveFixtures();
     // NOTE: no --use-fake-device-for-media-stream here - the video must be real.
     const app = await launchApp({ capture: 'screen', raiseWindow: true });
+    logConsole(app.context, dir);
     try {
       const target = await app.context.newPage();
       await target.goto(`${site.base}/clock.html`, { waitUntil: 'domcontentloaded' });

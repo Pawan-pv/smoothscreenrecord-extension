@@ -163,6 +163,7 @@ async function endRecordingSession(expectedSessionId: string | null = null): Pro
         smoothstudio_telemetry: telemetry,
         'smoothstudio_telemetry.json': telemetry
       }).catch(() => undefined);
+      console.log('[SmoothStudio SW] Telemetry persisted at epoch', Date.now());
     }
 
     // Compare-and-set: collecting the telemetry above yields to the event
@@ -200,6 +201,29 @@ async function endRecordingSession(expectedSessionId: string | null = null): Pro
   });
   endInFlight = { target: expectedSessionId, promise };
   return promise;
+}
+
+/**
+ * Sends a message to the editor tab that owns the recorder. When the tab id is
+ * not known (the editor registered late) the first editor tab is used, exactly
+ * like the stop path's fallback.
+ */
+function notifyEditorCapture(tabId: number | null | undefined, payload: any): void {
+  const send = (id: number) => {
+    chrome.tabs.sendMessage(id, payload, () => {
+      void chrome.runtime?.lastError;
+    });
+  };
+  if (tabId) {
+    send(tabId);
+    return;
+  }
+  chrome.tabs.query({ url: chrome.runtime.getURL('editor.html*') }, (tabs) => {
+    if (tabs.length > 0 && tabs[0].id) {
+      persistSessionState({ activeEditorTabId: tabs[0].id }).catch(() => {});
+      send(tabs[0].id);
+    }
+  });
 }
 
 // The editor (which owns the recorder) was closed while recording: the
@@ -293,7 +317,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 continue;
               }
               chrome.tabs.sendMessage(tab.id, { type: 'START_TELEMETRY', originEpoch, sessionId }, () => {
-                void chrome.runtime?.lastError;
+                const err = chrome.runtime?.lastError;
+                if (err) console.warn('[SmoothStudio SW] START_TELEMETRY failed for tab', tab.id, err.message);
               });
             }
           }
@@ -319,15 +344,53 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // 3b. The recorder started its timeline (QA-037). The recorded surface is
+  // really on screen at this instant, so it is the single origin shared by the
+  // video, the audio and the telemetry of the recorded tab.
+  if (message.type === 'RECORDING_LIVE') {
+    const epoch = Math.round(Number(message.epoch));
+    if (!Number.isFinite(epoch) || epoch <= 0) {
+      sendResponse({ status: 'invalid_origin' });
+      return true;
+    }
+    loadSessionState().then((curr) => {
+      const tabId = curr.activeRecordingTabId;
+      const sessionId = typeof message.sessionId === 'string' ? message.sessionId : curr.activeSessionId;
+      if (tabId) {
+        chrome.tabs.sendMessage(tabId, { type: 'TIMELINE_ORIGIN', epoch, sessionId }, () => {
+          void chrome.runtime?.lastError;
+        });
+      }
+      console.log('[SmoothStudio SW] Recording live origin shared at epoch', epoch, 'with tab', tabId);
+      sendResponse({ status: 'live_origin_shared', epoch });
+    });
+    return true;
+  }
+
   // 4. Stop Studio Recording
   // Stop paths: the on-page HUD, the popup, and the editor itself (its Stop
   // button, Chrome's "Stop sharing" bar). The response carries the session's
   // telemetry once it has been collected.
   if (message.type === 'STOP_STUDIO_RECORDING') {
     const wanted: string | null = typeof message.sessionId === 'string' ? message.sessionId : null;
+    console.log('[SmoothStudio SW] STOP requested at epoch', Date.now(), 'for session', wanted);
     loadSessionState().then(async (currState) => {
       const editorTabId = currState.activeEditorTabId;
       const fromEditor = Boolean(sender.tab?.id && editorTabId && sender.tab.id === editorTabId);
+
+      // QA-029: the recorder lives in the editor, and the video must end at the
+      // instant the user pressed stop. Collecting the telemetry (a round trip to
+      // the recorded tab plus a storage write) took ~0.6 s on a 20 s session, so
+      // the editor is told to stop NOW and the telemetry follows it: the editor
+      // asks for the telemetry itself (its second STOP shares this in-flight
+      // end), and the final notify below still delivers it with the session.
+      const ownsLiveSession = currState.isRecording
+        && (!wanted || !currState.activeSessionId || currState.activeSessionId === wanted);
+      if (!fromEditor && ownsLiveSession) {
+        notifyEditorCapture(editorTabId, { type: 'STUDIO_STOP_CAPTURE', sessionId: currState.activeSessionId });
+        console.log('[SmoothStudio SW] Editor told to stop at epoch', Date.now());
+      }
+
       const result = await endRecordingSession(wanted);
 
       if (!result.ended) {
@@ -345,23 +408,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const { telemetry, sessionId } = result;
 
       // The recorder lives in the editor: tell it to stop (unless it asked).
+      // QA-029: the editor brings its own tab forward once the encoder has
+      // stopped (screen-recorder.ts). Activating it here, at the stop request,
+      // made Chromium composite the tab switch into the last frames. Only a
+      // missing editor (sendMessage error) is activated as a fallback.
       const notify = (tabId: number) => {
         chrome.tabs.sendMessage(tabId, { type: 'STUDIO_STOP_CAPTURE', telemetry, sessionId }, () => {
-          void chrome.runtime?.lastError;
+          if (chrome.runtime?.lastError) {
+            chrome.tabs.update(tabId, { active: true }).catch(() => undefined);
+          }
         });
       };
       if (!fromEditor) {
         if (editorTabId) {
           notify(editorTabId);
-          chrome.tabs.update(editorTabId, { active: true }).catch(() => {
-            chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
-          });
         } else {
           chrome.tabs.query({ url: chrome.runtime.getURL('editor.html*') }, (tabs) => {
             if (tabs.length > 0 && tabs[0].id) {
               persistSessionState({ activeEditorTabId: tabs[0].id }).catch(() => {});
               notify(tabs[0].id);
-              chrome.tabs.update(tabs[0].id, { active: true });
             } else {
               chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
             }

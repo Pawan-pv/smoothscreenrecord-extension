@@ -94,26 +94,65 @@ export function detectSilences(file: string, noise = '-42dB', minDur = 0.5) {
   return starts.map((s, i) => ({ start: s, end: ends[i] ?? NaN }));
 }
 /**
- * QA-020: the instant (s) at which the speaker-played fixture WAV becomes
- * audible in a real-mic recording - the end of the leading room-quiet span.
- * Measured by ffmpeg on the recording itself (independent of the product), so
- * the playback latency of the OS player (~1 s measured) does not matter.
- * Returns null when the recording does not start with a quiet span.
+ * QA-035: RMS level (dBFS) of a file's audio, one value per `windowSec`,
+ * measured by ffmpeg on the decoded samples (independent of the product).
  */
-export function detectAudioOnset(file: string, noise = '-30dB'): number | null {
+export function audioEnvelopeDb(file: string, windowSec = 0.1): number[] {
+  const samples = Math.round(8000 * windowSec);
   const r = spawnSync(FFMPEG, ['-hide_banner', '-i', file, '-vn', '-af',
-    `silencedetect=noise=${noise}:d=0.2`, '-f', 'null', '-'], { encoding: 'utf8', maxBuffer: 1 << 28 });
+    `aresample=8000,asetnsamples=n=${samples},astats=metadata=1:reset=1,` +
+    'ametadata=print:key=lavfi.astats.Overall.RMS_level', '-f', 'null', '-'],
+    { encoding: 'utf8', maxBuffer: 1 << 28 });
   const text = (r.stderr || '') + (r.stdout || '');
-  const starts = [...text.matchAll(/silence_start: (-?[\d.]+)/g)].map((m) => parseFloat(m[1]));
-  const ends = [...text.matchAll(/silence_end: (-?[\d.]+)/g)].map((m) => parseFloat(m[1]));
-  if (!starts.length || starts[0] > 0.1) return null;
-  // The onset is the first sound that LASTS (>= 0.3 s): a short room-noise blip
-  // (a click, a breath) inside the leading quiet span does not count.
-  for (let i = 0; i < ends.length; i++) {
-    const nextQuiet = i + 1 < starts.length ? starts[i + 1] : Infinity;
-    if (nextQuiet - ends[i] >= 0.3) return ends[i];
+  const levels: number[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = /lavfi\.astats\.Overall\.RMS_level=(\S+)/.exec(line);
+    if (m) levels.push(m[1] === '-inf' ? -120 : parseFloat(m[1]));
   }
-  return null;
+  return levels;
+}
+
+export interface AcousticDelay {
+  delaySec: number;
+  scoreDb: number;   // loudest window inside the mapped gaps at the best lag
+  marginDb: number;  // how much quieter that is than the median lag
+}
+/**
+ * QA-035: the delay (s) between the fixture WAV timeline and a real-mic
+ * recording of it. The OS player needs a pre-roll (measured ~1.2-1.3 s here),
+ * so the old "the WAV starts at 0" onset assumption was wrong: it looked at the
+ * END of the leading quiet span, which includes the pre-roll, and shifted every
+ * known pause by that amount. This measures the delay instead: scan lags and
+ * pick the one at which BOTH known WAV gaps land on the recording's quietest
+ * windows; require a clear minimum so a quiet room cannot fake a match.
+ */
+export function detectAcousticDelay(file: string, wavGaps: [number, number][],
+  maxLagSec = 4, stepSec = 0.05, QUIET_DB = -30): AcousticDelay | null {
+  const windowSec = 0.1;
+  const env = audioEnvelopeDb(file, windowSec);
+  if (env.length < 10) return null;
+  const scores: { delaySec: number; scoreDb: number }[] = [];
+  for (let d = 0; d <= maxLagSec + 1e-9; d += stepSec) {
+    const delaySec = Math.round(d * 1000) / 1000;
+    let worst = -Infinity;
+    for (const [a, b] of wavGaps) {
+      const from = a + delaySec + 0.25;
+      const to = b + delaySec - 0.25;
+      const first = Math.max(0, Math.ceil(from / windowSec));
+      const last = Math.min(env.length - 1, Math.floor(to / windowSec) - 1);
+      let loudest = -Infinity;
+      for (let i = first; i <= last; i++) loudest = Math.max(loudest, env[i]);
+      worst = Math.max(worst, loudest);
+    }
+    if (isFinite(worst)) scores.push({ delaySec, scoreDb: worst });
+  }
+  if (!scores.length) return null;
+  const best = scores.reduce((a, b) => (b.scoreDb < a.scoreDb ? b : a));
+  const sorted = scores.map((s) => s.scoreDb).sort((x, y) => x - y);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const marginDb = median - best.scoreDb;
+  if (best.scoreDb >= QUIET_DB || marginDb < 6) return null;
+  return { delaySec: best.delaySec, scoreDb: best.scoreDb, marginDb };
 }
 /** Loudest 100 ms window (dBFS) of [fromSec, toSec] of a file's audio, measured by ffmpeg. */
 export function maxWindowDb(file: string, fromSec: number, toSec: number): number {
@@ -416,6 +455,14 @@ export async function launchApp(opts: LaunchOptions = {}): Promise<{
   ];
   if (opts.capture === 'screen') {
     args.push('--auto-select-desktop-capture-source=Entire screen');
+    // QA-036: Windows occlusion tracking freezes the window's compositor after
+    // a tab switch even though the window is visible (measured: the page logged
+    // HUD_VISIBLE at t=0 but the SCREEN only showed it at t=1.1 s). The screen
+    // capture is the real screen, so native occlusion must not throttle it.
+    // The list is complete: a second --disable-features REPLACES Playwright's,
+    // so PaintHolding (hold the old page until the new one is ready) is kept off
+    // as well.
+    args.push('--disable-features=CalculateNativeWinOcclusion,ApplyNativeOcclusionToCompositor,PaintHolding');
   } else if (opts.capture === 'tab' && opts.tabTitle) {
     args.push(`--auto-select-tab-capture-source-by-title=${opts.tabTitle}`);
   } else if (opts.capture === 'window' && opts.windowTitle) {
@@ -531,6 +578,22 @@ export interface RecordedSession {
 }
 
 /**
+ * QA-037: the recording's timeline origin, declared by the editor at the
+ * instant its first encoded picture really shows the recorded surface. The HUD
+ * paint happens ~1 s earlier (Chromium swaps the tab and resumes the stalled
+ * screen capture later), so it is not the recording's wall clock.
+ */
+export async function recordingOrigin(editor: Page, timeoutMs = 20000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const origin = await editor.evaluate(() => (window as any).__smoothstudioTimelineOrigin as number | null);
+    if (typeof origin === 'number' && origin > 0) return origin;
+    if (Date.now() > deadline) throw new Error('the product never declared a recording timeline origin');
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+/**
  * Records the given page the way a user does: the editor tab is opened and
  * started, then the TARGET page is brought to the front (the editor stays in
  * the background), then the on-page HUD button stops the recording.
@@ -572,11 +635,10 @@ export async function recordPage(
   await editor.locator('#stop-live-recording-top-btn').waitFor({ state: 'visible', timeout: 30000 });
 
   await target.bringToFront();
-  // The on-page HUD only appears once the recorder is actually running, so this
-  // is the true "recording is live" instant - the wall clock is measured from
-  // here, not from the click that started it.
+  // QA-037: the product declares the instant its first encoded picture really
+  // shows the recorded surface; the HUD paint is ~1 s earlier.
+  const startedAt = await recordingOrigin(editor);
   await target.locator('#smoothstudio-stop-btn').waitFor({ state: 'visible', timeout: 20000 });
-  const startedAt = Date.now();
   let audioOffsetSec: number | null = null;
   if (speaker) {
     const audioStartedAt = await speaker.go();
@@ -635,6 +697,18 @@ export async function saveRawRecording(page: Page, dir: string): Promise<string 
   const p = path.join(dir, 'raw_recording.webm');
   fs.writeFileSync(p, bytes);
   return p;
+}
+
+/** Every page's console goes to <dir>/console.log (test diagnostics). */
+export function logConsole(context: BrowserContext, dir: string): void {
+  const file = path.join(dir, 'console.log');
+  fs.writeFileSync(file, '');
+  context.on('console', (m) => {
+    try {
+      const where = m.page()?.url().slice(0, 60) || 'worker';
+      fs.appendFileSync(file, `[${new Date().toISOString()}] [${m.type()}] ${where} | ${m.text().slice(0, 600)}\n`);
+    } catch { /* ignore */ }
+  });
 }
 
 /** Console errors and page crashes of a page, collected for the report. */

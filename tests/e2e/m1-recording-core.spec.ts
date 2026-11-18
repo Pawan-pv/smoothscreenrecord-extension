@@ -22,7 +22,7 @@ import fs from 'fs';
 import { execFileSync } from 'child_process';
 import {
   launchApp, serveFixtures, recordPage, mediaInfo, outDir, streamEndTime, framePts, FFMPEG,
-  sleep, REPO, extractFrameByIndex, lumaStdDev
+  sleep, REPO, extractFrameByIndex, lumaStdDev, logConsole
 } from './helpers/harness';
 import { loadedRecordingBytes } from './helpers/harness';
 import { guardRecording } from './helpers/marker';
@@ -186,16 +186,6 @@ function pumpStats(lines: string[]): { read: number; sent: number } | null {
 }
 
 /** Diagnostics: every page's console goes to <dir>/console.log. */
-function logConsole(context: BrowserContext, dir: string): void {
-  const file = path.join(dir, 'console.log');
-  fs.writeFileSync(file, '');
-  context.on('console', (m) => {
-    try {
-      const where = m.page()?.url().slice(0, 60) || 'worker';
-      fs.appendFileSync(file, `[${new Date().toISOString()}] [${m.type()}] ${where} | ${m.text().slice(0, 600)}\n`);
-    } catch { /* ignore */ }
-  });
-}
 
 /* ------------------------------------------------------------------- tests */
 
@@ -328,6 +318,7 @@ test.describe('M1 recording core', () => {
     const site = await serveFixtures();
     const app = await launchApp({ capture: 'screen', raiseWindow: true });
     logConsole(app.context, dir);
+    let popupToClose: Page | null = null;
     try {
       const target = await app.context.newPage();
       await target.goto(`${site.base}/clock.html`, { waitUntil: 'domcontentloaded' });
@@ -361,10 +352,32 @@ test.describe('M1 recording core', () => {
           await editor.bringToFront();
           await editor.locator('#stop-live-recording-top-btn').click();
         } else {
-          const popup = await app.context.newPage();
-          await popup.goto(`chrome-extension://${app.extensionId}/popup.html`);
-          await popup.getByRole('button', { name: /Stop Recording/ }).click({ timeout: 10000 });
-          await popup.close().catch(() => undefined);
+          // The real extension popup is a separate ~360px window anchored to
+          // the toolbar, NOT a full-screen tab. Opening it as a tab (newPage)
+          // replaced the whole recorded page with Chrome's grey new-tab
+          // placeholder for the last frames (measured: uniform rgb 56,57,57,
+          // no marker, 4 frames) and the capture guard correctly dropped the
+          // run. A separate window leaves the recorded page's marker strips
+          // visible, exactly as a user's real popup does.
+          const popupUrl = `chrome-extension://${app.extensionId}/popup.html`;
+          const opened = app.context.waitForEvent('page', { timeout: 15000 });
+          const browserCdp = await app.context.browser()!.newBrowserCDPSession();
+          await browserCdp.send('Target.createTarget', {
+            url: popupUrl,
+            newWindow: true,
+            width: 380,
+            height: 680,
+            left: 720,
+            top: 120
+          } as any);
+          await browserCdp.detach().catch(() => undefined);
+          const popup = await opened;
+          await popup.waitForURL(popupUrl, { timeout: 15000 });
+          const box = await popup.evaluate(() => ({ x: screenX, y: screenY, w: outerWidth, h: outerHeight, sw: screen.width, sh: screen.height }));
+          console.log(`M1 popup window: ${JSON.stringify(box)}`);
+          expect(box.w, 'the popup must be a small window, not a full-screen tab').toBeLessThan(box.sw * 0.6);
+          await popup.getByRole('button', { name: /Stop Recording/ }).click({ timeout: 15000 });
+          popupToClose = popup;
         }
 
         // exactly one NEW recording, with a session id never seen before
@@ -372,6 +385,8 @@ test.describe('M1 recording core', () => {
           const sid = await editor.locator('#smoothstudio-source-video').getAttribute('data-session-id', { timeout: 1000 }).catch(() => null);
           return sid && !seen.includes(sid) ? sid : null;
         }, { message: `${run.how}: the editor must load a NEW recording with a new session id`, timeout: 60000 }).not.toBeNull();
+        await popupToClose?.close().catch(() => undefined);
+        popupToClose = null;
         const sid = (await loadedSessionId(editor))!;
         seen.push(sid);
         expect(await editor.locator('#smoothstudio-source-video').count(), 'exactly one loaded recording').toBe(1);
@@ -402,6 +417,7 @@ test.describe('M1 recording core', () => {
       await editor.locator('#smoothstudio-source-video').waitFor({ state: 'attached', timeout: 30000 });
       expect(await loadedSessionId(editor), 'after a reload the editor shows the same session').toBe(seen[2]);
     } finally {
+      await popupToClose?.close().catch(() => undefined);
       await app.cleanup();
       await site.close();
     }

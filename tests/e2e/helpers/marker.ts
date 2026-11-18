@@ -75,16 +75,36 @@ export function assertRunNotAborted(): void {
   }
 }
 
-export interface MarkerCheck { frames: number; missing: number; firstMissing: number | null }
+export interface MarkerCheck {
+  frames: number; missing: number; firstMissing: number | null;
+  /** Timestamps (s) of the first frame without the marker and of the last frame. */
+  firstMissingAt?: number | null; lastAt?: number | null;
+  /** AGGREGATES ONLY (no frame data): what the first marker-less frame looks like. */
+  firstMissingStats?: {
+    leftHit: number; rightHit: number; markerFraction: number; meanLuma: number;
+    meanRGB: [number, number, number]; leftRGB: [number, number, number]; rightRGB: [number, number, number];
+    /** Uniformity of the whole frame: a flat compositor placeholder has std 0 and min==max. */
+    lumaStd?: number; channelMin?: [number, number, number]; channelMax?: [number, number, number];
+  } | null;
+}
 
 /** Decodes every frame in memory (nothing is written) and counts frames without the marker. */
 export function checkMarkerInMemory(bytes: Buffer, rgb: [number, number, number] = MARKER.rgb): MarkerCheck {
   const W = 320, H = 180, TOL = 60;
-  const r = spawnSync(FFMPEG, ['-v', 'error', '-i', 'pipe:0', '-vsync', '0', '-vf', `scale=${W}:${H}`,
+  // showinfo adds one `pts_time` line per decoded frame on stderr; the frames
+  // themselves still go to stdout. Only timing/colour AGGREGATES are kept.
+  const r = spawnSync(FFMPEG, ['-v', 'info', '-i', 'pipe:0', '-vsync', '0', '-vf', `scale=${W}:${H},showinfo`,
     '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], { input: bytes, maxBuffer: 1 << 30 });
   const raw: Buffer = r.stdout || Buffer.alloc(0);
+  const pts: number[] = [];
+  for (const line of (r.stderr || '').toString().split(/\r?\n/)) {
+    if (!line.includes('Parsed_showinfo') || !line.includes('pts_time')) continue;
+    const m = /pts_time:\s*(-?[0-9.]+)/.exec(line);
+    if (m) pts.push(parseFloat(m[1]));
+  }
   const fb = W * H * 3;
   let frames = 0, missing = 0, firstMissing: number | null = null;
+  let firstMissingStats: MarkerCheck['firstMissingStats'] = null;
   for (let off = 0; off + fb <= raw.length; off += fb, frames++) {
     const hit = (x: number, y: number) => {
       const i = off + (y * W + x) * 3;
@@ -104,10 +124,61 @@ export function checkMarkerInMemory(bytes: Buffer, rgb: [number, number, number]
     }
     if (!(leftRows >= 0.7 * rows && rightRows >= 0.7 * rows)) {
       missing++;
-      if (firstMissing === null) firstMissing = frames;
+      if (firstMissing === null) {
+        firstMissing = frames;
+        // Aggregates only, so the failure can be triaged without viewing a frame.
+        const avg = (x0: number, x1: number, y0: number, y1: number): [number, number, number] => {
+          let sr = 0, sg = 0, sb = 0, n = 0;
+          for (let y = y0; y < y1; y++) {
+            for (let x = x0; x < x1; x++) {
+              const i = off + (y * W + x) * 3;
+              sr += raw[i]; sg += raw[i + 1]; sb += raw[i + 2]; n++;
+            }
+          }
+          return n ? [Math.round(sr / n), Math.round(sg / n), Math.round(sb / n)] : [0, 0, 0];
+        };
+        let luma = 0, lumaSq = 0, hits = 0, samples = 0;
+        const cMin: [number, number, number] = [255, 255, 255];
+        const cMax: [number, number, number] = [0, 0, 0];
+        for (let y = 0; y < H; y += 2) {
+          for (let x = 0; x < W; x += 2) {
+            const i = off + (y * W + x) * 3;
+            const L = 0.299 * raw[i] + 0.587 * raw[i + 1] + 0.114 * raw[i + 2];
+            luma += L;
+            lumaSq += L * L;
+            for (let c = 0; c < 3; c++) {
+              if (raw[i + c] < cMin[c]) cMin[c] = raw[i + c];
+              if (raw[i + c] > cMax[c]) cMax[c] = raw[i + c];
+            }
+            if (hit(x, y)) hits++;
+            samples++;
+          }
+        }
+        // A flat compositor placeholder has ~zero variance: std 0 and min==max.
+        const lumaMean = luma / samples;
+        const lumaStd = Math.sqrt(Math.max(0, lumaSq / samples - lumaMean * lumaMean));
+        firstMissingStats = {
+          leftHit: Math.round((leftRows / rows) * 100) / 100,
+          rightHit: Math.round((rightRows / rows) * 100) / 100,
+          markerFraction: Math.round((hits / samples) * 1000) / 1000,
+          meanLuma: Math.round(lumaMean),
+          meanRGB: avg(0, W, 0, H),
+          leftRGB: avg(0, EDGE * 2, Math.round(H * 0.3), Math.round(H * 0.8)),
+          rightRGB: avg(W - EDGE * 2, W, Math.round(H * 0.3), Math.round(H * 0.8)),
+          lumaStd: Math.round(lumaStd * 100) / 100,
+          channelMin: cMin,
+          channelMax: cMax
+        };
+      }
     }
   }
-  return { frames, missing, firstMissing };
+  const at = (idx: number | null) => (idx === null || !pts.length ? null : pts[Math.min(idx, pts.length - 1)]);
+  return {
+    frames, missing, firstMissing,
+    firstMissingAt: at(firstMissing),
+    lastAt: pts.length ? pts[pts.length - 1] : null,
+    firstMissingStats
+  };
 }
 
 /**
@@ -117,12 +188,14 @@ export function checkMarkerInMemory(bytes: Buffer, rgb: [number, number, number]
  */
 export function guardRecording(bytes: Buffer, label: string): void {
   const c = checkMarkerInMemory(bytes);
-  console.log(`[marker] ${label}: ${c.frames} frames decoded, ${c.missing} without the marker`);
+  console.log(`[marker] ${label}: ${c.frames} frames decoded, ${c.missing} without the marker` +
+    (c.missing ? `; first at frame ${c.firstMissing} (pts ${c.firstMissingAt}s), last pts ${c.lastAt}s` : '') +
+    (c.firstMissingStats ? `; first frame stats ${JSON.stringify(c.firstMissingStats)}` : ''));
   if (c.frames === 0 || c.missing > 0) {
     fs.mkdirSync(path.dirname(MARKER_ABORT_FILE), { recursive: true });
     fs.writeFileSync(MARKER_ABORT_FILE, JSON.stringify({ label, ...c, at: new Date().toISOString() }));
     bytes.fill(0);
     throw new Error(`MARKER MISSING in ${label}: ${c.missing}/${c.frames} frames do not show the test browser ` +
-      `(first at frame ${c.firstMissing}). The recording was dropped unviewed and the run is aborted.`);
+      `(first at frame ${c.firstMissing}, pts ${c.firstMissingAt}s). The recording was dropped unviewed and the run is aborted.`);
   }
 }

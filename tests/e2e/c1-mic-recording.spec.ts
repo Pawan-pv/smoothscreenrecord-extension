@@ -1,6 +1,7 @@
 // C1: the microphone must be recorded.
 // Real Chromium, real extension (dist/), real getDisplayMedia (entire screen, auto-picked),
-// real getUserMedia (fake mic device fed from tests/fixtures/test-audio.wav).
+// real getUserMedia (the REAL microphone hears tests/fixtures/audio/test.wav played
+// through the REAL speakers - see helpers/speaker.ts).
 // The editor tab is in the background while the user records another tab (rule 6).
 import { test, expect } from '@playwright/test';
 import http from 'http';
@@ -8,7 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import { AddressInfo } from 'net';
 import { launchExtension, readOpfsFile, ffprobeStreams, writeScratch, REPO, SPEECH_WAV } from './helpers/extension';
-import { detectAudioOnset, checkKnownPauses, maxWindowDb } from './helpers/harness';
+import { detectAcousticDelay, checkKnownPauses, maxWindowDb } from './helpers/harness';
 import { prepareSpeaker } from './helpers/speaker';
 
 function serveFixtures(): Promise<{ url: string; close: () => Promise<void> }> {
@@ -86,10 +87,11 @@ test('C1: a recording made with the mic ON contains an Opus audio stream of the 
     expect(barCount, 'waveform should have one bar per bucket').toBeGreaterThanOrEqual(100);
 
     // Silence detection must find the two known gaps of tests/fixtures/audio/test.wav
-    // (WAV time 4-6 s and 14-16 s, 2 s each), shifted by the measured acoustic onset.
-    const onset = detectAudioOnset(file);
-    console.log(`C1 acoustic onset of the speaker WAV in the recording: ${onset}s (START line said ${audioOffsetSec.toFixed(3)}s)`);
-    expect(onset, 'the speaker audio must be audible in the real-mic recording').not.toBeNull();
+    // (WAV time 4-6 s and 14-16 s, 2 s each), shifted by the measured acoustic delay.
+    const delay = detectAcousticDelay(file, [[4, 6], [14, 16]]);
+    console.log(`C1 measured speaker-WAV delay in the recording: ${JSON.stringify(delay)}` +
+      ` (START line said ${audioOffsetSec.toFixed(3)}s)`);
+    expect(delay, 'the speaker audio must be audible in the real-mic recording').not.toBeNull();
     const silences = editor.locator('[data-silence-id]');
     await expect.poll(() => silences.count(), { timeout: 60000 }).toBeGreaterThanOrEqual(1);
     await editor.waitForTimeout(1000);
@@ -104,7 +106,7 @@ test('C1: a recording made with the mic ON contains an Opus audio stream of the 
     const pauses = starts.map((s, i) => ({ start: s, duration: durations[i] }));
     console.log('C1 product pauses:', JSON.stringify(pauses));
     // QA-020 ground truth from the recording itself (real room, real mic).
-    const checks = checkKnownPauses(file, [[4, 6], [14, 16]], onset!, pauses);
+    const checks = checkKnownPauses(file, [[4, 6], [14, 16]], delay!.delaySec, pauses);
     console.log('C1 known pauses vs the recording:', JSON.stringify(checks));
     const quiet = checks.filter((c) => c.quiet);
     expect(quiet.length, 'at least one known pause must have stayed quiet in the room').toBeGreaterThanOrEqual(1);
@@ -113,9 +115,9 @@ test('C1: a recording made with the mic ON contains an Opus audio stream of the 
       expect(Math.abs(c.matched!.duration - 2), `pause at ${c.gap[0].toFixed(2)}s lasts ${c.matched!.duration}s`).toBeLessThan(0.5);
     }
     // ...and the product reports no pause where the recording is not quiet
-    // (a recording may begin quietly: the speaker audio starts at the onset).
+    // (a recording may begin quietly: the speaker audio starts at the delay).
     for (const p of pauses) {
-      if (p.start < 0.1 && p.duration <= onset! + 0.3) continue;
+      if (p.start < 0.1 && p.duration <= delay!.delaySec + 0.3) continue;
       const loud = maxWindowDb(file, p.start + 0.25, p.start + p.duration - 0.25);
       expect(loud, `the product's pause at ${p.start.toFixed(2)}s is not quiet in the recording (${loud} dB)`).toBeLessThan(-25);
     }

@@ -37,6 +37,31 @@ const MAX_SNAPSHOTS = 160;
 // time, which slowed the capture itself (M1-03). At most one transition
 // snapshot per SNAPSHOT_MIN_INTERVAL_MS.
 const SNAPSHOT_MIN_INTERVAL_MS = 700;
+// QA-037: the live gate watches the CAPTURED picture to find the real instant
+// the screen shows the recorded surface. Measured on a real run: two frames of
+// the editor change 0.8 % of a 64x36 thumbnail, the editor->recorded-page switch
+// changes 17.5 %, so the threshold has a wide margin on both sides.
+const LIVE_GATE_W = 64;
+const LIVE_GATE_H = 36;
+const LIVE_GATE_PIXEL_DELTA = 24;
+const LIVE_GATE_CHANGED_FRACTION = 0.08;
+// A picture queued during the tab-switch stall is delivered ~1 s late: its
+// arrival lag exceeds the steady lag by the stall duration. It must never
+// become timeline zero (it would put a 1 s jump cut at the start of the video).
+const LIVE_GATE_STALE_LAG_MS = 300;
+// Frames used to learn the steady capture lag before freshness is enforced.
+const LIVE_GATE_LAG_SAMPLES = 5;
+// The switch + Chromium's post-switch capture stall measured ~1.0 s; past this
+// the recording must never keep waiting (a watchdog, not the normal path).
+const LIVE_GATE_TIMEOUT_MS = 2500;
+
+/**
+ * How a captured picture relates to the live gate:
+ *  - fresh:  a new picture delivered at the pipeline's steady lag;
+ *  - stale:  a new picture that waited in the capture queue (switch stall);
+ *  - ignore: not evidence of anything (bootstrap sample or a repeated frame).
+ */
+type FrameFreshness = 'fresh' | 'stale' | 'ignore';
 
 export class ScreenCaptureEngine {
   private mediaStream: MediaStream | null = null;          // raw display-capture stream
@@ -79,6 +104,29 @@ export class ScreenCaptureEngine {
   private pumpSourceFrames = 0;
   private sessionId = '';
   private releaseSessionLock: (() => void) | null = null;
+  // QA-029: the recorder is armed but PAUSED until the recorded tab's HUD is
+  // actually on screen. Nothing is sent to the encoder before that instant, so
+  // the video starts with the first frame the user can see.
+  private captureLive = false;
+  /** performance.now() of the instant the recorder went live (QA-029/QA-036). */
+  private captureLiveSince = 0;
+  // QA-037: "the HUD is visible" is not "the recorded surface is on screen":
+  // Chromium swaps the tab ~0.5 s later and then stalls the screen capture while
+  // the capturing tab is backgrounded. The paused recorder therefore starts on
+  // the first captured picture that differs from the pre-switch picture.
+  private liveGateArmed = false;
+  private liveGateRefThumb: Uint8ClampedArray | null = null;
+  private liveGateCanvas: HTMLCanvasElement | null = null;
+  private liveGateTimer: number | null = null;
+  private liveGateOnLive: ((originEpochMs: number) => void) | null = null;
+  /** Steady-state (arrival - frame timestamp) of the capture pipeline, in ms. */
+  private captureLagBaseline: number | null = null;
+  /** Bootstrap samples for the steady lag (see noteFrameLag). */
+  private frameLagSamples: number[] = [];
+  private liveGateStaleLogged = false;
+  /** Excess of the last frame's arrival lag over the steady lag (ms). */
+  private lastLagExcessMs = 0;
+  private onTimelineOriginHandler: ((originEpochMs: number) => void) | null = null;
 
   constructor() {
     this.frameDiffCanvas = document.createElement('canvas');
@@ -103,6 +151,9 @@ export class ScreenCaptureEngine {
     this.timelineOriginEpoch = 0;
     this.recordingStartTime = performance.now();
     this.onStopHandler = options.onStop || null;
+    this.captureLive = false;
+    this.captureLiveSince = 0;
+    this.onTimelineOriginHandler = options.onTimelineOrigin || null;
 
     const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
     const screenW = (typeof window !== 'undefined' && window.screen && window.screen.width) ? window.screen.width : 1920;
@@ -253,16 +304,22 @@ export class ScreenCaptureEngine {
     // Start streaming chunks to disk every RECORDER_TIMESLICE_MS so a crash
     // never loses more than a quarter second of encoded video.
     this.mediaRecorder.start(RECORDER_TIMESLICE_MS);
+    // QA-029: stay paused until the recorded tab's HUD is on screen. Chromium
+    // excludes the paused span from the WebM timeline (measured with
+    // tests/e2e/helpers/probe-pause.mjs: 1.5 s paused, 1.1 s of frames ->
+    // last pts 1.103 s), so the recording begins at that visible frame instead
+    // of ~0.5 s of editor screen before it.
+    try {
+      this.mediaRecorder.pause();
+    } catch (err) {
+      console.warn('[SmoothStudio CaptureEngine] Could not arm the recorder paused:', err);
+    }
     this.isRecording = true;
 
-    // Wait for the very first pumped frame: that frame defines timeline zero.
+    // Wait for the capture to deliver a real frame BEFORE reporting the session
+    // as started. The frame is kept (not encoded) until resumeCapture().
     await this.waitForFirstFrame();
-    setSessionOrigin(this.timelineOriginEpoch);
-    console.log(`[SmoothStudio CaptureEngine] Timeline origin established at epoch ${this.timelineOriginEpoch} (pump frames: ${this.pumpFrameCount})`);
-    options.onTimelineOrigin?.(this.timelineOriginEpoch);
-
-    // Start fallback frame-diff detector for Window / Fullscreen mode
-    this.startFrameDiffDetector();
+    console.log('[SmoothStudio CaptureEngine] Capture armed: waiting for the recorded tab HUD before the first encoded frame');
 
     return this.mediaStream;
   }
@@ -282,6 +339,10 @@ export class ScreenCaptureEngine {
   // Frame pump: capture -> <video> -> <canvas> -> captureStream(0) -> recorder
   // -----------------------------------------------------------------------
   private async startFramePump(source: MediaStream): Promise<MediaStream> {
+    // Freshness is learned per recording: the lag of the capture pipeline is
+    // a property of this machine/run, not of the previous session.
+    this.captureLagBaseline = null;
+    this.frameLagSamples = [];
     // ZERO-COPY path first: hand the captured frames themselves to the
     // encoder. The canvas copy below costs a 1080p draw + readback per frame,
     // which on a low-spec machine slowed the CAPTURE itself to about half the
@@ -353,20 +414,20 @@ export class ScreenCaptureEngine {
     let lastPumpAt = 0;
     let lastSourceFrameAt = 0;
     let hasPicture = false;
+    let lastDrawAt = 0;
     const emit = () => {
+      // QA-029: no encoded frame before the HUD is on screen.
+      if (!this.captureLive) return;
       pumpTrack.requestFrame?.();
       this.pumpFrameCount++;
-      if (this.pumpFrameCount === 1) {
-        this.timelineOriginEpoch = Date.now();
-        this.firstFrameResolve?.();
-        this.firstFrameResolve = null;
-      }
     };
     // Re-sends the last REAL captured picture (static surface / final frame).
     // Nothing is ever sent before the first real captured frame: no invented
-    // (black) picture.
+    // (black) picture. QA-036: a picture captured BEFORE the recorder went live
+    // (the editor, or the page before its HUD was painted) is never repeated:
+    // the recording must start with what is on screen at the live instant.
     this.pumpRepeatFrame = () => {
-      if (!hasPicture) return;
+      if (!hasPicture || lastDrawAt < this.captureLiveSince - 16) return;
       try { emit(); } catch (err) { console.warn('[SmoothStudio CaptureEngine] Frame pump repeat failed:', err); }
     };
     this.pumpSourceFrames = 0;
@@ -379,6 +440,12 @@ export class ScreenCaptureEngine {
       try {
         ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
         hasPicture = true;
+        lastDrawAt = now;
+        this.firstFrameResolve?.();
+        this.firstFrameResolve = null;
+        // QA-037: the live gate looks at the picture itself (the canvas holds
+        // the newest captured frame).
+        if (!this.captureLive) this.liveGateAccepts(canvas);
         emit();
       } catch (err) {
         console.warn('[SmoothStudio CaptureEngine] Frame pump tick failed:', err);
@@ -470,28 +537,31 @@ export class ScreenCaptureEngine {
     let lastAt = 0;              // performance.now() when it arrived
     let lastSourceFrameAt = 0;
     let writing: Promise<void> = Promise.resolve();
-    const counted = () => {
-      this.pumpFrameCount++;
-      if (this.pumpFrameCount === 1) {
-        this.timelineOriginEpoch = Date.now();
-        this.firstFrameResolve?.();
-        this.firstFrameResolve = null;
+    const send = (frame: any, freshness: FrameFreshness, lagMs: number) => {
+      // QA-029/QA-037: frames captured before the recorded surface is on
+      // screen are read and kept as the "last picture" but never handed to the
+      // encoder. The live gate starts the timeline on the first picture that
+      // actually shows the switch and encodes that picture as frame one.
+      if (!this.captureLive && !this.liveGateAccepts(frame, freshness)) {
+        try { frame.close(); } catch {}
+        return;
       }
-    };
-    const send = (frame: any) => {
       writing = writing.then(() => writer.write(frame)).catch(() => {
         try { frame.close(); } catch {}
       });
-      counted();
+      this.pumpFrameCount++;
     };
     this.pumpLastFrame = () => last;
     // Re-sends the last real picture with a timestamp advanced by the real
-    // elapsed time (the capture clock keeps running). Never invents a picture.
+    // elapsed time (the capture clock keeps running). Never invents a picture,
+    // and (QA-036) never repeats a picture captured before the live instant.
     this.pumpRepeatFrame = () => {
-      if (!last) return;
+      if (!last || lastAt < this.captureLiveSince - 16) return;
       try {
         const ts = last.timestamp + Math.round((performance.now() - lastAt) * 1000);
-        send(new VF(last, { timestamp: ts }));
+        // A repeat is not a new picture: it may never be the gate's reference
+        // or its "live" frame.
+        send(new VF(last, { timestamp: ts }), 'ignore', NaN);
       } catch (err) {
         console.warn('[SmoothStudio CaptureEngine] Frame pump repeat failed:', err);
       }
@@ -501,16 +571,26 @@ export class ScreenCaptureEngine {
       for (;;) {
         const { value: frame, done } = await reader.read();
         if (done || !frame) break;
+        const arrival = performance.now();
         this.pumpSourceFrames++;
-        lastSourceFrameAt = performance.now();
+        lastSourceFrameAt = arrival;
+        // QA-037: a picture that waited in the capture queue during the tab
+        // switch arrives long after the instant it was captured. It must never
+        // start the timeline (its content is older than video t=0 would claim).
+        const lagMs = arrival - Number(frame.timestamp) / 1000;
+        const freshness = this.noteFrameLag(lagMs);
+        // A real captured frame arrived: the capture is alive. It is NOT
+        // encoded until the live gate accepts it.
+        this.firstFrameResolve?.();
+        this.firstFrameResolve = null;
         if (!this.pumpTrack) { try { frame.close(); } catch {} continue; }
         try {
           const keep = frame.clone();
           if (last) { try { last.close(); } catch {} }
           last = keep;
-          lastAt = lastSourceFrameAt;
+          lastAt = arrival;
         } catch { /* keep the previous clone */ }
-        send(frame); // the generator takes ownership of the frame
+        send(frame, freshness, lagMs); // the generator takes ownership of the frame
       }
     })().catch((err) => console.warn('[SmoothStudio CaptureEngine] Frame reader ended:', err));
     this.pumpReleaseLast = () => {
@@ -545,7 +625,159 @@ export class ScreenCaptureEngine {
     ]);
   }
 
+  /**
+   * QA-029: the recorder is armed PAUSED. QA-037: the HUD being "visible" is
+   * not the instant the recorded surface is on screen, so this gate looks at
+   * the captured picture itself: the paused recorder starts on the first frame
+   * that differs from the picture taken just before the switch, and that frame
+   * is encoded as the first picture of the video. Returns false when the
+   * recorder is not armed.
+   */
+  public armLiveGate(onLive?: (originEpochMs: number) => void): boolean {
+    if (!this.isRecording || !this.mediaRecorder || this.captureLive) return false;
+    if (this.liveGateArmed) return true;
+    this.liveGateArmed = true;
+    this.liveGateOnLive = onLive || null;
+    this.liveGateStaleLogged = false;
+    // Reference: the last picture captured before the switch (the editor).
+    const pic = this.latestPicture();
+    this.liveGateRefThumb = pic ? this.thumbnail(pic.src) : null;
+    this.liveGateTimer = window.setTimeout(() => {
+      this.liveGateTimer = null;
+      if (!this.isRecording || this.captureLive) return;
+      // The screen never changed (or the capture never delivered it). Never
+      // leave the user without a recording: start with the current picture.
+      console.warn('[SmoothStudio CaptureEngine] Live gate timed out: the captured picture never changed.');
+      this.resumeCapture(undefined, 'live gate timeout');
+    }, LIVE_GATE_TIMEOUT_MS);
+    console.log('[SmoothStudio CaptureEngine] Live gate armed: waiting for the captured picture to show the recorded surface');
+    return true;
+  }
+
+  /** 64x36 thumbnail of a captured picture, used only to spot the screen switch. */
+  private thumbnail(source: CanvasImageSource): Uint8ClampedArray | null {
+    try {
+      if (!this.liveGateCanvas) {
+        const c = document.createElement('canvas');
+        c.width = LIVE_GATE_W;
+        c.height = LIVE_GATE_H;
+        this.liveGateCanvas = c;
+      }
+      const ctx = this.liveGateCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
+      if (!ctx) return null;
+      ctx.drawImage(source, 0, 0, LIVE_GATE_W, LIVE_GATE_H);
+      return ctx.getImageData(0, 0, LIVE_GATE_W, LIVE_GATE_H).data;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * QA-037: true when the picture arrived as soon as this pipeline normally
+   * delivers it. The steady lag is bootstrapped from the first few frames
+   * (median, so one stale frame cannot poison it) and then follows fresh
+   * measurements only. A frame that arrives more than
+   * LIVE_GATE_STALE_LAG_MS after the steady lag waited in the capture queue
+   * during the tab-switch stall and must not become the reference or live
+   * frame. Frames without a usable timestamp keep the previous behaviour.
+   */
+  private noteFrameLag(lagMs: number): FrameFreshness {
+    // The frame timestamp and performance.now() can use different epochs
+    // (measured: -8.8e6 ms), so only the CHANGE relative to the baseline is
+    // meaningful. A non-finite lag carries no information.
+    if (!Number.isFinite(lagMs)) return 'fresh';
+    if (this.captureLagBaseline === null) {
+      this.lastLagExcessMs = 0;
+      this.frameLagSamples.push(lagMs);
+      if (this.frameLagSamples.length < LIVE_GATE_LAG_SAMPLES) return 'ignore';
+      const sorted = [...this.frameLagSamples].sort((a, b) => a - b);
+      this.captureLagBaseline = sorted[Math.floor(sorted.length / 2)];
+      this.frameLagSamples = [];
+      return 'fresh';
+    }
+    const excess = lagMs - this.captureLagBaseline;
+    this.lastLagExcessMs = excess;
+    if (excess > LIVE_GATE_STALE_LAG_MS) return 'stale';
+    // Slow EMA: follows real drift, ignores the stall.
+    this.captureLagBaseline += excess * 0.02;
+    return 'fresh';
+  }
+
+  /** True when this picture proves the screen switched to the recorded surface. */
+  private liveGateAccepts(picture: CanvasImageSource, freshness: FrameFreshness = 'fresh'): boolean {
+    if (!this.liveGateArmed || this.captureLive) return false;
+    // A stale picture is not evidence of the switch: it can show the recorded
+    // page 1 s before it is actually on screen (measured, QA-037). Never let
+    // it touch the reference, the origin or the encoder.
+    if (freshness !== 'fresh') {
+      if (freshness === 'stale' && !this.liveGateStaleLogged) {
+        this.liveGateStaleLogged = true;
+        console.warn(`[SmoothStudio CaptureEngine] Live gate ignored a stale captured frame: it arrived ${Math.round(this.lastLagExcessMs)}ms later than the steady capture lag.`);
+      }
+      return false;
+    }
+    const thumb = this.thumbnail(picture);
+    if (!thumb) return false;
+    if (!this.liveGateRefThumb) {
+      this.liveGateRefThumb = thumb;
+      return false;
+    }
+    const ref = this.liveGateRefThumb;
+    let changed = 0;
+    for (let i = 0; i < thumb.length; i += 4) {
+      if (Math.abs(thumb[i] - ref[i]) > LIVE_GATE_PIXEL_DELTA ||
+          Math.abs(thumb[i + 1] - ref[i + 1]) > LIVE_GATE_PIXEL_DELTA ||
+          Math.abs(thumb[i + 2] - ref[i + 2]) > LIVE_GATE_PIXEL_DELTA) changed++;
+    }
+    const fraction = changed / (LIVE_GATE_W * LIVE_GATE_H);
+    if (fraction < LIVE_GATE_CHANGED_FRACTION) return false;
+    console.log(`[SmoothStudio CaptureEngine] Live gate: captured picture changed ${(fraction * 100).toFixed(1)}% (${Math.round(this.lastLagExcessMs)}ms over the steady capture lag)`);
+    return this.resumeCapture(undefined, 'recorded surface on screen') !== null;
+  }
+
+  private clearLiveGate(): void {
+    this.liveGateArmed = false;
+    this.liveGateRefThumb = null;
+    this.liveGateStaleLogged = false;
+    if (this.liveGateTimer !== null) {
+      clearTimeout(this.liveGateTimer);
+      this.liveGateTimer = null;
+    }
+  }
+
+  public resumeCapture(originEpochMs?: number, why?: string): number | null {
+    if (!this.isRecording || !this.mediaRecorder || this.captureLive) return null;
+    const origin = (typeof originEpochMs === 'number' && Number.isFinite(originEpochMs) && originEpochMs > 0)
+      ? Math.round(originEpochMs)
+      : Date.now();
+    const onLive = this.liveGateOnLive;
+    this.liveGateOnLive = null;
+    this.clearLiveGate();
+    this.captureLive = true;
+    this.captureLiveSince = performance.now();
+    this.timelineOriginEpoch = origin;
+    try {
+      if (this.mediaRecorder.state === 'paused') this.mediaRecorder.resume();
+    } catch (err) {
+      console.warn('[SmoothStudio CaptureEngine] Could not resume the recorder:', err);
+    }
+    // QA-036: do NOT re-send the last picture here. At this instant it can still
+    // be the editor (the capture pipeline has not delivered the recorded tab's
+    // first frame yet), which would put the wrong screen at video t=0 and make
+    // the file longer than the wall clock. The next REAL frame after this point
+    // is the first encoded picture.
+    setSessionOrigin(origin);
+    this.startFrameDiffDetector();
+    console.log(`[SmoothStudio CaptureEngine] Recording live (${why || 'HUD on screen'}) at epoch ${origin} (${this.pumpFrameCount} encoded frames so far)`);
+    this.onTimelineOriginHandler?.(origin);
+    onLive?.(origin);
+    return origin;
+  }
+
   private stopFramePump() {
+    this.clearLiveGate();
+    this.captureLive = false;
+    this.captureLiveSince = 0;
     if (this.pumpTimer !== null) {
       clearInterval(this.pumpTimer);
       this.pumpTimer = null;
@@ -673,6 +905,7 @@ export class ScreenCaptureEngine {
 
   private async _executeStop(): Promise<Blob | null> {
     this.isRecording = false;
+    console.log('[SmoothStudio CaptureEngine] Recorder stop begins at epoch', Date.now());
     this.recordingDurationMs = this.timelineOriginEpoch > 0
       ? Math.max(500, Math.round(Date.now() - this.timelineOriginEpoch))
       : Math.max(500, Math.round(performance.now() - this.recordingStartTime));
@@ -715,6 +948,20 @@ export class ScreenCaptureEngine {
         // Safety net: never hang the UI if Chromium never fires 'stop'.
         setTimeout(done, 5000);
       });
+    }
+
+    // QA-029: bring the editor forward only AFTER the encoder has stopped. The
+    // service worker used to activate this tab the moment the stop was
+    // requested; Chromium then composited the tab switch into the recording
+    // (one neutral-grey frame, measured uniform rgb 56,57,57, plus post-stop
+    // editor frames). The encoder is closed now, so the switch cannot reach the
+    // video. The screen recording of every stop path ends at the stop instant.
+    if (typeof chrome !== 'undefined' && chrome.tabs?.getCurrent && chrome.tabs?.update) {
+      try {
+        chrome.tabs.getCurrent((tab) => {
+          if (tab?.id !== undefined) chrome.tabs.update(tab.id!, { active: true });
+        });
+      } catch { /* the editor is already in front or the tab is gone */ }
     }
 
     console.log(`[SmoothStudio CaptureEngine] Frame pump (${this.pumpDriver}): ${this.pumpSourceFrames} captured frames read, ${this.pumpFrameCount} frames sent to the encoder in ${this.recordingDurationMs}ms; snapshots ${this.snapshotCount}, detector busy ${Math.round(this.detectorBusyMs)}ms`);

@@ -212,6 +212,15 @@ export function EditorStudio() {
   const isStoppingRef = useRef<boolean>(false);
   const hasFinalizedRef = useRef<boolean>(false);
   const telemetryReceivedRef = useRef<boolean>(false);
+  // QA-029: the recorder stays paused until the recorded tab's HUD is on
+  // screen. `goLiveRef` is called by the HUD_VISIBLE message (or by a watchdog)
+  // and is idempotent.
+  const hudLiveRef = useRef<boolean>(false);
+  const hudLiveWatchdogRef = useRef<any>(null);
+  const goLiveRef = useRef<(epoch?: number, why?: string) => void>(() => {});
+  // QA-037: HUD_VISIBLE arms the recorder's live gate; the recorder starts once
+  // the captured picture itself shows the recorded tab.
+  const armLiveGateRef = useRef<(epoch?: number) => void>(() => {});
 
   // 1. Initial Load: Try OPFS / storage or generate interactive demo
   useEffect(() => {
@@ -238,6 +247,13 @@ export function EditorStudio() {
         if (msg.type === 'STUDIO_STOP_CAPTURE') {
           console.log('[SmoothStudio] Received STUDIO_STOP_CAPTURE message from service worker:', msg.telemetry);
           handleStopLiveRecordingRef.current?.(msg.telemetry);
+        } else if (msg.type === 'HUD_VISIBLE') {
+          // QA-029/QA-037: the recorded tab is visible; arm the recorder's live
+          // gate. The timeline starts when the captured picture proves the
+          // switch, not at this (earlier) visibility report.
+          if (activeSessionIdRef.current && msg.sessionId === activeSessionIdRef.current) {
+            armLiveGateRef.current(typeof msg.epoch === 'number' ? msg.epoch : undefined);
+          }
         }
       };
       chrome.runtime.onMessage.addListener(messageListener);
@@ -795,6 +811,14 @@ export function EditorStudio() {
       isStoppingRef.current = false;
       telemetryReceivedRef.current = false;
       latestTelemetryRef.current = null;
+      hudLiveRef.current = false;
+      // QA-037: a recording started again in this editor must not inherit the
+      // previous recording's declared timeline origin.
+      if (import.meta.env.DEV) delete (window as any).__smoothstudioTimelineOrigin;
+      if (hudLiveWatchdogRef.current) {
+        clearTimeout(hudLiveWatchdogRef.current);
+        hudLiveWatchdogRef.current = null;
+      }
       const sessionId = newSessionId();
       activeSessionIdRef.current = sessionId;
       setIsPlaying(false);
@@ -829,21 +853,69 @@ export function EditorStudio() {
         window.history.replaceState({}, '', window.location.pathname);
       }
 
-      // The recorder publishes the wall-clock instant of the FIRST captured
-      // video frame. Handing it to the content script gives clicks,
-      // keystrokes, zoom pills and badges the exact same time origin as the
-      // video timeline.
-      const originEpoch = captureEngineRef.current.getTimelineOriginEpoch();
-      console.log('[SmoothStudio] Recording timeline origin (epoch ms):', originEpoch);
+      // QA-029/QA-037: the recorder is armed PAUSED. The content script reports
+      // when the recorded tab is visible, but "visible" is not "on screen": the
+      // compositor swaps the tab ~0.5 s later and Chromium then stalls the
+      // screen capture while the capturing tab is backgrounded. The recorder
+      // holds the pause until the captured picture itself shows the switch, and
+      // that instant is timeline zero for video, audio and telemetry.
+      const notifyTimelineOrigin = (originEpoch: number) => {
+        // QA-037: the harness anchors the wall clock at this declared instant;
+        // the recorded page's own clock band is the independent check.
+        if (import.meta.env.DEV) (window as any).__smoothstudioTimelineOrigin = originEpoch;
+        if (typeof chrome !== 'undefined' && chrome.runtime) {
+          chrome.runtime.sendMessage(
+            { type: 'RECORDING_LIVE', epoch: originEpoch, sessionId },
+            () => { void chrome.runtime?.lastError; }
+          );
+        }
+      };
+      armLiveGateRef.current = (hudEpoch) => {
+        if (hudLiveRef.current || isStoppingRef.current || hasFinalizedRef.current) return;
+        const armed = captureEngineRef.current.armLiveGate((origin) => {
+          if (isStoppingRef.current || hasFinalizedRef.current) return;
+          hudLiveRef.current = true;
+          if (hudLiveWatchdogRef.current) {
+            clearTimeout(hudLiveWatchdogRef.current);
+            hudLiveWatchdogRef.current = null;
+          }
+          console.log(`[SmoothStudio] Recording live (recorded surface on screen) at epoch ${origin}`);
+          notifyTimelineOrigin(origin);
+        });
+        if (!armed) {
+          // The recorder is not in the armed state: never leave the user
+          // without a recording - start it the old way.
+          const origin = captureEngineRef.current.resumeCapture(
+            typeof hudEpoch === 'number' ? hudEpoch : undefined
+          );
+          if (origin !== null) {
+            hudLiveRef.current = true;
+            notifyTimelineOrigin(origin);
+          }
+          return;
+        }
+        console.log(`[SmoothStudio] HUD visible at epoch ${hudEpoch}; waiting for the captured picture to show the recorded tab`);
+      };
+      // Last resort only: no HUD signal at all (a recorded surface without a
+      // content script, e.g. another app or a chrome:// page).
+      goLiveRef.current = (epoch) => {
+        if (hudLiveRef.current || isStoppingRef.current || hasFinalizedRef.current) return;
+        const origin = captureEngineRef.current.resumeCapture(epoch);
+        if (origin === null) return;
+        hudLiveRef.current = true;
+        console.log(`[SmoothStudio] Recording live (watchdog) at epoch ${origin}`);
+        notifyTimelineOrigin(origin);
+      };
 
-      // Notify service worker to initiate 120Hz DOM tracking on target tab
+      // Notify service worker to initiate 120Hz DOM tracking on target tab.
+      // No originEpoch is sent: the content script owns the HUD-visible epoch
+      // and publishes it back with HUD_VISIBLE.
       if (typeof chrome !== 'undefined' && chrome.runtime) {
         chrome.runtime.sendMessage(
           {
             type: 'START_STUDIO_RECORDING',
             tabId: sourceTabId,
             focusTarget: Boolean(sourceTabId),
-            originEpoch,
             sessionId
           },
           () => {
@@ -851,6 +923,9 @@ export function EditorStudio() {
           }
         );
       }
+      hudLiveWatchdogRef.current = setTimeout(() => {
+        goLiveRef.current(undefined, 'watchdog: no HUD signal');
+      }, 8000);
     } catch (err: any) {
       console.warn('Capture canceled or rejected:', err);
       setIsRecordingLive(false);
@@ -865,6 +940,7 @@ export function EditorStudio() {
   const handleStopLiveRecording = async (passedTelemetry?: TelemetryData | null, passedBlob?: Blob | null) => {
     // Every stop path ends here: the HUD / popup (via the SW, with telemetry),
     // the editor's Stop button and Chrome's "Stop sharing" bar (recorder onStop).
+    console.log('[SmoothStudio] Stop handled at epoch', Date.now(), 'telemetry passed:', Boolean(passedTelemetry));
     const sessionId = activeSessionIdRef.current;
     const sameSession = (t?: TelemetryData | null) =>
       !!t && (!t.metadata?.sessionId || !sessionId || t.metadata.sessionId === sessionId);
@@ -885,6 +961,10 @@ export function EditorStudio() {
     }
     hasFinalizedRef.current = true;
     isStoppingRef.current = true;
+    if (hudLiveWatchdogRef.current) {
+      clearTimeout(hudLiveWatchdogRef.current);
+      hudLiveWatchdogRef.current = null;
+    }
     setIsRecordingLive(false);
 
     // Ask the SW to end the session on the recorded tab (HUD, telemetry) in

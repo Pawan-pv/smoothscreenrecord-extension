@@ -39,6 +39,20 @@ const SAMPLE_INTERVAL_MS = 8.33; // ~120Hz sampling
 let originEpoch = 0;
 /** Recording session id handed over by START_TELEMETRY (M1-08). */
 let sessionId: string | null = null;
+/**
+ * QA-029: the recorder starts PAUSED and goes live at the instant the recorded
+ * tab's HUD is actually on screen. This content script owns that instant: it
+ * sends HUD_VISIBLE with the epoch, and re-bases its telemetry clock to it, so
+ * video t=0 and telemetry t=0 are the same wall-clock moment.
+ */
+let hudLiveSent = false;
+let hudVisibilityListener: (() => void) | null = null;
+let hudFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+/** QA-037: the HUD timer is re-based to the recorder's real live instant. */
+let hudTimerEl: HTMLElement | null = null;
+let hudTimerStart = 0;
+/** After this long hidden, record what is on screen anyway (never hang). */
+const HUD_VISIBLE_FALLBACK_MS = 5000;
 
 function epochNow(): number {
   // performance.timeOrigin + performance.now() is a high resolution wall clock
@@ -433,6 +447,7 @@ function injectRecordingHud() {
     stopBtn.onclick = (e) => {
       e.stopPropagation();
       if (typeof chrome !== 'undefined' && chrome.runtime) {
+        console.log('[SmoothStudio DOM-Tracker] HUD stop clicked at epoch', Date.now());
         chrome.runtime.sendMessage(
           { type: 'STOP_STUDIO_RECORDING', ...(sessionId ? { sessionId } : {}) },
           () => {
@@ -444,13 +459,18 @@ function injectRecordingHud() {
   }
 
   const startT = performance.now();
-  timerInterval = window.setInterval(() => {
-    if (!timerEl) return;
-    const elapsedSec = Math.floor((performance.now() - startT) / 1000);
-    const m = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
-    const s = String(elapsedSec % 60).padStart(2, '0');
-    timerEl.innerText = `${m}:${s}`;
-  }, 1000);
+  hudTimerEl = timerEl;
+  hudTimerStart = startT;
+  timerInterval = window.setInterval(renderHudTimer, 1000);
+}
+
+/** QA-037: the HUD timer follows the recorder's real live instant. */
+function renderHudTimer(): void {
+  if (!hudTimerEl) return;
+  const elapsedSec = Math.floor(Math.max(0, performance.now() - hudTimerStart) / 1000);
+  const m = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
+  const s = String(elapsedSec % 60).padStart(2, '0');
+  hudTimerEl.innerText = `${m}:${s}`;
 }
 
 function removeRecordingHud() {
@@ -458,10 +478,101 @@ function removeRecordingHud() {
     clearInterval(timerInterval);
     timerInterval = null;
   }
+  hudTimerEl = null;
+  hudTimerStart = 0;
   if (floatingHudEl) {
     floatingHudEl.remove();
     floatingHudEl = null;
   }
+}
+
+/** Stops waiting for the recorded tab to become visible. */
+function clearHudLiveWaiters(): void {
+  if (hudVisibilityListener) {
+    document.removeEventListener('visibilitychange', hudVisibilityListener);
+    hudVisibilityListener = null;
+  }
+  if (hudFallbackTimer !== null) {
+    clearTimeout(hudFallbackTimer);
+    hudFallbackTimer = null;
+  }
+}
+
+/**
+ * QA-029: the instant the recorded tab (with its HUD) is on screen is the
+ * instant the recording goes live. Everything captured before it is dropped;
+ * the telemetry clock is re-based to the same epoch the recorder uses.
+ */
+function markRecordingLiveOnScreen(): void {
+  if (hudLiveSent || !isRecording) return;
+  hudLiveSent = true;
+  clearHudLiveWaiters();
+  originEpoch = epochNow();
+  startTime = performance.now();
+  mousePoints = [];
+  clicks = [];
+  keystrokes = [];
+  inputEvents = [];
+  typingSessions = [];
+  lastSampleTime = 0;
+  activeTyping = null;
+  console.log('[SmoothStudio DOM-Tracker] HUD on screen: recording goes live. Origin epoch:', Math.round(originEpoch));
+  try {
+    chrome.runtime.sendMessage({ type: 'HUD_VISIBLE', epoch: originEpoch, sessionId }, () => {
+      void chrome.runtime?.lastError;
+    });
+  } catch { /* extension context gone: the stop path will report it */ }
+}
+
+/**
+ * QA-037: the recorder publishes the instant its first encoded picture really
+ * shows the recorded tab. "The HUD is visible" fires earlier: Chromium swaps
+ * the tab ~0.5 s later and then stalls the screen capture while the capturing
+ * tab is backgrounded. Telemetry and the HUD timer are re-based to the real
+ * instant so video, audio and telemetry share one origin.
+ */
+function applyTimelineOrigin(epoch: number, incomingSessionId?: string | null): void {
+  if (typeof epoch !== 'number' || !Number.isFinite(epoch) || epoch <= 0) return;
+  if (incomingSessionId && sessionId && incomingSessionId !== sessionId) return;
+  if (!isRecording) return;
+  originEpoch = epoch;
+  const behindMs = Math.max(0, Date.now() - epoch);
+  startTime = performance.now() - behindMs;
+  hudTimerStart = startTime;
+  // Nothing before this instant is in the video: the video's first picture is
+  // the recorded surface at this exact instant, so earlier samples are dropped.
+  mousePoints = [];
+  clicks = [];
+  keystrokes = [];
+  inputEvents = [];
+  typingSessions = [];
+  lastSampleTime = 0;
+  activeTyping = null;
+  renderHudTimer();
+  console.log('[SmoothStudio DOM-Tracker] Timeline origin from the recorder:', epoch);
+}
+
+/**
+ * The HUD is injected immediately, but the recording must not start until the
+ * user can actually see it. When the tab is already visible this is synchronous;
+ * otherwise the visibilitychange and (after 5 s) a fallback start it, so a
+ * recording can never hang in the paused state.
+ */
+function armHudLiveSignal(): void {
+  clearHudLiveWaiters();
+  hudLiveSent = false;
+  // Two animation frames mean "the HUD has actually been painted": the first
+  // callback runs before the paint, the second after it.
+  const afterPaint = () => requestAnimationFrame(() => requestAnimationFrame(markRecordingLiveOnScreen));
+  if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+    afterPaint();
+    return;
+  }
+  hudVisibilityListener = () => {
+    if (document.visibilityState === 'visible') afterPaint();
+  };
+  document.addEventListener('visibilitychange', hudVisibilityListener);
+  hudFallbackTimer = setTimeout(markRecordingLiveOnScreen, HUD_VISIBLE_FALLBACK_MS);
 }
 
 export function startTracking(originEpochMs?: number, recordingSessionId?: string | null): void {
@@ -473,7 +584,8 @@ export function startTracking(originEpochMs?: number, recordingSessionId?: strin
   isRecording = true;
   sessionId = nextSessionId;
   startTime = performance.now();
-  // Use the recorder published origin so telemetry and video share one clock.
+  // Provisional only: the HUD-visible instant below is the authoritative
+  // origin shared with the recorder (QA-029).
   originEpoch = typeof originEpochMs === 'number' && originEpochMs > 0
     ? originEpochMs
     : epochNow();
@@ -494,7 +606,8 @@ export function startTracking(originEpochMs?: number, recordingSessionId?: strin
   window.addEventListener('focusout', handleFocusOut, { passive: true, capture: true });
   window.addEventListener('input', handleInput, { passive: true, capture: true });
 
-  console.log('[SmoothStudio DOM-Tracker] Started 120Hz recording telemetry. Origin epoch:', Math.round(originEpoch));
+  armHudLiveSignal();
+  console.log('[SmoothStudio DOM-Tracker] Tracking armed. Waiting for the HUD to be on screen. Session:', nextSessionId);
 }
 
 /** The session this content script is tracking right now (null when idle). */
@@ -512,6 +625,8 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
   if (expectedSessionId && sessionId && expectedSessionId !== sessionId) return null;
 
   isRecording = false;
+  clearHudLiveWaiters();
+  hudLiveSent = false;
   removeRecordingHud();
   closeTypingSession();
 
@@ -558,6 +673,10 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage 
     if (message.type === 'START_TELEMETRY') {
       startTracking(message.originEpoch, message.sessionId);
       sendResponse({ status: 'started' });
+      return true;
+    } else if (message.type === 'TIMELINE_ORIGIN') {
+      applyTimelineOrigin(message.epoch, message.sessionId);
+      sendResponse({ status: 'origin_applied' });
       return true;
     } else if (message.type === 'STOP_TELEMETRY') {
       const wanted = typeof message.sessionId === 'string' ? message.sessionId : null;

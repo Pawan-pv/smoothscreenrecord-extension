@@ -8,7 +8,7 @@ import path from 'path';
 import { AddressInfo } from 'net';
 import { REPO } from './extension';
 import { prepareSpeaker } from './speaker';
-import { raiseContextWindows, loadedRecordingBytes } from './harness';
+import { raiseContextWindows, loadedRecordingBytes, recordingOrigin } from './harness';
 import { guardRecording } from './marker';
 
 export const FFMPEG = path.join(REPO, 'ffmpeg.exe');
@@ -68,8 +68,11 @@ export async function startRecording(
     await editor.locator('#record-new-screen-top-btn').click();
   }
   await expect(editor.locator('#stop-live-recording-top-btn')).toBeVisible({ timeout: 30000 });
-  const startedAt = Date.now();
+  // QA-037: the product declares the instant its first encoded picture really
+  // shows the recorded surface; the HUD paint is ~1 s earlier.
   await target.bringToFront();
+  const startedAt = await recordingOrigin(editor);
+  await expect(target.locator('#smoothstudio-stop-btn')).toBeVisible({ timeout: 15000 });
   return { target, editor, startedAt };
 }
 

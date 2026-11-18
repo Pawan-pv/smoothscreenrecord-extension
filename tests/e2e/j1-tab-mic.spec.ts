@@ -2,8 +2,9 @@
  * J1 - Recording a real page with the microphone ON.
  *
  * Real Chrome for Testing, real unpacked extension (dist/), real getDisplayMedia,
- * real getUserMedia (fake device fed from tests/fixtures/audio/test.wav - a real
- * 20 s WAV with two 2 s silences and three beeps at known times).
+ * real getUserMedia (the REAL microphone hears tests/fixtures/audio/test.wav - a
+ * real 20 s WAV with two 2 s silences and three beeps at known times - played
+ * through the REAL speakers, see helpers/speaker.ts).
  *
  * CAPTURE SURFACE (verified, not assumed): Chrome for Testing 157 ignores
  * --auto-select-tab-capture-source-by-title and --auto-select-desktop-capture-source=<title>;
@@ -16,8 +17,8 @@ import { test, expect } from '@playwright/test';
 import path from 'path';
 import fs from 'fs';
 import {
-  AUDIO, launchApp, serveFixtures, recordPage, mediaInfo, detectSilences, detectAudioOnset, checkKnownPauses,
-  saveRawRecording, outDir, collectPageProblems, streamEndTime
+  AUDIO, launchApp, serveFixtures, recordPage, mediaInfo, detectSilences, detectAcousticDelay, checkKnownPauses,
+  saveRawRecording, outDir, collectPageProblems, streamEndTime, logConsole
 } from './helpers/harness';
 
 test.describe.serial('J1 tab recording + mic', () => {
@@ -27,6 +28,7 @@ test.describe.serial('J1 tab recording + mic', () => {
     const dir = outDir('j1');
     const site = await serveFixtures();
     const app = await launchApp({ capture: 'screen', raiseWindow: true, mic: true });
+    logConsole(app.context, dir);
     try {
       const target = await app.context.newPage();
       await target.goto(`${site.base}/clock.html`, { waitUntil: 'domcontentloaded' });
@@ -80,27 +82,28 @@ test.describe.serial('J1 tab recording + mic', () => {
 
       const durationSec = info.durationSec || 0;
       const allStarts = regions.map((r) => (parseFloat(r.left) / 100) * durationSec);
-      // QA-020: the speaker audio starts ~1 s after the recording (OS player latency),
-      // so the recording may genuinely BEGIN with a pause. It is accepted only if it
-      // starts at 0 and the room was quiet until the measured acoustic onset.
-      const leadingOnset = detectAudioOnset(rawPath!);
-      const starts = allStarts.filter((s, i) => !(i === 0 && s < 0.1 && leadingOnset !== null && leadingOnset >= 1.2));
-      console.log(`J1 acoustic onset ${leadingOnset}s; silences considered: ${JSON.stringify(starts)}`);
       const durations = regions.map((r) => parseFloat((/\((\d+(?:\.\d+)?)s\)/.exec(r.title) || [])[1] || 'NaN'));
+      // QA-035: the WAV reaches the mic after the OS player's pre-roll, so its
+      // position in the recording must be MEASURED (both known gaps), not assumed
+      // to start at 0.
+      const delay = detectAcousticDelay(rawPath!, AUDIO.silences as [number, number][]);
+      console.log(`J1 measured speaker-WAV delay in the recording: ${JSON.stringify(delay)}` +
+        ` (START line said ${session.audioOffsetSec}s)`);
+      expect(delay, 'the speaker audio must be audible in the real-mic recording').not.toBeNull();
+      const delaySec = delay!.delaySec;
+      // A silence at 0 s is the pre-roll quiet BEFORE the WAV reached the mic,
+      // not a WAV pause; it is accepted only when the WAV was already audible.
+      const starts = allStarts.filter((s) => !(s < 0.1 && delaySec >= 1.2));
+      console.log(`J1 known WAV gaps shifted by ${delaySec}s; silences considered: ${JSON.stringify(starts)}`);
       const pauses = allStarts.map((s, i) => ({ start: s, duration: durations[i] }));
       // QA-020 ground truth from the recording itself (real room, real mic).
-      const checks = checkKnownPauses(rawPath!, AUDIO.silences as [number, number][], leadingOnset ?? 0, pauses);
+      const checks = checkKnownPauses(rawPath!, AUDIO.silences as [number, number][], delaySec, pauses);
       console.log('J1 known pauses vs the recording:', JSON.stringify(checks));
       const quietChecks = checks.filter((c) => c.quiet);
       expect(quietChecks.length, 'at least one known pause must have stayed quiet in the room').toBeGreaterThanOrEqual(1);
       for (const c of quietChecks) {
         expect(c.matched, `the product missed the quiet pause at ${c.gap[0].toFixed(2)}s`).toBeTruthy();
       }
-      // the WAV's silences start at 4.0 s and 14.0 s of the WAV, and the WAV
-      // starts audioOffsetSec after the recording went live (measured): +-300 ms
-      const offset = detectAudioOnset(rawPath!);
-      console.log(`J1 acoustic onset of the speaker WAV: ${offset}s (START line said ${session.audioOffsetSec}s)`);
-      expect(offset, 'the speaker audio must be audible in the real-mic recording').not.toBeNull();
       for (const expected of checks.filter((c) => c.quiet).map((c) => c.gap[0])) {
         const hit = starts.find((s) => Math.abs(s - expected) < 0.3);
         expect(hit, `no silence detected near ${expected}s (detected ${JSON.stringify(starts)})`)

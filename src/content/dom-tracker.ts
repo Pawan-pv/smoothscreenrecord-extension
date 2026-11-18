@@ -433,9 +433,12 @@ function injectRecordingHud() {
     stopBtn.onclick = (e) => {
       e.stopPropagation();
       if (typeof chrome !== 'undefined' && chrome.runtime) {
-        chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' }, () => {
-          void chrome.runtime?.lastError;
-        });
+        chrome.runtime.sendMessage(
+          { type: 'STOP_STUDIO_RECORDING', ...(sessionId ? { sessionId } : {}) },
+          () => {
+            void chrome.runtime?.lastError;
+          }
+        );
       }
     };
   }
@@ -462,8 +465,13 @@ function removeRecordingHud() {
 }
 
 export function startTracking(originEpochMs?: number, recordingSessionId?: string | null): void {
+  const nextSessionId = recordingSessionId || null;
+  // A repeated START for the session that is already running is a no-op: a
+  // retried message must never erase the telemetry captured so far.
+  if (isRecording && sessionId === nextSessionId) return;
+
   isRecording = true;
-  sessionId = recordingSessionId || null;
+  sessionId = nextSessionId;
   startTime = performance.now();
   // Use the recorder published origin so telemetry and video share one clock.
   originEpoch = typeof originEpochMs === 'number' && originEpochMs > 0
@@ -489,7 +497,20 @@ export function startTracking(originEpochMs?: number, recordingSessionId?: strin
   console.log('[SmoothStudio DOM-Tracker] Started 120Hz recording telemetry. Origin epoch:', Math.round(originEpoch));
 }
 
-export function stopTracking(): TelemetryData {
+/** The session this content script is tracking right now (null when idle). */
+export function getTrackingState(): { recording: boolean; sessionId: string | null } {
+  return { recording: isRecording, sessionId };
+}
+
+/**
+ * Stops the current session and returns its telemetry. Returns null when
+ * nothing is recording or when `expectedSessionId` names a DIFFERENT session:
+ * a late stop must not close (or hand out) the current one.
+ */
+export function stopTracking(expectedSessionId: string | null = null): TelemetryData | null {
+  if (!isRecording) return null;
+  if (expectedSessionId && sessionId && expectedSessionId !== sessionId) return null;
+
   isRecording = false;
   removeRecordingHud();
   closeTypingSession();
@@ -502,11 +523,13 @@ export function stopTracking(): TelemetryData {
   window.removeEventListener('input', handleInput, { capture: true });
 
   const durationMs = Math.round(getRelativeTime());
+  const stoppedSessionId = sessionId;
+  sessionId = null;
 
   const telemetry: TelemetryData = {
     metadata: {
-      id: sessionId || ('rec_' + Date.now()),
-      ...(sessionId ? { sessionId } : {}),
+      id: stoppedSessionId || ('rec_' + Date.now()),
+      ...(stoppedSessionId ? { sessionId: stoppedSessionId } : {}),
       startTime: Date.now() - durationMs,
       endTime: Date.now(),
       durationMs,
@@ -537,7 +560,17 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage 
       sendResponse({ status: 'started' });
       return true;
     } else if (message.type === 'STOP_TELEMETRY') {
-      const data = stopTracking();
+      const wanted = typeof message.sessionId === 'string' ? message.sessionId : null;
+      const active = getTrackingState();
+      if (!active.recording) {
+        sendResponse({ status: 'not_recording', data: null });
+        return true;
+      }
+      if (wanted && active.sessionId && wanted !== active.sessionId) {
+        sendResponse({ status: 'ignored', data: null });
+        return true;
+      }
+      const data = stopTracking(wanted);
       sendResponse({ status: 'stopped', data });
       return true;
     } else if (message.type === 'GET_BRAND_COLORS') {

@@ -247,7 +247,10 @@ export function setSessionOrigin(originEpoch: number): void {
 }
 
 export function appendVideoChunk(chunk: Blob): Promise<void> {
-  if (!active) return Promise.resolve();
+  // The chunk stream is closed once the session stops: a late frame (a pump
+  // that was not stopped yet) must not extend the recording that is being
+  // finalized/committed.
+  if (!active || active.status !== 'recording') return Promise.resolve();
   const session = active;
   const idx = chunkHome.length;
   chunkHome.push(session.backend);

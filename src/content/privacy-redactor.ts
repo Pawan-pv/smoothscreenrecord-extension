@@ -23,6 +23,10 @@ let previousInlineFilter: Map<HTMLElement, { value: string; priority: string }> 
 // It is moved, unchanged (same Text node, same value), into an inert inline
 // <span> that is blurred instead. A reset puts the node back where it was.
 let bodyLevelWrappers: Set<HTMLSpanElement> = new Set();
+// Elements the user blurred by hand with the interactive picker. They are not
+// part of the category options, so re-applying the options must never undo
+// them (only a full reset, or a second picker click, does).
+let manualBlurElements: Set<HTMLElement> = new Set();
 
 // Non-global detection patterns (safe for .test() without mutating lastIndex)
 export const EMAIL_DETECT = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/i;
@@ -396,17 +400,28 @@ function observeContainer(target: Node, options: Partial<PrivacyOptions>) {
 export function applyAutoRedaction(options: Partial<PrivacyOptions> = { blurEmails: true, blurRevenue: true, blurApiKeys: true }): number {
   if (!document?.body) return 0;
 
+  // The picker's blurs are the user's explicit choices and are not part of the
+  // options: keep the elements that are still in the page and restore them
+  // after the scan (the restore + re-mask happen in the same task, so the
+  // browser never paints an unredacted frame in between).
+  const manual: HTMLElement[] = [];
+  for (const el of Array.from(manualBlurElements)) {
+    if (el.isConnected) manual.push(el);
+    else manualBlurElements.delete(el);
+  }
+
   // Restore whatever was redacted before and re-apply with the CURRENT
   // options. Without this, switching a category OFF leaves the previously
   // masked text masked: the user could never read the value again.
-  // The restore and the re-mask happen in the same task, so the browser never
-  // paints an unredacted frame in between. The interactive picker keeps its
-  // state - it is not part of the options.
   resetRedactions({ keepPicker: true });
 
   ensureRedactionStyles(document);
   observeContainer(document.body, options);
   scanContainer(document.body, options);
+
+  for (const el of manual) {
+    if (el.isConnected) blurElement(el);
+  }
 
   return blurredElements.size;
 }
@@ -437,9 +452,11 @@ function handlePickerClick(e: MouseEvent) {
 
   if (blurredElements.has(target)) {
     unblurElement(target);
+    manualBlurElements.delete(target);
     target.style.outline = '';
   } else {
     blurElement(target);
+    manualBlurElements.add(target);
     target.style.outline = '';
   }
 }
@@ -474,6 +491,9 @@ export function stopElementPicker(): void {
 export function resetRedactions(opts: { keepPicker?: boolean } = {}): void {
   if (!opts.keepPicker) {
     stopElementPicker();
+    // A full reset means "shield off": the manual choices go too. When this
+    // is only a re-apply (keepPicker), they are restored afterwards.
+    manualBlurElements.clear();
   }
 
   if (mutationTimeout) {

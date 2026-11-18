@@ -1,4 +1,4 @@
-import { ClickEvent, InputFocusEvent, ZoomPill } from '../types/telemetry';
+import { ClickEvent, InputFocusEvent, ZoomPill, BoundingBox } from '../types/telemetry';
 
 export interface SpringConfig {
   stiffness: number; // Spring tension (e.g. 180)
@@ -282,8 +282,22 @@ export function generateAutoZoomPills(
   const CLUSTER_TIME_WINDOW_MS = 3800;
   const MIN_HOLD_DURATION_MS = 2400;
 
-  // Filter clicks that have coordinates
-  const sortedClicks = [...clicks].sort((a, b) => a.t - b.t);
+  // A pill is a seek target in the exporter: it must live inside the
+  // recording. Without a real timeline (and a real viewport to normalize
+  // against) there is nothing sensible to generate.
+  if (!Number.isFinite(videoDurationMs) || videoDurationMs <= 0) return [];
+  if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) return [];
+  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) return [];
+
+  const fitsRecording = (t: number) => Number.isFinite(t) && t >= 0 && t <= videoDurationMs;
+  const clampNorm = (v: number) => (Number.isFinite(v) ? Math.max(0.15, Math.min(0.85, v)) : 0.5);
+  const finiteBounds = (b?: BoundingBox) =>
+    Boolean(b && Number.isFinite(b.x) && Number.isFinite(b.y) && Number.isFinite(b.width) && Number.isFinite(b.height));
+
+  // Filter clicks that have coordinates and happened inside the recording
+  const sortedClicks = clicks
+    .filter((c) => fitsRecording(c.t) && Number.isFinite(c.x) && Number.isFinite(c.y))
+    .sort((a, b) => a.t - b.t);
 
   let currentCluster: ClickEvent[] = [];
 
@@ -316,15 +330,18 @@ export function generateAutoZoomPills(
 
   // Also create zoom pills for text input typing sessions
   for (const inputEv of inputEvents) {
-    if (inputEv.type === 'focus' || inputEv.type === 'type') {
+    if ((inputEv.type === 'focus' || inputEv.type === 'type') && fitsRecording(inputEv.t) && finiteBounds(inputEv.bounds)) {
       const centerX = (inputEv.bounds.x + inputEv.bounds.width / 2) / viewportWidth;
       const centerY = (inputEv.bounds.y + inputEv.bounds.height / 2) / viewportHeight;
 
-      const normX = Math.max(0.1, Math.min(0.9, centerX));
-      const normY = Math.max(0.1, Math.min(0.9, centerY));
+      const normX = clampNorm(centerX);
+      const normY = clampNorm(centerY);
 
       const startTime = Math.max(0, inputEv.t - 400);
-      const endTime = Math.max(startTime + 400, Math.min(videoDurationMs, inputEv.t + 2200));
+      // Keep the typing lens on screen for 2.2 s after the event, then clamp
+      // against the real duration: the pill is never pushed past the end of
+      // the recording, but it is also not cut down to nothing.
+      const endTime = Math.min(videoDurationMs, Math.max(startTime + 400, inputEv.t + 2200));
 
       // Check if overlapping an existing pill
       const overlap = pills.some((p) => Math.abs(p.startTime - startTime) < 1500);
@@ -356,12 +373,12 @@ export function generateAutoZoomPills(
     let focalY = primary.y;
     let scale = 1.6;
 
-    if (primary.containerBounds && primary.containerBounds.width > 50) {
-      focalX = primary.containerBounds.x + primary.containerBounds.width / 2;
-      focalY = primary.containerBounds.y + primary.containerBounds.height / 2;
+    if (finiteBounds(primary.containerBounds) && primary.containerBounds!.width > 50) {
+      focalX = primary.containerBounds!.x + primary.containerBounds!.width / 2;
+      focalY = primary.containerBounds!.y + primary.containerBounds!.height / 2;
 
       // Smart zoom scaling based on container size
-      const coverage = primary.containerBounds.width / viewportWidth;
+      const coverage = primary.containerBounds!.width / viewportWidth;
       if (coverage > 0.6) {
         scale = 1.35; // Large modal/form: gentle zoom
       } else if (coverage < 0.2) {
@@ -377,15 +394,15 @@ export function generateAutoZoomPills(
       focalY = avgY;
     }
 
-    const normX = Math.max(0.15, Math.min(0.85, focalX / viewportWidth));
-    const normY = Math.max(0.15, Math.min(0.85, focalY / viewportHeight));
+    const normX = clampNorm(focalX / viewportWidth);
+    const normY = clampNorm(focalY / viewportHeight);
 
     const startTime = Math.max(0, primary.t - 300);
     const lastClickTime = cluster[cluster.length - 1].t;
     // The pill must never outlive the recording, but it also must never be
     // collapsed by a bogus duration: clamp against the real video duration.
     const hold = Math.max(lastClickTime + 1600, startTime + MIN_HOLD_DURATION_MS);
-    const endTime = Math.max(startTime + 400, Math.min(videoDurationMs, hold));
+    const endTime = Math.min(videoDurationMs, Math.max(hold, startTime + 400));
 
     const tilt = calculateIsometricTilt(normX, normY, scale);
 

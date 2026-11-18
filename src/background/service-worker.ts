@@ -28,9 +28,23 @@ const getStorageArea = () => {
   return chrome.storage.local;
 };
 
+/**
+ * Bumped on every in-memory write. `loadSessionState()` reads asynchronously;
+ * a start/stop that lands while that read is in flight leaves memory newer than
+ * the snapshot it is about to apply, so the snapshot must be discarded.
+ */
+let stateRevision = 0;
+/** True while a persist is still being written: memory is newer than storage. */
+let pendingStateWrites = 0;
+
 async function loadSessionState(): Promise<SessionState> {
+  // A persisted write that has not landed yet would make this read apply an
+  // OLD snapshot over the newer in-memory state.
+  if (pendingStateWrites > 0) return state;
+  const revisionAtStart = stateRevision;
   try {
     const data: Record<string, any> = await getStorageArea().get(['activeRecordingTabId', 'activeEditorTabId', 'isRecording', 'quality', 'activeSessionId']);
+    if (revisionAtStart !== stateRevision) return state;
     state = {
       activeRecordingTabId: typeof data.activeRecordingTabId === 'number' ? data.activeRecordingTabId : (data.activeRecordingTabId === null ? null : state.activeRecordingTabId),
       activeEditorTabId: typeof data.activeEditorTabId === 'number' ? data.activeEditorTabId : (data.activeEditorTabId === null ? null : state.activeEditorTabId),
@@ -46,11 +60,32 @@ async function loadSessionState(): Promise<SessionState> {
 
 async function persistSessionState(partial: Partial<SessionState>): Promise<void> {
   state = { ...state, ...partial };
+  stateRevision++;
+  pendingStateWrites++;
   try {
     await getStorageArea().set(partial);
   } catch (err) {
     console.warn('[SmoothStudio SW] Failed to persist session state:', err);
+  } finally {
+    pendingStateWrites--;
   }
+}
+
+/**
+ * Why an end request did or did not close a session.
+ * - `ended`: this call transitioned the live session to stopped.
+ * - `stale`: the caller named a session that is no longer the live one.
+ * - `superseded`: the session ended, but a NEWER one started while its
+ *   telemetry was being collected; the newer session's state is untouched.
+ * - `not_recording`: there was nothing to end.
+ */
+type EndReason = 'ended' | 'stale' | 'superseded' | 'not_recording';
+
+interface EndSessionResult {
+  telemetry: any;
+  sessionId: string | null;
+  ended: boolean;
+  reason: EndReason;
 }
 
 /**
@@ -60,19 +95,52 @@ async function persistSessionState(partial: Partial<SessionState>): Promise<void
  * telemetry of a session is collected exactly once and never mixed with
  * another session's.
  */
-let endInFlight: Promise<{ telemetry: any; sessionId: string | null }> | null = null;
-async function endRecordingSession(): Promise<{ telemetry: any; sessionId: string | null }> {
-  if (endInFlight) return endInFlight;
-  endInFlight = (async () => {
+interface InFlightEnd {
+  target: string | null;
+  promise: Promise<EndSessionResult>;
+}
+let endInFlight: InFlightEnd | null = null;
+async function endRecordingSession(expectedSessionId: string | null = null): Promise<EndSessionResult> {
+  // Concurrent stops for the SAME session share one telemetry collection. A
+  // stop for a DIFFERENT (newer) session waits for the in-flight one to
+  // settle and then gets its own attempt: it must never be answered with the
+  // old session's result and silently leave the new recording running.
+  while (endInFlight) {
+    const inflight = endInFlight;
+    const result = await inflight.promise;
+    if (expectedSessionId !== null && inflight.target === expectedSessionId) {
+      return result;
+    }
+  }
+
+  let promise: Promise<EndSessionResult> | null = null;
+  promise = (async (): Promise<EndSessionResult> => {
     const curr = await loadSessionState();
     const sessionId = curr.activeSessionId || null;
+
+    // A stop is only valid for the session that is live right now. Without
+    // this check a late HUD/editor stop would kill the recording that
+    // replaced its own.
+    if (expectedSessionId && sessionId && expectedSessionId !== sessionId) {
+      return { telemetry: null, sessionId, ended: false, reason: 'stale' };
+    }
+
     if (!curr.isRecording) {
       // Already ended (another stop path got here first): hand out what was
-      // stored for this session, if anything.
+      // stored for THIS session, if anything. A late retry of an old session's
+      // stop must never hand the UI the telemetry of a different session.
       const stored = await chrome.storage.local.get(['smoothstudio_telemetry']).catch(() => ({} as any));
       const t = (stored as any)?.smoothstudio_telemetry || null;
       const lastId = (await getStorageArea().get(['lastSessionId']).catch(() => ({} as any)) as any)?.lastSessionId || null;
-      return { telemetry: t && lastId && t.metadata?.sessionId === lastId ? t : null, sessionId: lastId };
+      const belongsToRequest =
+        !expectedSessionId ||
+        (t?.metadata?.sessionId === expectedSessionId && lastId === expectedSessionId);
+      return {
+        telemetry: t && lastId && t.metadata?.sessionId === lastId && belongsToRequest ? t : null,
+        sessionId: lastId,
+        ended: false,
+        reason: 'not_recording'
+      };
     }
     const tabId = curr.activeRecordingTabId;
     let telemetry: any = null;
@@ -96,15 +164,42 @@ async function endRecordingSession(): Promise<{ telemetry: any; sessionId: strin
         'smoothstudio_telemetry.json': telemetry
       }).catch(() => undefined);
     }
-    await persistSessionState({ isRecording: false, activeRecordingTabId: null, activeSessionId: null });
+
+    // Compare-and-set: collecting the telemetry above yields to the event
+    // loop, so a NEW recording can start in the meantime. Only reset the
+    // state if the session that was live when we started is still the live
+    // one; otherwise the start already owns the state.
+    const latest = await loadSessionState();
+    const stillTheSameSession = latest.isRecording
+      && (latest.activeSessionId || null) === sessionId
+      && latest.activeRecordingTabId === tabId;
+    if (!stillTheSameSession) {
+      return {
+        telemetry: telemetry && telemetry.metadata ? telemetry : null,
+        sessionId,
+        ended: false,
+        reason: 'superseded'
+      };
+    }
+
+    // Mark the ended session BEFORE the state says "idle": a concurrent stop
+    // that sees isRecording=false must be able to hand out this session's
+    // telemetry (and never a different session's).
     await getStorageArea().set({ lastSessionId: sessionId }).catch(() => undefined);
-    return { telemetry: telemetry && telemetry.metadata ? telemetry : null, sessionId };
-  })();
-  try {
-    return await endInFlight;
-  } finally {
-    endInFlight = null;
-  }
+    await persistSessionState({ isRecording: false, activeRecordingTabId: null, activeSessionId: null });
+    return {
+      telemetry: telemetry && telemetry.metadata ? telemetry : null,
+      sessionId,
+      ended: true,
+      reason: 'ended'
+    };
+  })().finally(() => {
+    // Clear the slot before any waiter resumes, so a stop for another session
+    // can start its own attempt immediately.
+    if (endInFlight && endInFlight.promise === promise) endInFlight = null;
+  });
+  endInFlight = { target: expectedSessionId, promise };
+  return promise;
 }
 
 // The editor (which owns the recorder) was closed while recording: the
@@ -229,10 +324,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // button, Chrome's "Stop sharing" bar). The response carries the session's
   // telemetry once it has been collected.
   if (message.type === 'STOP_STUDIO_RECORDING') {
+    const wanted: string | null = typeof message.sessionId === 'string' ? message.sessionId : null;
     loadSessionState().then(async (currState) => {
       const editorTabId = currState.activeEditorTabId;
       const fromEditor = Boolean(sender.tab?.id && editorTabId && sender.tab.id === editorTabId);
-      const { telemetry, sessionId } = await endRecordingSession();
+      const result = await endRecordingSession(wanted);
+
+      if (!result.ended) {
+        // Never stop, focus or re-notify the editor of a session this request
+        // does not own: it may be recording a newer one right now.
+        const status = result.reason === 'stale'
+          ? 'stop_ignored'
+          : result.reason === 'superseded'
+            ? 'stop_superseded'
+            : 'not_recording';
+        sendResponse({ status, telemetry: result.telemetry, sessionId: result.sessionId });
+        return;
+      }
+
+      const { telemetry, sessionId } = result;
 
       // The recorder lives in the editor: tell it to stop (unless it asked).
       const notify = (tabId: number) => {
@@ -267,13 +377,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // A newly opened editor found an interrupted session (the editor that
   // recorded it crashed): end it on the recorded tab and return its telemetry.
   if (message.type === 'RECOVER_SESSION') {
+    const wanted: string | null = typeof message.sessionId === 'string' ? message.sessionId : null;
     loadSessionState().then(async (currState) => {
-      const wanted: string | null = message.sessionId || null;
       if (currState.isRecording && (!wanted || !currState.activeSessionId || currState.activeSessionId === wanted)) {
-        const res = await endRecordingSession();
-        sendResponse({ status: 'session_recovered', ...res });
+        const res = await endRecordingSession(wanted);
+        sendResponse({ status: res.ended ? 'session_recovered' : 'not_recording', ...res });
       } else {
-        const res = await endRecordingSession(); // not recording: returns what was stored
+        const res = await endRecordingSession(wanted); // not recording: returns what was stored
         sendResponse({ status: 'not_recording', telemetry: res.telemetry && res.sessionId === wanted ? res.telemetry : null, sessionId: res.sessionId });
       }
     });

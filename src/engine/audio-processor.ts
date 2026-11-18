@@ -1,4 +1,5 @@
 import { SilenceSegment, ClickEvent, KeystrokeEvent } from '../types/telemetry';
+import { readWebmAudioStartMs } from './webm-timestamps';
 
 export class AudioProcessor {
   private audioCtx: AudioContext | null = null;
@@ -27,10 +28,27 @@ export class AudioProcessor {
       const ctx = this.getAudioContext();
       const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
       if (!decoded || decoded.numberOfChannels === 0 || decoded.length === 0) return null;
-      return decoded;
+      // QA-011: the container may start the audio track later than the video.
+      // decodeAudioData drops that offset; put the samples back on the media
+      // timeline so waveform, silence detection and cuts line up with clicks.
+      const audioStartMs = await readWebmAudioStartMs(videoBlob);
+      return this.alignDecodedBuffer(ctx, decoded, audioStartMs);
     } catch {
       return null;
     }
+  }
+
+  /** Prepends the missing track-start span (capped) without touching the samples. */
+  private alignDecodedBuffer(ctx: AudioContext, decoded: AudioBuffer, startTimeMs: number): AudioBuffer {
+    if (!Number.isFinite(startTimeMs) || startTimeMs <= 0) return decoded;
+    const capped = Math.min(startTimeMs, 60_000);
+    const pad = Math.round((capped / 1000) * decoded.sampleRate);
+    if (pad <= 0) return decoded;
+    const out = ctx.createBuffer(decoded.numberOfChannels, decoded.length + pad, decoded.sampleRate);
+    for (let c = 0; c < decoded.numberOfChannels; c++) {
+      out.getChannelData(c).set(decoded.getChannelData(c), pad);
+    }
+    return out;
   }
 
   /**
@@ -290,15 +308,31 @@ export class AudioProcessor {
  * Pure silence detector over one channel of PCM: pauses of at least
  * `minSilenceDurationMs` during which the user neither clicked nor typed.
  *
- * QA-021: a REAL microphone in a real room never delivers digital silence: the
- * AGC lifts the room noise, so the pauses of a voice-over sit 20-25 dB under
- * the speech but well above a fixed -42 dBFS (measured: speech -15 dBFS,
- * pauses -33..-41 dBFS). The threshold therefore adapts to the recording: it is
- * the midpoint between the recording's speech level (90th percentile of the
- * 50 ms windows) and its quiet level (10th percentile) whenever the two differ
- * by at least 12 dB, and never stricter than `dbThreshold`. Without that
- * contrast (nobody speaks) the fixed `dbThreshold` applies, so room noise alone
- * is never cut. A single blip of up to 100 ms does not end a pause.
+ * QA-021: a REAL microphone in a real room never delivers digital silence. The
+ * pauses of a voice-over sit well under the speech but on top of room noise,
+ * and that noise floor moves during a recording (a fan, a road, AGC). A single
+ * global midpoint therefore fails twice: it cannot separate speech from a
+ * continuous fan that is only ~9 dB under the voice, and it misses pauses after
+ * the noise floor has risen.
+ *
+ * Per window the threshold is therefore the lower of:
+ *  - the local noise floor (10th percentile of the surrounding 4 s) + 8 dB,
+ *    never below the absolute `dbThreshold`, and
+ *  - the speech peak of the surroundings and of the whole recording, minus 6 dB.
+ *
+ * The second term is what protects quiet speech: a syllable dip is brief, and a
+ * sustained 6 dB drop below everything the speaker produced nearby is a pause,
+ * not articulation. Adaptation only happens when the recording shows at least
+ * 6 dB of contrast, so steady room noise or music is never cut. A single blip of
+ * up to 100 ms does not end a pause.
+ *
+ * Two guards keep the result honest:
+ *  - a recording whose loudest window is below `dbThreshold` has no audible
+ *    content at all; tightening it would delete the whole timeline, so it is
+ *    returned unchanged;
+ *  - a pause only starts after 300 ms of *uninterrupted* quiet, so a 50 ms
+ *    syllable dip just before a pause cannot drag the cut into the speaker's
+ *    last syllable (and symmetrically at the end).
  */
 export function detectSilenceSegments(
   channelData: Float32Array,
@@ -308,39 +342,73 @@ export function detectSilenceSegments(
   dbThreshold = -42,
   minSilenceDurationMs = 1200
 ): SilenceSegment[] {
-  const windowSize = Math.floor(sampleRate * 0.05); // 50ms window
+  // A decoder that reports no usable sample rate cannot be analysed; return a
+  // safe no-op instead of allocating an Infinity-sized levels array.
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0) return [];
+  if (!channelData || channelData.length === 0) return [];
+
+  const windowSize = Math.max(1, Math.floor(sampleRate * 0.05)); // 50ms window
   const totalWindows = Math.floor(channelData.length / windowSize);
   const totalMs = (channelData.length * 1000) / sampleRate;
   const windowMs = (windowSize * 1000) / sampleRate;
-  const MIN_CONTRAST_DB = 12;
+  const MIN_CONTRAST_DB = 6;
+  const FLOOR_MARGIN_DB = 8;
+  const DROP_BELOW_SPEECH_DB = 6;
   const MAX_BLIP_WINDOWS = 2; // 100 ms
+  /** 300 ms of uninterrupted quiet: enough to exclude a syllable dip. */
+  const CORE_WINDOWS = Math.max(1, Math.ceil(300 / windowMs));
+  /** 2 s of context on each side: a 2 s pause still shows speech in the window. */
+  const LOCAL_RADIUS_WINDOWS = Math.max(4, Math.round(2000 / windowMs));
+  const thresholdDb = Number.isFinite(dbThreshold) ? dbThreshold : -42;
+  const minPauseMs = Number.isFinite(minSilenceDurationMs) && minSilenceDurationMs >= 0
+    ? minSilenceDurationMs
+    : 1200;
 
   const levels = new Float32Array(totalWindows);
   for (let w = 0; w < totalWindows; w++) {
     const startIdx = w * windowSize;
     let sumSquares = 0;
+    let invalid = false;
     for (let i = 0; i < windowSize; i++) {
       const val = channelData[startIdx + i];
+      if (!Number.isFinite(val)) { invalid = true; break; }
       sumSquares += val * val;
     }
-    const rms = Math.sqrt(sumSquares / windowSize);
+    // Never cut a window we could not analyse: treat it as full-scale.
+    const rms = invalid ? 1 : Math.sqrt(sumSquares / windowSize);
     levels[w] = rms > 0.00001 ? 20 * Math.log10(rms) : -100;
   }
 
-  let threshold = dbThreshold;
-  if (totalWindows >= 20) {
-    const sorted = Array.from(levels).sort((x, y) => x - y);
-    const quiet = sorted[Math.floor(sorted.length * 0.1)];
-    const speech = sorted[Math.floor(sorted.length * 0.9)];
-    if (speech - quiet >= MIN_CONTRAST_DB) {
-      threshold = Math.max(dbThreshold, (quiet + speech) / 2);
-    }
-  }
+  const percentile = (sorted: number[], p: number) =>
+    sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(sorted.length * p)))];
+
+  const sortedLevels = Array.from(levels).sort((x, y) => x - y);
+  const globalQuiet = percentile(sortedLevels, 0.1);
+  const globalSpeech = percentile(sortedLevels, 0.9);
+  // Nothing in this recording reaches the absolute silence threshold, so there
+  // is no audible speech to tighten. Cutting it would delete every frame.
+  if (sortedLevels[sortedLevels.length - 1] < thresholdDb) return [];
+  const adaptive = totalWindows >= 20 && globalSpeech - globalQuiet >= MIN_CONTRAST_DB;
+
+  /** Silence threshold for one window, in dBFS. */
+  const thresholdFor = (w: number): number => {
+    if (!adaptive) return thresholdDb;
+    const start = Math.max(0, w - LOCAL_RADIUS_WINDOWS);
+    const end = Math.min(totalWindows, w + LOCAL_RADIUS_WINDOWS + 1);
+    const local = Array.from(levels.subarray(start, end)).sort((x, y) => x - y);
+    const localFloor = percentile(local, 0.1);
+    const localPeak = percentile(local, 0.9);
+    const floorThreshold = Math.max(thresholdDb, localFloor + FLOOR_MARGIN_DB);
+    const dropThreshold = Math.max(localPeak, globalSpeech) - DROP_BELOW_SPEECH_DB;
+    return Math.min(floorThreshold, dropThreshold);
+  };
+  const thresholds = new Float32Array(totalWindows);
+  for (let w = 0; w < totalWindows; w++) thresholds[w] = thresholdFor(w);
 
   const silences: SilenceSegment[] = [];
   const push = (startMs: number, endMs: number) => {
     const duration = endMs - startMs;
-    if (duration < minSilenceDurationMs) return;
+    if (duration < minPauseMs) return;
     // Check if user was clicking or typing during this pause
     const hasActivity =
       clicks.some((c) => c.t >= startMs && c.t <= endMs) ||
@@ -355,17 +423,47 @@ export function detectSilenceSegments(
     });
   };
 
+  /** First window of the earliest uninterrupted quiet core, or the raw start. */
+  const quietCoreStart = (startW: number, endW: number): number => {
+    for (let s = startW; s + CORE_WINDOWS <= endW; s++) {
+      let quiet = true;
+      for (let k = 0; k < CORE_WINDOWS; k++) {
+        if (!(levels[s + k] < thresholds[s + k])) { quiet = false; break; }
+      }
+      if (quiet) return s;
+    }
+    return startW;
+  };
+
+  /** Last window of the latest uninterrupted quiet core, or the raw end. */
+  const quietCoreEnd = (startW: number, endW: number): number => {
+    for (let e = endW; e - CORE_WINDOWS >= startW; e--) {
+      let quiet = true;
+      for (let k = e - CORE_WINDOWS; k < e; k++) {
+        if (!(levels[k] < thresholds[k])) { quiet = false; break; }
+      }
+      if (quiet) return e;
+    }
+    return endW;
+  };
+
+  const pushRun = (startW: number, endW: number) => {
+    const s = quietCoreStart(startW, endW);
+    const e = quietCoreEnd(s, endW);
+    push(s * windowMs, e * windowMs);
+  };
+
   let silenceStartW: number | null = null;
   let loudRun = 0;
   for (let w = 0; w < totalWindows; w++) {
-    if (levels[w] < threshold) {
+    if (levels[w] < thresholds[w]) {
       if (silenceStartW === null) silenceStartW = w;
       loudRun = 0;
     } else if (silenceStartW !== null) {
       loudRun++;
       if (loudRun > MAX_BLIP_WINDOWS) {
         // the pause ended where the loud run began
-        push(silenceStartW * windowMs, (w - loudRun + 1) * windowMs);
+        pushRun(silenceStartW, w - loudRun + 1);
         silenceStartW = null;
         loudRun = 0;
       }
@@ -374,9 +472,14 @@ export function detectSilenceSegments(
 
   // Flush trailing silence
   if (silenceStartW !== null) {
-    const endMs = loudRun > 0 ? (totalWindows - loudRun) * windowMs : totalMs;
-    push(silenceStartW * windowMs, endMs);
+    const endW = loudRun > 0 ? totalWindows - loudRun : totalWindows;
+    pushRun(silenceStartW, endW);
   }
+
+  // A "pause" that spans (nearly) the whole recording is not a pause: there is
+  // no speech left to tighten. Keeping it would export an empty timeline.
+  const cutMs = silences.reduce((sum, s) => sum + s.duration, 0);
+  if (cutMs >= totalMs * 0.95) return [];
 
   return silences;
 }

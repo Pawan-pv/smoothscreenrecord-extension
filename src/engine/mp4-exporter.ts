@@ -20,8 +20,17 @@ import {
   keepRangesFromCuts,
   cutPcmToKeepRanges,
   encodeAac,
+  pcmDurationMs,
   AAC_OUTPUT_CHANNELS
 } from './audio-track';
+import { VideoFrameSeeker } from './video-seeker';
+
+function abortError(): Error {
+  const err = new Error('The export was cancelled.');
+  err.name = 'AbortError';
+  return err;
+}
+
 
 export interface ExportOptions {
   videoSource: HTMLVideoElement | HTMLCanvasElement;
@@ -52,104 +61,18 @@ export interface ExportOptions {
   outroHeadline?: string;
   outroCtaText?: string;
   targetWidth?: number;
+  /** Cancels the export during a seek or between frames. */
+  signal?: AbortSignal;
+  /** Real container duration of the recording, when known. */
+  mediaDurationMs?: number;
   onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
 }
 
 export class HardwareMp4Exporter {
   private renderer: StudioRenderer;
 
-  /** Hard safety limit for a single video seek. Exceeding it is an error, never a silent wrong frame. */
-  private static readonly SEEK_TIMEOUT_MS = 2000;
-
-  /**
-   * Grace period for requestVideoFrameCallback after `seeked`.
-   * The element must be rendered for rVFC to fire; an offscreen/background
-   * window never presents frames, so we fall back to the (already correct)
-   * `seeked` frame and remember that rVFC is not usable for this element.
-   */
-  private static readonly RVFC_GRACE_MS = 250;
-  private rvfcUsable = true;
-  private rvfcPresented = false;
-
   constructor() {
     this.renderer = new StudioRenderer();
-  }
-
-  /**
-   * Waits until the video element really holds the frame at `targetTimeSec`.
-   *
-   * The previous implementation raced `seeked` / `requestVideoFrameCallback`
-   * against a 25ms timer. Under load (e.g. 4x CPU throttling) the timer won
-   * and the encoder silently wrote the PREVIOUS frame, producing duplicated
-   * frames in the export. Now we wait for the real frame and throw a visible
-   * error when the seek does not complete within 2 seconds.
-   */
-  private async seekToFrame(video: HTMLVideoElement, targetTimeSec: number): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      let rafHandle: number | null = null;
-      let timer: number | null = null;
-      let graceTimer: number | null = null;
-
-      const cleanup = () => {
-        video.removeEventListener('seeked', onSeeked);
-        if (rafHandle !== null && typeof (video as any).cancelVideoFrameCallback === 'function') {
-          try { (video as any).cancelVideoFrameCallback(rafHandle); } catch { /* ignore */ }
-        }
-        if (timer !== null) clearTimeout(timer);
-        if (graceTimer !== null) clearTimeout(graceTimer);
-      };
-
-      const succeed = () => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve();
-      };
-
-      const fail = (reason: string) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(new Error(reason));
-      };
-
-      const onSeeked = () => {
-        if (settled) return;
-        // `seeked` guarantees the decoder produced the frame for the new
-        // currentTime, so the frame is already the CORRECT one.
-        // requestVideoFrameCallback additionally guarantees the frame was
-        // presented to the compositor. It only fires while the element is
-        // actually being rendered (an offscreen/background window never
-        // presents), so it is awaited with a bounded grace period and skipped
-        // entirely once we know this element is not presented.
-        if (this.rvfcUsable && typeof (video as any).requestVideoFrameCallback === 'function') {
-          rafHandle = (video as any).requestVideoFrameCallback(() => {
-            this.rvfcPresented = true;
-            succeed();
-          });
-          graceTimer = window.setTimeout(() => {
-            if (!this.rvfcPresented) this.rvfcUsable = false;
-            succeed();
-          }, HardwareMp4Exporter.RVFC_GRACE_MS);
-        } else {
-          succeed();
-        }
-      };
-
-      video.addEventListener('seeked', onSeeked);
-      timer = window.setTimeout(() => {
-        fail(
-          `Seek timeout: the video frame at ${targetTimeSec.toFixed(3)}s was not presented within ${HardwareMp4Exporter.SEEK_TIMEOUT_MS}ms.`
-        );
-      }, HardwareMp4Exporter.SEEK_TIMEOUT_MS);
-
-      try {
-        video.currentTime = targetTimeSec;
-      } catch (err) {
-        fail(`Seek failed at ${targetTimeSec.toFixed(3)}s: ${(err as any)?.message || err}`);
-      }
-    });
   }
 
   public async exportMp4(options: ExportOptions): Promise<Blob> {
@@ -168,8 +91,14 @@ export class HardwareMp4Exporter {
       showSpotlight,
       showCursor,
       showHud,
+      signal,
       onProgress
     } = options;
+    if (signal?.aborted) throw abortError();
+    const wallClockDurationMs = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
+    const containerDurationMs = Number.isFinite(options.mediaDurationMs) && (options.mediaDurationMs as number) > 0
+      ? (options.mediaDurationMs as number)
+      : 0;
 
     const sourceW = (options.metadata?.width && options.metadata.width > 0) ? options.metadata.width : 1920;
     const targetBaseW = options.targetWidth || sourceW;
@@ -226,17 +155,29 @@ export class HardwareMp4Exporter {
       : [];
 
     // C2: audio. If the recording has an audio track it MUST be decoded and
-    // encoded; a failure aborts the export (no silent video-only MP4). The audio
-    // is cut at exactly the same spans as the video timeline.
-    let audioTrack: PcmTrack | null = null;
+    // encoded; a failure aborts the export (no silent video-only MP4).
+    // The decoded PCM is already on the media timeline (track-start aligned).
+    let decodedPcm: PcmTrack | null = null;
     if (videoBlob && (await webmHasAudioTrack(new Uint8Array(await videoBlob.slice(0, 4 * 1024 * 1024).arrayBuffer())))) {
-      const decoded = await decodeRecordingPcm(videoBlob);
-      audioTrack = cutPcmToKeepRanges(decoded, keepRangesFromCuts(activeCutSilences, durationMs));
+      decodedPcm = await decodeRecordingPcm(videoBlob);
     }
+    const audioEndMs = decodedPcm ? pcmDurationMs(decodedPcm) : 0;
+
+    // QA-002: the longest real track is authoritative. A recorder whose video
+    // encoder stopped 400 ms before the audio must not lose that audio; the
+    // video simply holds its last frame for the tail. Never shorter than the
+    // wall clock or the container either.
+    const timelineDurationMs = Math.ceil(Math.max(wallClockDurationMs, containerDurationMs, audioEndMs));
+    if (timelineDurationMs <= 0) {
+      throw new Error('The recording has no timeline: duration, container and audio are all empty.');
+    }
+    const audioTrack = decodedPcm
+      ? cutPcmToKeepRanges(decodedPcm, keepRangesFromCuts(activeCutSilences, timelineDurationMs))
+      : null;
 
     // Build timeline frames to render (skipping cut silences)
     const timelineTimestamps: number[] = [];
-    for (let t = 0; t <= durationMs; t += frameIntervalMs) {
+    for (let t = 0; t <= timelineDurationMs; t += frameIntervalMs) {
       const isCut = activeCutSilences.some((s) => t >= s.startTime && t <= s.endTime);
       if (!isCut) {
         timelineTimestamps.push(t);
@@ -258,7 +199,7 @@ export class HardwareMp4Exporter {
           outW,
           outH,
           fps,
-          durationMs,
+          durationMs: timelineDurationMs,
           totalFrames,
           timelineTimestamps,
           pills,
@@ -269,6 +210,7 @@ export class HardwareMp4Exporter {
           showSpotlight,
           showCursor,
           showHud,
+          signal,
           metadata: options.metadata,
           cursorTheme: options.cursorTheme,
           cursorScale: options.cursorScale,
@@ -363,6 +305,8 @@ export class HardwareMp4Exporter {
     showOutroCard?: boolean;
     outroHeadline?: string;
     outroCtaText?: string;
+    /** Cancels the export during a seek or between frames. */
+    signal?: AbortSignal;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
   }): Promise<Blob> {
     const {
@@ -397,11 +341,22 @@ export class HardwareMp4Exporter {
       showOutroCard,
       outroHeadline,
       outroCtaText,
+      signal,
       onProgress
     } = params;
 
     if (totalFrames <= 0) {
       throw new Error('No timeline frames to encode into MP4.');
+    }
+    if (signal?.aborted) throw abortError();
+
+    // QA-001: one deterministic seeker for the whole export. It clamps to the
+    // real seekable range, assigns currentTime once, and treats "already on the
+    // requested frame" as a success instead of waiting for an event Chrome will
+    // never fire. Disposed in the finally block below.
+    const frameSeeker = video instanceof HTMLVideoElement ? new VideoFrameSeeker(video) : null;
+    if (frameSeeker) {
+      await frameSeeker.waitUntilReady(signal);
     }
 
     let isFinalized = false;
@@ -497,6 +452,7 @@ export class HardwareMp4Exporter {
       springCamera.snapTo(firstTarget);
     }
 
+    try {
     for (let f = 0; f < totalFrames; f++) {
       const currentMs = timelineTimestamps[f];
 
@@ -513,13 +469,18 @@ export class HardwareMp4Exporter {
       const camera = f === 0 ? targetCamera : springCamera.update(1 / fps);
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
 
+      if (signal?.aborted) throw abortError();
       // Seek video to frame timestamp or render canvas frame
-      if (video instanceof HTMLVideoElement) {
-        const targetTimeSec = currentMs / 1000;
-        if (Math.abs(video.currentTime - targetTimeSec) > 0.005) {
-          video.currentTime = targetTimeSec;
-          await this.seekToFrame(video, targetTimeSec);
+      if (video instanceof HTMLVideoElement && frameSeeker) {
+        // Backpressure BEFORE the seek: a saturated encoder queue starves the
+        // decoder, which is what made a healthy seek look like a timeout.
+        if (videoEncoder.encodeQueueSize > 12) {
+          while (videoEncoder.encodeQueueSize > 6) {
+            if (signal?.aborted) throw abortError();
+            await new Promise((r) => setTimeout(r, 2));
+          }
         }
+        await frameSeeker.seekTo(currentMs / 1000, signal);
       } else if (onRenderCanvasFrame) {
         onRenderCanvasFrame(currentMs);
       }
@@ -632,6 +593,14 @@ export class HardwareMp4Exporter {
     const mp4Blob = new Blob([buffer], { type: 'video/mp4' });
     console.log('[SmoothStudio MP4 Exporter] Hardware MP4 export completed! Size:', (mp4Blob.size / 1024 / 1024).toFixed(2), 'MB');
     return mp4Blob;
+    } catch (err) {
+      // Stop the encoder from muxing into a half-written file and release it.
+      isFinalized = true;
+      try { videoEncoder.close(); } catch { /* already closed */ }
+      throw err;
+    } finally {
+      frameSeeker?.dispose();
+    }
   }
 
   // Fallback using HTML5 Canvas captureStream + MediaRecorder
@@ -662,6 +631,8 @@ export class HardwareMp4Exporter {
     showOutroCard?: boolean;
     outroHeadline?: string;
     outroCtaText?: string;
+    /** Cancels the export during a seek or between frames. */
+    signal?: AbortSignal;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
   }): Promise<Blob> {
     const {
@@ -722,6 +693,10 @@ export class HardwareMp4Exporter {
 
     const totalFrames = timelineTimestamps.length;
     const springCameraFallback = new SpringCameraSolver();
+    const fallbackSeeker = video instanceof HTMLVideoElement ? new VideoFrameSeeker(video) : null;
+    if (fallbackSeeker) {
+      await fallbackSeeker.waitUntilReady();
+    }
     if (totalFrames > 0) {
       const firstTarget = computeCinematicCameraState(
         timelineTimestamps[0],
@@ -734,6 +709,7 @@ export class HardwareMp4Exporter {
       springCameraFallback.snapTo(firstTarget);
     }
 
+    try {
     for (let f = 0; f < totalFrames; f++) {
       const currentMs = timelineTimestamps[f];
 
@@ -749,10 +725,8 @@ export class HardwareMp4Exporter {
       springCameraFallback.setTarget(targetCamera);
       const camera = f === 0 ? targetCamera : springCameraFallback.update(1 / 60);
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
-      if (video instanceof HTMLVideoElement) {
-        const targetTimeSec = currentMs / 1000;
-        video.currentTime = targetTimeSec;
-        await this.seekToFrame(video, targetTimeSec);
+      if (video instanceof HTMLVideoElement && fallbackSeeker) {
+        await fallbackSeeker.seekTo(currentMs / 1000);
       } else if (onRenderCanvasFrame) {
         onRenderCanvasFrame(currentMs);
       }
@@ -805,6 +779,9 @@ export class HardwareMp4Exporter {
       };
       mediaRecorder.stop();
     });
+    } finally {
+      fallbackSeeker?.dispose();
+    }
   }
 
   // Trigger browser file download

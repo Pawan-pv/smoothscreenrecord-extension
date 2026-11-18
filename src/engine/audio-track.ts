@@ -2,11 +2,44 @@
 // Rules: no swallowed errors and no substituted audio. If the recording has an
 // audio track it must decode and encode, or the export fails with an error.
 
+import { readWebmAudioStartMs } from './webm-timestamps';
+
 export interface PcmTrack {
   /** One Float32Array per channel, all the same length. */
   channels: Float32Array[];
   sampleRate: number;
 }
+
+/**
+ * Largest leading offset we will ever synthesize. A corrupt EBML timestamp must
+ * not make the exporter allocate minutes of silence.
+ */
+const MAX_ALIGNMENT_MS = 60_000;
+
+/**
+ * Places decoded PCM on the media timeline (QA-011).
+ *
+ * `decodeAudioData` returns the audio track from its first sample with time 0,
+ * even when the container says the track starts later than the video. Padding
+ * the missing leading span makes PCM time equal the video element's
+ * `currentTime`, so cuts, silence detection and the muxed MP4 all share one
+ * timing reference. Zero/negative offsets are returned unchanged: no invented
+ * delay.
+ */
+export function alignPcmToTimeline(pcm: PcmTrack, startTimeMs: number): PcmTrack {
+  if (!Number.isFinite(startTimeMs) || startTimeMs <= 0) return pcm;
+  if (!Number.isFinite(pcm.sampleRate) || pcm.sampleRate <= 0) return pcm;
+  const capped = Math.min(startTimeMs, MAX_ALIGNMENT_MS);
+  const padSamples = Math.round((capped / 1000) * pcm.sampleRate);
+  if (padSamples <= 0) return pcm;
+  const channels = pcm.channels.map((src) => {
+    const out = new Float32Array(src.length + padSamples);
+    out.set(src, padSamples);
+    return out;
+  });
+  return { channels, sampleRate: pcm.sampleRate };
+}
+
 
 export interface TimeRangeMs {
   startTime: number;
@@ -48,7 +81,8 @@ export async function decodeRecordingPcm(blob: Blob): Promise<PcmTrack> {
     for (let c = 0; c < decoded.numberOfChannels; c++) {
       channels.push(new Float32Array(decoded.getChannelData(c)));
     }
-    return { channels, sampleRate: decoded.sampleRate };
+    const audioStartMs = await readWebmAudioStartMs(blob);
+    return alignPcmToTimeline({ channels, sampleRate: decoded.sampleRate }, audioStartMs);
   } catch (err: any) {
     throw new Error(`Could not decode the recording's audio track: ${err?.message || err}`);
   } finally {
@@ -56,34 +90,89 @@ export async function decodeRecordingPcm(blob: Blob): Promise<PcmTrack> {
   }
 }
 
+/** Length of the PCM track in milliseconds. */
+export function pcmDurationMs(pcm: PcmTrack): number {
+  const len = pcm.channels.length ? Math.max(...pcm.channels.map((c) => c.length)) : 0;
+  if (!pcm.sampleRate || pcm.sampleRate <= 0) return 0;
+  return (len * 1000) / pcm.sampleRate;
+}
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
 /** Complement of the cut ranges inside [0, durationMs]: the spans that stay in the export. */
 export function keepRangesFromCuts(cuts: TimeRangeMs[], durationMs: number): TimeRangeMs[] {
-  const sorted = [...cuts].sort((a, b) => a.startTime - b.startTime);
+  const duration = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
+  if (duration === 0) return [];
+
+  // Cut ranges come from telemetry, so treat them as untrusted: drop
+  // non-finite/inverted spans, clamp them to the recording and merge overlaps.
+  // A NaN that slipped through used to turn `cursor` into NaN and silently
+  // drop the whole audio track.
+  const normalized: Array<{ start: number; end: number }> = [];
+  for (const c of cuts) {
+    if (!Number.isFinite(c?.startTime) || !Number.isFinite(c?.endTime)) continue;
+    const start = clamp(c.startTime, 0, duration);
+    const end = clamp(c.endTime, 0, duration);
+    if (end > start) normalized.push({ start, end });
+  }
+  normalized.sort((a, b) => a.start - b.start);
+
   const keep: TimeRangeMs[] = [];
   let cursor = 0;
-  for (const c of sorted) {
-    if (c.startTime > cursor) keep.push({ startTime: cursor, endTime: c.startTime });
-    cursor = Math.max(cursor, c.endTime);
+  for (const c of normalized) {
+    if (c.start > cursor) keep.push({ startTime: cursor, endTime: c.start });
+    cursor = Math.max(cursor, c.end);
   }
-  if (cursor < durationMs) keep.push({ startTime: cursor, endTime: durationMs });
+  if (cursor < duration) keep.push({ startTime: cursor, endTime: duration });
   return keep;
 }
 
 /**
  * Concatenates the kept spans of the PCM track, so audio is cut at exactly the
  * same places as the video timeline.
+ *
+ * Throws when the result has no samples: an MP4 with a declared but empty AAC
+ * track is a broken export, not "silent audio" (C2: no substituted audio).
  */
 export function cutPcmToKeepRanges(pcm: PcmTrack, keep: TimeRangeMs[]): PcmTrack {
-  const totalLen = pcm.channels[0].length;
-  const spans = keep.map((r) => ({
-    from: Math.min(totalLen, Math.floor((r.startTime / 1000) * pcm.sampleRate)),
-    to: Math.min(totalLen, Math.floor((r.endTime / 1000) * pcm.sampleRate)),
-  })).filter((s) => s.to > s.from);
-  const outLen = spans.reduce((sum, s) => sum + (s.to - s.from), 0);
+  if (!pcm.channels.length) {
+    throw new Error('The recording has no audio channels to cut.');
+  }
+  if (!Number.isFinite(pcm.sampleRate) || pcm.sampleRate <= 0) {
+    throw new Error(`The recording's audio has an invalid sample rate (${pcm.sampleRate}).`);
+  }
+  const totalLen = Math.min(...pcm.channels.map((c) => c.length));
+  if (totalLen === 0) {
+    throw new Error("The recording's audio track has no samples.");
+  }
+
+  const spans: Array<{ from: number; to: number }> = [];
+  for (const r of keep) {
+    if (!Number.isFinite(r?.startTime) || !Number.isFinite(r?.endTime)) continue;
+    const from = clamp(Math.floor((r.startTime / 1000) * pcm.sampleRate), 0, totalLen);
+    const to = clamp(Math.floor((r.endTime / 1000) * pcm.sampleRate), 0, totalLen);
+    if (to > from) spans.push({ from, to });
+  }
+  // Merge overlapping spans: the same sample must never be written twice.
+  spans.sort((a, b) => a.from - b.from);
+  const merged: Array<{ from: number; to: number }> = [];
+  for (const s of spans) {
+    const last = merged[merged.length - 1];
+    if (last && s.from <= last.to) {
+      last.to = Math.max(last.to, s.to);
+    } else {
+      merged.push({ ...s });
+    }
+  }
+
+  const outLen = merged.reduce((sum, s) => sum + (s.to - s.from), 0);
+  if (outLen === 0) {
+    throw new Error('The cut ranges removed the whole audio track: the export would have no audio.');
+  }
   const channels = pcm.channels.map((src) => {
     const out = new Float32Array(outLen);
     let w = 0;
-    for (const s of spans) {
+    for (const s of merged) {
       out.set(src.subarray(s.from, s.to), w);
       w += s.to - s.from;
     }
@@ -106,6 +195,30 @@ export interface AacChunk {
 }
 
 /**
+ * AAC-LC has no "start at sample 0" concept: the encoder prepends one frame of
+ * priming (1024 samples = 21.3 ms at 48 kHz), and an MP4 without an edit list
+ * makes every player decode that priming as audio. Measured on the real
+ * exporter (QA-011): the exported tone ran 27.6 ms late against the video flash;
+ * 21.3 ms of that was the un-compensated priming.
+ *
+ * The first encoded packet is therefore held back: if more packets follow, it is
+ * pure priming and is dropped, and the remaining packets are shifted back by one
+ * AAC frame so the first real sample sits at media time 0. A recording shorter
+ * than one AAC frame keeps its only packet (nothing to compensate).
+ */
+function emitWithoutPriming(chunks: AacChunk[], sampleRate: number): AacChunk[] {
+  if (chunks.length < 2) return chunks;
+  const primingUs = Math.round((AAC_FRAME_SAMPLES / sampleRate) * 1_000_000);
+  return chunks.slice(1).map((chunk) => ({
+    ...chunk,
+    timestamp: Math.max(0, chunk.timestamp - primingUs),
+  }));
+}
+
+/** Timing helper exposed for the regression tests (see QA-011). */
+export const stripAacPriming = emitWithoutPriming;
+
+/**
  * Encodes PCM to AAC-LC. Mono input is duplicated to stereo so every player
  * handles the track. Throws if AAC is not supported or the encoder fails.
  */
@@ -122,13 +235,12 @@ export async function encodeAac(pcm: PcmTrack, onChunk: (chunk: AacChunk) => voi
   }
 
   let encoderError: Error | null = null;
-  let chunkCount = 0;
+  const encoded: AacChunk[] = [];
   const encoder = new AudioEncoder({
     output: (chunk, meta) => {
-      chunkCount++;
       const data = new Uint8Array(chunk.byteLength);
       chunk.copyTo(data);
-      onChunk({
+      encoded.push({
         data,
         type: chunk.type,
         timestamp: chunk.timestamp,
@@ -172,5 +284,8 @@ export async function encodeAac(pcm: PcmTrack, onChunk: (chunk: AacChunk) => voi
   } finally {
     try { encoder.close(); } catch { /* already closed after error */ }
   }
-  return chunkCount;
+
+  const chunks = emitWithoutPriming(encoded, pcm.sampleRate);
+  for (const chunk of chunks) onChunk(chunk);
+  return chunks.length;
 }

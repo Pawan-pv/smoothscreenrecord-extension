@@ -93,6 +93,8 @@ export function EditorStudio() {
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | HTMLCanvasElement | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
   const [durationMs, setDurationMs] = useState<number>(10000);
+  /** Real container duration of the loaded recording (before the UI override). */
+  const mediaDurationRef = useRef<number | null>(null);
   const [currentTimeMs, setCurrentTimeMs] = useState<number>(0);
   const [showDoctor, setShowDoctor] = useState<boolean>(false);
   const [activeDegradation, setActiveDegradation] = useState<SystemDegradationEvent | null>(null);
@@ -436,14 +438,6 @@ export function EditorStudio() {
       (window as any).__lastLoadedVideoElement = video;
     }
 
-    const durationSec = safeDuration / 1000;
-    try {
-      Object.defineProperty(video, 'duration', {
-        get: () => durationSec,
-        configurable: true
-      });
-    } catch {}
-
     video.addEventListener('play', () => setIsPlaying(true));
     video.addEventListener('pause', () => setIsPlaying(false));
     const markReady = () => {
@@ -453,10 +447,18 @@ export function EditorStudio() {
     video.addEventListener('canplay', markReady);
 
     video.onloadedmetadata = () => {
+      // Read the REAL container duration before anything overrides it. The
+      // container's duration is the authoritative media length: it includes the
+      // audio tail when the audio track outlives the last video frame (QA-002).
+      const realDurMs = Number.isFinite(video.duration) && video.duration > 0
+        ? Math.round(video.duration * 1000)
+        : null;
+      mediaDurationRef.current = realDurMs;
+
       let resolvedDur = safeDuration;
       // Guard against Chrome MediaRecorder WebM bug where video.duration === Infinity or NaN
-      if (Number.isFinite(video.duration) && video.duration > 0) {
-        resolvedDur = Math.round(video.duration * 1000);
+      if (realDurMs !== null) {
+        resolvedDur = Math.max(realDurMs, safeDuration);
       } else {
         // Chrome WebM duration bug workaround: seek near end and reset to 0 to force duration calculation
         try {
@@ -467,7 +469,15 @@ export function EditorStudio() {
           };
         } catch {}
       }
-      console.log('[SmoothStudio] Video element metadata loaded. Duration:', resolvedDur, 'Dimensions:', video.videoWidth, 'x', video.videoHeight);
+      // The UI timeline and the exporter must agree on the media length. Keep a
+      // finite duration for the many `video.duration` readers in the editor.
+      try {
+        Object.defineProperty(video, 'duration', {
+          get: () => resolvedDur / 1000,
+          configurable: true
+        });
+      } catch {}
+      console.log('[SmoothStudio] Video element metadata loaded. Duration:', resolvedDur, 'container:', realDurMs, 'Dimensions:', video.videoWidth, 'x', video.videoHeight);
       setDurationMs(resolvedDur);
       setVideoElement(video);
       // Nudge Chromium video decoder to decode the first frame so readyState advances to HAVE_CURRENT_DATA (2) / HAVE_ENOUGH_DATA (4)
@@ -1103,6 +1113,7 @@ export function EditorStudio() {
         outroHeadline,
         outroCtaText,
         targetWidth: targetExportWidth,
+        mediaDurationMs: mediaDurationRef.current ?? undefined,
         onProgress: (pct) => setExportProgress(pct)
       });
 

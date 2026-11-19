@@ -22,7 +22,7 @@ import fs from 'fs';
 import { execFileSync } from 'child_process';
 import {
   launchApp, serveFixtures, recordPage, mediaInfo, outDir, streamEndTime, framePts, FFMPEG,
-  sleep, REPO, extractFrameByIndex, lumaStdDev, logConsole
+  sleep, REPO, extractFrameByIndex, lumaStdDev, logConsole, recordingOrigin
 } from './helpers/harness';
 import { loadedRecordingBytes } from './helpers/harness';
 import { guardRecording } from './helpers/marker';
@@ -342,6 +342,10 @@ test.describe('M1 recording core', () => {
         await target.bringToFront();
         await target.locator('#smoothstudio-stop-btn').waitFor({ state: 'visible', timeout: 20000 });
         expect((await swSession(app.context)).isRecording, `${run.how}: SW must be recording`).toBe(true);
+        // QA-038: the HUD is painted before the recorder is live (QA-037). A
+        // click issued in that window is not part of the recording and is
+        // (correctly) not in its telemetry, so wait for the real origin.
+        await recordingOrigin(editor);
         await target.locator(run.click).click();
         if (run.click === '#open-modal') await target.locator('#close-modal').click().catch(() => undefined);
         await target.waitForTimeout(3000);
@@ -440,7 +444,9 @@ test.describe('M1 recording core', () => {
       await editor.locator('#stop-live-recording-top-btn').waitFor({ state: 'visible', timeout: 30000 });
       await target.bringToFront();
       await target.locator('#smoothstudio-stop-btn').waitFor({ state: 'visible', timeout: 20000 });
-      const startedAt = Date.now();
+      // QA-038: measure the recording from the recorder's own origin, not from
+      // the HUD paint which happens ~1 s before the captured picture switches.
+      const startedAt = await recordingOrigin(editor);
 
       await target.waitForTimeout(4000);
       // M1-05: data is committed while recording

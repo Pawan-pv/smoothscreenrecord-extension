@@ -9,7 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import { AddressInfo } from 'net';
 import { launchExtension, readOpfsFile, ffprobeStreams, writeScratch, REPO, SPEECH_WAV } from './helpers/extension';
-import { detectAcousticDelay, checkKnownPauses, maxWindowDb } from './helpers/harness';
+import { detectAcousticDelay, checkKnownPauses, maxWindowDb, recordingOrigin } from './helpers/harness';
 import { prepareSpeaker } from './helpers/speaker';
 
 function serveFixtures(): Promise<{ url: string; close: () => Promise<void> }> {
@@ -48,11 +48,14 @@ test('C1: a recording made with the mic ON contains an Opus audio stream of the 
     await editor.goto(`chrome-extension://${ext.extensionId}/editor.html?record=true&includeMic=true`);
     await editor.locator('#start-capture-prompt-btn').click();
     await expect(editor.locator('#stop-live-recording-top-btn')).toBeVisible({ timeout: 30000 });
-    const startedAt = Date.now();
 
     // Recorded page comes to the front; the editor is now in the background.
     await target.bringToFront();
     await expect(target.locator('#smoothstudio-stop-btn')).toBeVisible({ timeout: 15000 });
+    // QA-038: the wall clock starts when the recorder's first encoded picture
+    // really shows the recorded page, not when the HUD was painted ~1 s earlier
+    // (QA-037). Anchoring on Date.now() here made the file look 2 s too short.
+    const startedAt = await recordingOrigin(editor);
     const audioOffsetSec = ((await speaker.go()) - startedAt) / 1000;
     console.log(`C1 speaker playback started ${audioOffsetSec.toFixed(3)} s after the recording went live`);
     await target.waitForTimeout(20000);

@@ -101,7 +101,11 @@ export class ScreenCaptureEngine {
   private pumpLastFrame: (() => any) | null = null;
   private pumpReleaseLast: (() => void) | null = null;
   private pumpRepeatFrame: (() => void) | null = null;
+  /** QA-040: emit the last REAL captured picture even if it predates live. */
+  private pumpEmitCurrent: (() => boolean) | null = null;
   private pumpSourceFrames = 0;
+  /** QA-041: frames already read when the recording timeline started. */
+  private pumpLiveSourceFrames = 0;
   private sessionId = '';
   private releaseSessionLock: (() => void) | null = null;
   // QA-029: the recorder is armed but PAUSED until the recorded tab's HUD is
@@ -430,7 +434,16 @@ export class ScreenCaptureEngine {
       if (!hasPicture || lastDrawAt < this.captureLiveSince - 16) return;
       try { emit(); } catch (err) { console.warn('[SmoothStudio CaptureEngine] Frame pump repeat failed:', err); }
     };
+    // QA-040: the stop path can run before the live gate accepted a picture
+    // (the captured surface never changed). The canvas still holds the last
+    // REAL captured frame, which is what the screen showed; it is the honest
+    // first picture of that recording.
+    this.pumpEmitCurrent = () => {
+      if (!hasPicture) return false;
+      try { emit(); return true; } catch { return false; }
+    };
     this.pumpSourceFrames = 0;
+    this.pumpLiveSourceFrames = 0;
     const drawSource = (image: CanvasImageSource) => {
       this.pumpSourceFrames++;
       const now = performance.now();
@@ -533,6 +546,7 @@ export class ScreenCaptureEngine {
 
     this.firstFramePromise = new Promise<void>((resolve) => { this.firstFrameResolve = resolve; });
     this.pumpSourceFrames = 0;
+    this.pumpLiveSourceFrames = 0;
     let last: any = null;        // clone of the last REAL captured frame
     let lastAt = 0;              // performance.now() when it arrived
     let lastSourceFrameAt = 0;
@@ -564,6 +578,19 @@ export class ScreenCaptureEngine {
         send(new VF(last, { timestamp: ts }), 'ignore', NaN);
       } catch (err) {
         console.warn('[SmoothStudio CaptureEngine] Frame pump repeat failed:', err);
+      }
+    };
+    // QA-040: stop before the live gate accepted a picture. `last` is the last
+    // REAL frame read from the capture track (never an invented one); emitting
+    // it starts the timeline with what the screen actually showed.
+    this.pumpEmitCurrent = () => {
+      if (!last) return false;
+      try {
+        const ts = Number(last.timestamp) + Math.round((performance.now() - lastAt) * 1000);
+        send(new VF(last, { timestamp: ts }), 'ignore', NaN);
+        return true;
+      } catch {
+        return false;
       }
     };
 
@@ -755,6 +782,10 @@ export class ScreenCaptureEngine {
     this.clearLiveGate();
     this.captureLive = true;
     this.captureLiveSince = performance.now();
+    // QA-041: "captured frames read" must describe the recording. Frames read
+    // while the recorder was paused (the editor, the pre-switch picture) are
+    // not part of it; the frame that triggered live is (-1).
+    this.pumpLiveSourceFrames = Math.max(0, this.pumpSourceFrames - 1);
     this.timelineOriginEpoch = origin;
     try {
       if (this.mediaRecorder.state === 'paused') this.mediaRecorder.resume();
@@ -791,6 +822,7 @@ export class ScreenCaptureEngine {
     } catch {}
     this.pumpReader = null;
     this.pumpRepeatFrame = null;
+    this.pumpEmitCurrent = null;
     this.pumpLastFrame = null;
     this.pumpReleaseLast?.();
     this.pumpReleaseLast = null;
@@ -904,6 +936,21 @@ export class ScreenCaptureEngine {
   }
 
   private async _executeStop(): Promise<Blob | null> {
+    // QA-040: a stop can arrive before the live gate accepted a picture (the
+    // captured surface never changed, or the user stopped within the gate's
+    // wait). The screen still shows a real picture: start the timeline on it
+    // and give the encoder a moment to produce its first chunk instead of
+    // failing the whole recording with "no video was captured".
+    if (this.isRecording && !this.captureLive) {
+      this.resumeCapture(Date.now(), 'stop before the live gate');
+      if (this.pumpEmitCurrent?.()) {
+        const deadline = performance.now() + 400;
+        while (this.chunkCount === 0 && performance.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 20));
+        }
+      }
+      console.log(`[SmoothStudio CaptureEngine] Stop before live: emitted the current real picture, ${this.chunkCount} chunk(s) so far`);
+    }
     this.isRecording = false;
     console.log('[SmoothStudio CaptureEngine] Recorder stop begins at epoch', Date.now());
     this.recordingDurationMs = this.timelineOriginEpoch > 0
@@ -964,7 +1011,7 @@ export class ScreenCaptureEngine {
       } catch { /* the editor is already in front or the tab is gone */ }
     }
 
-    console.log(`[SmoothStudio CaptureEngine] Frame pump (${this.pumpDriver}): ${this.pumpSourceFrames} captured frames read, ${this.pumpFrameCount} frames sent to the encoder in ${this.recordingDurationMs}ms; snapshots ${this.snapshotCount}, detector busy ${Math.round(this.detectorBusyMs)}ms`);
+    console.log(`[SmoothStudio CaptureEngine] Frame pump (${this.pumpDriver}): ${Math.max(0, this.pumpSourceFrames - this.pumpLiveSourceFrames)} captured frames read, ${this.pumpFrameCount} frames sent to the encoder in ${this.recordingDurationMs}ms; snapshots ${this.snapshotCount}, detector busy ${Math.round(this.detectorBusyMs)}ms`);
     this.stopFramePump();
 
     if (this.pendingWrites.length > 0) {

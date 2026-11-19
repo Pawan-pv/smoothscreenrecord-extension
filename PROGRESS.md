@@ -2,6 +2,31 @@
 
 One entry per iteration. Newest first.
 
+## M1 Recording core - session 5 (2026-11-19) - IN PROGRESS
+
+**Committed:** `1ec6844` QA-043 (page-width epoch decoder), `0384ef5` QA-044 (real OS
+cursor in J3). Both journeys now pass in isolation:
+- J3: still window `0 changed / 0 blobs`, moving window `163 changed / exactly 2 blobs`
+  at 565,368 and 946,536 (86/77 px); video ends 12.632 s vs wall 12.618 s.
+- J11 decoder: t=0 `1795011671761`, 2 s `1795011673687`, 8 s `1795011679669`,
+  18 s `1795011689688`; J2 frame 524 `1795012052168`.
+
+**J11 A/V triage (QA-045, QA-046, QA-047):** the old assertion compared the exported
+page clock with the nominal beep times and produced `+50/+67/+82 ms`; the raw clock-vs-PTS
+fit is `1001.624 ms/s` and the speaker starts `0.097 s` after live, so the number was a
+measurement artifact. The raw/export audio envelopes (1 ms lag) showed the export's audio
+exactly one AAC frame early: raw audio starts at `0.049 s`, the exporter padded it, but
+`emitWithoutPriming` dropped the first packet and shifted the rest back `21.3 ms`, so the
+content began at 27.7 ms (`best lag -28 ms`, r 0.9995). `encodeAac` now feeds one frame of
+silence before the PCM; J11 run 3 reports audio shift `0.0 ms` (raw start 78 ms, lag
+-78 ms, r 1.0000), video median `+15.3 ms` (one export frame), skew `-15.3 ms`, and the
+export is 1222 frames / 20.373 s / 59.98 fps h264+AAC. The 240 s download timeout (89 %
+at abort) is now 480 s (test 900 s).
+
+**Next:** commit the J11 test/measurement change and the audio fix separately, then re-run
+C2 (currently fails at `[data-silence-id]` count 0 instead of 2), C1, J1, J2, the audit,
+and the full suite.
+
 ## M1 Recording core — session 4 (2026-11-19) — IN PROGRESS
 
 **Fixes committed from the `f62b260` full-suite triage (5 commits):**

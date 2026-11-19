@@ -332,15 +332,6 @@ export function countChangedBlobs(fileA: string, fileB: string, minPixels = 8): 
   return { changed, blobs: blobs.length, boxes: blobs };
 }
 
-/**
- * Decodes the 48-bit millisecond epoch readout that clock.html and avsync.html
- * draw as a row of black/white cells across the top of the page.
- *
- * The band sits at the top of the PAGE viewport, so in a screen capture it is
- * below the browser chrome - the row is therefore searched for instead of
- * being assumed. Returns the epoch milliseconds, or null when no row decodes
- * to a plausible epoch.
- */
 /** Presentation timestamps (seconds) of every frame in the file. */
 export function framePts(file: string): number[] {
   const out = ffprobeText(['-select_streams', 'v:0', '-show_entries', 'frame=pts_time', '-of', 'csv=p=0', file]);
@@ -352,21 +343,85 @@ export function extractFrameByIndex(file: string, index: number, outPng: string)
   return outPng;
 }
 
+/** Saturated marker strips (marker.ts: 24 px at the page's left/right edge, below the band). */
+function markerSaturated(r: number, g: number, b: number): boolean {
+  return Math.max(r, g, b) >= 170 && Math.min(r, g, b) <= 100;
+}
+
+/**
+ * QA-043: the horizontal range of the PAGE inside a captured image.
+ *
+ * The epoch band is `width:100vw` of the PAGE, not of the image: a windowed
+ * browser (J11's export: x 154..1766 of 1920) leaves desktop/chrome beside the
+ * page, and decoding with an image-wide cell width produced a plausible-looking
+ * constant (2358742351888) instead of the clock. The page edges are measured
+ * from the per-run capture marker's saturated left/right strips, which every
+ * test-browser page carries (AGENTS.md 3.8) and which lie outside the band's
+ * rows. Without them the whole image width is used, but the band's own shape
+ * check below still has to pass.
+ */
+function pageRange(buf: Buffer, w: number, h: number): { left: number; right: number } {
+  let left = w, right = 0;
+  for (let frac = 0.35; frac <= 0.75; frac += 0.05) {
+    const y = Math.round(h * frac);
+    let start = -1;
+    for (let x = 0; x <= w; x++) {
+      const i = (y * w + Math.min(w - 1, x)) * 3;
+      const saturated = x < w && markerSaturated(buf[i], buf[i + 1], buf[i + 2]);
+      if (saturated && start < 0) start = x;
+      if (!saturated && start >= 0) {
+        if (x - start >= 8) { left = Math.min(left, start); right = Math.max(right, x); }
+        start = -1;
+      }
+    }
+  }
+  return right - left >= w * 0.3 ? { left, right } : { left: 0, right: w };
+}
+
+/**
+ * Decodes the 48-bit millisecond epoch readout that clock.html and avsync.html
+ * draw as a row of black/white cells across the top of the page (MSB first).
+ *
+ * The band sits at the top of the PAGE viewport, so in a screen capture it is
+ * below the browser chrome and may sit inside a window narrower than the image
+ * (QA-043). A row is accepted only when all 48 cells are clearly black or
+ * clearly white and the value is a plausible epoch; a value must then persist
+ * for at least 10 consecutive rows, which is what separates the 4.5vh-tall band
+ * from browser chrome or text that happens to sample to a plausible number.
+ * Returns the accepted values (normally one), or [] when there is no band.
+ */
 export function decodeEpochCandidates(png: string): number[] {
   const { buf, w, h } = rawPixels(png);
-  const cellW = w / 48;
+  const { left, right } = pageRange(buf, w, h);
+  const cellW = (right - left) / 48;
   const found: number[] = [];
-  for (let frac = 0.02; frac <= 0.30; frac += 0.0025) {
-    const y = Math.min(h - 2, Math.round(h * frac));
+  let previous: number | null = null;
+  let runRows = 0;
+  const flush = () => {
+    if (previous !== null && runRows >= 10 && !found.includes(previous)) found.push(previous);
+  };
+  for (let y = Math.round(h * 0.02); y < Math.round(h * 0.30); y++) {
     let value = 0;
+    let monochrome = true;
     for (let c = 0; c < 48; c++) {
-      const x = Math.min(w - 1, Math.round((c + 0.5) * cellW));
+      const x = Math.min(w - 1, Math.round(left + (c + 0.5) * cellW));
       const i = (y * w + x) * 3;
       const luma = 0.299 * buf[i] + 0.587 * buf[i + 1] + 0.114 * buf[i + 2];
+      if (luma > 70 && luma < 185) { monochrome = false; break; }
       value = value * 2 + (luma > 128 ? 1 : 0);
     }
-    if (value >= 1_600_000_000_000 && value <= 4_000_000_000_000 && !found.includes(value)) found.push(value);
+    const accepted = monochrome && value >= 1_600_000_000_000 && value <= 4_000_000_000_000
+      ? value
+      : null;
+    if (accepted !== null && accepted === previous) {
+      runRows++;
+    } else {
+      flush();
+      previous = accepted;
+      runRows = accepted === null ? 0 : 1;
+    }
   }
+  flush();
   return found;
 }
 

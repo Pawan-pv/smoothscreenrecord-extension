@@ -258,6 +258,23 @@ export async function encodeAac(pcm: PcmTrack, onChunk: (chunk: AacChunk) => voi
   const right = pcm.channels[1] ?? pcm.channels[0];
   const total = left.length;
   try {
+    // QA-046: Chrome's AAC encoder consumes one frame of input into its priming
+    // packet, and emitWithoutPriming drops that packet and shifts every later
+    // packet back by one AAC frame. Measured on a real export, that moved the
+    // whole track exactly 21.3 ms ahead of the raw recording's media timeline
+    // (the recorded stream's 49 ms start was padded, but the encoded content
+    // began at 27.7 ms). Feeding one frame of silence first keeps the priming
+    // inside that silence, so the kept packets stay where the PCM put them.
+    const priming = new AudioData({
+      format: 'f32-planar',
+      sampleRate: pcm.sampleRate,
+      numberOfFrames: AAC_FRAME_SAMPLES,
+      numberOfChannels: 2,
+      timestamp: 0,
+      data: new Float32Array(AAC_FRAME_SAMPLES * 2),
+    });
+    encoder.encode(priming);
+    priming.close();
     for (let start = 0; start < total; start += AAC_FRAME_SAMPLES) {
       if (encoderError) throw encoderError;
       const frames = Math.min(AAC_FRAME_SAMPLES, total - start);
@@ -269,7 +286,7 @@ export async function encodeAac(pcm: PcmTrack, onChunk: (chunk: AacChunk) => voi
         sampleRate: pcm.sampleRate,
         numberOfFrames: frames,
         numberOfChannels: 2,
-        timestamp: Math.round((start / pcm.sampleRate) * 1_000_000),
+        timestamp: Math.round(((start + AAC_FRAME_SAMPLES) / pcm.sampleRate) * 1_000_000),
         data: planar,
       });
       encoder.encode(audioData);

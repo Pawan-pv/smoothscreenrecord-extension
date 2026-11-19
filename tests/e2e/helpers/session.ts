@@ -139,6 +139,79 @@ export function detectFlashOnsets(file: string): number[] {
   return onsets;
 }
 
+function streamStartTime(file: string, kind: 'a' | 'v'): number {
+  const r = spawnSync(path.join(REPO, 'ffprobe.exe'), ['-v', 'error', '-select_streams', `${kind}:0`,
+    '-show_entries', 'stream=start_time', '-of', 'csv=p=0', file], { encoding: 'utf8' });
+  const v = parseFloat((r.stdout || '').trim());
+  return Number.isFinite(v) ? v : 0;
+}
+
+function decodeMono48k(file: string): Buffer {
+  const r = spawnSync(FFMPEG, ['-v', 'error', '-i', file, '-vn', '-ac', '1', '-ar', '48000',
+    '-f', 'f32le', '-'], { maxBuffer: 1 << 30 });
+  if (!r.stdout || r.stdout.length === 0) throw new Error(`could not decode audio from ${file}`);
+  return r.stdout;
+}
+
+function rmsEnvelope(pcm: Buffer): Float64Array {
+  const SR = 48000, WIN = 480, HOP = 48; // 10 ms window, 1 ms hop
+  const n = Math.floor((pcm.length / 4 - WIN) / HOP);
+  const env = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    const base = i * HOP;
+    for (let j = 0; j < WIN; j++) {
+      const s = pcm.readFloatLE((base + j) * 4);
+      sum += s * s;
+    }
+    env[i] = Math.sqrt(sum / WIN);
+  }
+  return env;
+}
+
+/**
+ * Shift (ms) the export applies to the audio timeline, measured against the
+ * raw recording: the peak lag of the two RMS envelopes at 1 ms resolution,
+ * corrected for the raw stream's own start_time (Opus starts at 0.049 s here,
+ * and the exporter pads that span, so the content must stay at 0.049 s).
+ *
+ * The correlation coefficient is returned too: the export has to carry the
+ * same audio, not silence or a different track.
+ */
+export function measureAudioShiftMs(sourceFile: string, exportFile: string): {
+  shiftMs: number; correlation: number; lagMs: number; sourceStartMs: number;
+} {
+  const MAX = 100; // search +/- 100 ms
+  const a = rmsEnvelope(decodeMono48k(sourceFile));
+  const b = rmsEnvelope(decodeMono48k(exportFile));
+  const from = MAX + 1;
+  const to = Math.min(a.length, b.length) - MAX - 1;
+  const mean = (v: Float64Array, lo: number, hi: number) => {
+    let s = 0;
+    for (let i = lo; i < hi; i++) s += v[i];
+    return s / (hi - lo);
+  };
+  const ma = mean(a, from, to), mb = mean(b, from, to);
+  let best = -Infinity, bestLag = 0;
+  for (let lag = -MAX; lag <= MAX; lag++) {
+    let num = 0, da = 0, db = 0;
+    for (let i = from; i < to; i++) {
+      const j = i + lag;
+      const x = a[j] - ma, y = b[i] - mb;
+      num += x * y; da += x * x; db += y * y;
+    }
+    const r = num / Math.sqrt(da * db);
+    if (r > best) { best = r; bestLag = lag; }
+  }
+  const sourceStartMs = streamStartTime(sourceFile, 'a') * 1000;
+  return {
+    shiftMs: -bestLag - sourceStartMs,
+    correlation: best,
+    lagMs: bestLag,
+    sourceStartMs,
+  };
+}
+
 export function ffprobeRaw(file: string, ffprobe: string): string {
   return execFileSync(ffprobe, ['-v', 'error', '-show_entries',
     'stream=index,codec_type,codec_name,duration,start_time,nb_frames,sample_rate,channels',

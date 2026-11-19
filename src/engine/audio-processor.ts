@@ -311,20 +311,15 @@ export class AudioProcessor {
  * QA-021: a REAL microphone in a real room never delivers digital silence. The
  * pauses of a voice-over sit well under the speech but on top of room noise,
  * and that noise floor moves during a recording (a fan, a road, AGC). A single
- * global midpoint therefore fails twice: it cannot separate speech from a
- * continuous fan that is only ~9 dB under the voice, and it misses pauses after
- * the noise floor has risen.
+ * absolute threshold therefore fails: under AGC a pause can sit at -25 dBFS,
+ * above any fixed floor that would not also cut into speech.
  *
- * Per window the threshold is therefore the lower of:
- *  - the local noise floor (10th percentile of the surrounding 4 s) + 8 dB,
- *    never below the absolute `dbThreshold`, and
- *  - the speech peak of the surroundings and of the whole recording, minus 6 dB.
- *
- * The second term is what protects quiet speech: a syllable dip is brief, and a
- * sustained 6 dB drop below everything the speaker produced nearby is a pause,
- * not articulation. Adaptation only happens when the recording shows at least
- * 6 dB of contrast, so steady room noise or music is never cut. A single blip of
- * up to 100 ms does not end a pause.
+ * The threshold is therefore RELATIVE to the speaker: `globalSpeech - 12 dB`,
+ * never below the absolute `dbThreshold`. Speech itself is defined as the 90th
+ * percentile of all 50 ms windows; a syllable dip cannot move it. Adaptation
+ * only happens when the recording shows at least 12 dB of global contrast, so
+ * steady room noise or background music (whose own tremolo is ~6 dB) is never
+ * cut. A single blip of up to 100 ms does not end a pause.
  *
  * Two guards keep the result honest:
  *  - a recording whose loudest window is below `dbThreshold` has no audible
@@ -351,12 +346,17 @@ export function detectSilenceSegments(
   const totalWindows = Math.floor(channelData.length / windowSize);
   const totalMs = (channelData.length * 1000) / sampleRate;
   const windowMs = (windowSize * 1000) / sampleRate;
+  // QA-042: a pause must be clearly below the speaker. The comparison is made
+  // on a 300 ms power average so syllable dips cannot set either statistic,
+  // and the threshold is the MIDPOINT between the local quiet and speech
+  // levels. A fixed drop below speech failed at one end: 12 dB misses a quiet
+  // recording with a 7 dB SNR, 6 dB cuts into the tail of an AGC-lifted pause.
   const MIN_CONTRAST_DB = 6;
-  const FLOOR_MARGIN_DB = 8;
-  const DROP_BELOW_SPEECH_DB = 6;
   const MAX_BLIP_WINDOWS = 2; // 100 ms
   /** 300 ms of uninterrupted quiet: enough to exclude a syllable dip. */
   const CORE_WINDOWS = Math.max(1, Math.ceil(300 / windowMs));
+  /** 300 ms power average used only to measure the two levels. */
+  const SMOOTH_WINDOWS = Math.max(1, Math.ceil(300 / windowMs));
   /** 2 s of context on each side: a 2 s pause still shows speech in the window. */
   const LOCAL_RADIUS_WINDOWS = Math.max(4, Math.round(2000 / windowMs));
   const thresholdDb = Number.isFinite(dbThreshold) ? dbThreshold : -42;
@@ -382,25 +382,46 @@ export function detectSilenceSegments(
   const percentile = (sorted: number[], p: number) =>
     sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(sorted.length * p)))];
 
+  // 300 ms power average of every window (overlapping boxcar): speech dips of
+  // one or two 50 ms windows disappear, a real pause does not.
+  const smoothed = new Float32Array(totalWindows);
+  for (let w = 0; w < totalWindows; w++) {
+    const start = Math.max(0, w - Math.floor(SMOOTH_WINDOWS / 2));
+    const end = Math.min(totalWindows, start + SMOOTH_WINDOWS);
+    let power = 0;
+    for (let i = start; i < end; i++) power += Math.pow(10, levels[i] / 10);
+    smoothed[w] = 10 * Math.log10(Math.max(1e-12, power / Math.max(1, end - start)));
+  }
+  const sortedSmoothed = Array.from(smoothed).sort((x, y) => x - y);
+  const globalQuiet = percentile(sortedSmoothed, 0.1);
+  const globalSpeech = percentile(sortedSmoothed, 0.9);
   const sortedLevels = Array.from(levels).sort((x, y) => x - y);
-  const globalQuiet = percentile(sortedLevels, 0.1);
-  const globalSpeech = percentile(sortedLevels, 0.9);
   // Nothing in this recording reaches the absolute silence threshold, so there
   // is no audible speech to tighten. Cutting it would delete every frame.
   if (sortedLevels[sortedLevels.length - 1] < thresholdDb) return [];
   const adaptive = totalWindows >= 20 && globalSpeech - globalQuiet >= MIN_CONTRAST_DB;
 
-  /** Silence threshold for one window, in dBFS. */
+  /**
+   * Silence threshold for one window, in dBFS: the midpoint between the local
+   * quiet level and the local speech level, both measured on the 300 ms
+   * average. A local window with no measured quiet level (contrast under
+   * MIN_CONTRAST_DB, which happens inside a low-SNR pause: the surrounding
+   * window is mostly room noise) falls back to the GLOBAL midpoint computed
+   * from the same statistic, never to the absolute threshold: the absolute
+   * threshold is far below an AGC-lifted pause, so using it would hide the
+   * pause completely. Raw 50 ms levels are then compared with the threshold,
+   * which keeps the cut edges on the real transition.
+   */
+  const globalMidpoint = Math.max(thresholdDb, (globalQuiet + globalSpeech) / 2);
   const thresholdFor = (w: number): number => {
     if (!adaptive) return thresholdDb;
     const start = Math.max(0, w - LOCAL_RADIUS_WINDOWS);
     const end = Math.min(totalWindows, w + LOCAL_RADIUS_WINDOWS + 1);
-    const local = Array.from(levels.subarray(start, end)).sort((x, y) => x - y);
-    const localFloor = percentile(local, 0.1);
-    const localPeak = percentile(local, 0.9);
-    const floorThreshold = Math.max(thresholdDb, localFloor + FLOOR_MARGIN_DB);
-    const dropThreshold = Math.max(localPeak, globalSpeech) - DROP_BELOW_SPEECH_DB;
-    return Math.min(floorThreshold, dropThreshold);
+    const local = Array.from(smoothed.subarray(start, end)).sort((x, y) => x - y);
+    const localQuiet = percentile(local, 0.1);
+    const localSpeech = percentile(local, 0.9);
+    if (localSpeech - localQuiet < MIN_CONTRAST_DB) return globalMidpoint;
+    return Math.max(thresholdDb, (localQuiet + localSpeech) / 2);
   };
   const thresholds = new Float32Array(totalWindows);
   for (let w = 0; w < totalWindows; w++) thresholds[w] = thresholdFor(w);

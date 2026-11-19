@@ -282,5 +282,40 @@ export function buildFixtures(): Fixture[] {
     });
   }
 
+  // 13. QA-042: AGC-lifted pauses. WebRTC AGC holds the room noise up while the
+  // speaker is silent, so the two pauses sit only 13-16 dB under the voice
+  // (-25 / -28 dBFS under -12 dBFS speech) instead of falling to the floor.
+  // Measured on the real-mic C1/C2 recordings; a fixed drop of more than 16 dB
+  // below the speech peak misses them, and the old min(floor, drop) rule was
+  // inert because the floor term was always higher.
+  {
+    const seconds = 18;
+    const pauses: Array<[number, number]> = [[4000, 6000], [12000, 14000]];
+    const targetSpeechDb = -12;
+    // addVoice's harmonic waveform has an RMS well below its scale, so the
+    // scale is calibrated against a speech-only probe to get real dBFS speech.
+    const probe = new Float32Array(SR * 2);
+    addVoice(probe, { speechDb: 0, pauses: [], seed: 23 });
+    let probeSum = 0;
+    for (const v of probe) probeSum += v * v;
+    const probeRms = Math.sqrt(probeSum / probe.length);
+    const speechDb = 20 * Math.log10(Math.pow(10, targetSpeechDb / 20) / probeRms);
+    const data = makeNoise(seconds, -30, 22);
+    addVoice(data, { speechDb, pauses, seed: 23 });
+    // The AGC lifts the floor while the speaker is silent.
+    const floors: Array<[number, number, number]> = [
+      [4000, 6000, -25],
+      [12000, 14000, -28],
+    ];
+    for (const [startMs, endMs, db] of floors) {
+      const floor = makeNoise((endMs - startMs) / 1000, db, Math.round(startMs));
+      data.set(floor, Math.round((startMs / 1000) * SR));
+    }
+    fixtures.push({
+      name: 'agc-pauses', description: 'AGC-lifted pauses -25/-28 dBFS under -12 dBFS speech',
+      data, pauses, speech: speechSpans(seconds, pauses),
+    });
+  }
+
   return fixtures;
 }

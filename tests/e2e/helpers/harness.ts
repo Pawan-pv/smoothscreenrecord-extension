@@ -114,45 +114,63 @@ export function audioEnvelopeDb(file: string, windowSec = 0.1): number[] {
 
 export interface AcousticDelay {
   delaySec: number;
-  scoreDb: number;   // loudest window inside the mapped gaps at the best lag
-  marginDb: number;  // how much quieter that is than the median lag
+  /** Pearson r of the known fixture envelope against the recording at that lag. */
+  correlation: number;
+  /** How far the best r is above the 90th percentile of every other lag. */
+  margin: number;
 }
 /**
- * QA-035: the delay (s) between the fixture WAV timeline and a real-mic
- * recording of it. The OS player needs a pre-roll (measured ~1.2-1.3 s here),
- * so the old "the WAV starts at 0" onset assumption was wrong: it looked at the
- * END of the leading quiet span, which includes the pre-roll, and shifted every
- * known pause by that amount. This measures the delay instead: scan lags and
- * pick the one at which BOTH known WAV gaps land on the recording's quietest
- * windows; require a clear minimum so a quiet room cannot fake a match.
+ * QA-035/QA-039: the delay (s) between the fixture WAV timeline and a real-mic
+ * recording of it. The OS player needs a pre-roll, so "the WAV starts at 0" is
+ * wrong; the delay must be measured.
+ *
+ * The earlier statistic ("the lag at which both gaps are quietest") failed on a
+ * real recording: an AGC lift and a room transient inside one gap beat the true
+ * lag, and on another recording no lag was quiet enough at all. Instead the
+ * whole known fixture is matched to the recording: both 50 ms RMS envelopes are
+ * clipped to [0, -60] dBFS and compared with Pearson correlation at every lag.
+ * The fixture's speech/pause/syllable structure is unique enough that the true
+ * lag is a clear peak (measured: r 0.69-0.71 at the true lag versus <= 0.45 at
+ * the 90th percentile of all other lags). A match must be strong in absolute
+ * terms AND clearly better than the rest, and both mapped gaps must fit inside
+ * the recording, otherwise this is not a recording of the fixture (null).
  */
 export function detectAcousticDelay(file: string, wavGaps: [number, number][],
-  maxLagSec = 4, stepSec = 0.05, QUIET_DB = -30): AcousticDelay | null {
-  const windowSec = 0.1;
-  const env = audioEnvelopeDb(file, windowSec);
-  if (env.length < 10) return null;
-  const scores: { delaySec: number; scoreDb: number }[] = [];
-  for (let d = 0; d <= maxLagSec + 1e-9; d += stepSec) {
-    const delaySec = Math.round(d * 1000) / 1000;
-    let worst = -Infinity;
-    for (const [a, b] of wavGaps) {
-      const from = a + delaySec + 0.25;
-      const to = b + delaySec - 0.25;
-      const first = Math.max(0, Math.ceil(from / windowSec));
-      const last = Math.min(env.length - 1, Math.floor(to / windowSec) - 1);
-      let loudest = -Infinity;
-      for (let i = first; i <= last; i++) loudest = Math.max(loudest, env[i]);
-      worst = Math.max(worst, loudest);
+  maxLagSec = 4, windowSec = 0.05, MIN_CORRELATION = 0.5, MIN_MARGIN = 0.1): AcousticDelay | null {
+  const fixture = audioEnvelopeDb(AUDIO.file, windowSec);
+  const rec = audioEnvelopeDb(file, windowSec);
+  if (fixture.length < 20 || rec.length < 20) return null;
+  const clip = (v: number) => Math.min(0, Math.max(-60, v));
+  const xs = fixture.map(clip);
+  const ys = rec.map(clip);
+  const pearson = (a: number[], b: number[]): number => {
+    const n = a.length;
+    let sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+    for (let i = 0; i < n; i++) {
+      sa += a[i]; sb += b[i]; saa += a[i] * a[i]; sbb += b[i] * b[i]; sab += a[i] * b[i];
     }
-    if (isFinite(worst)) scores.push({ delaySec, scoreDb: worst });
+    const cov = sab / n - (sa / n) * (sb / n);
+    const sd = Math.sqrt(Math.max(0, saa / n - (sa / n) ** 2) * Math.max(0, sbb / n - (sb / n) ** 2));
+    return sd > 0 ? cov / sd : 0;
+  };
+  const lags: { delaySec: number; r: number }[] = [];
+  const steps = Math.round(maxLagSec / windowSec);
+  for (let lag = 0; lag <= steps; lag++) {
+    const n = Math.min(xs.length, ys.length - lag);
+    // A lag that only overlaps a small part of the fixture can be fitted by
+    // chance; require most of the known signal to be present.
+    if (n < xs.length * 0.6) break;
+    lags.push({ delaySec: Math.round(lag * windowSec * 1000) / 1000, r: pearson(xs.slice(0, n), ys.slice(lag, lag + n)) });
   }
-  if (!scores.length) return null;
-  const best = scores.reduce((a, b) => (b.scoreDb < a.scoreDb ? b : a));
-  const sorted = scores.map((s) => s.scoreDb).sort((x, y) => x - y);
-  const median = sorted[Math.floor(sorted.length / 2)];
-  const marginDb = median - best.scoreDb;
-  if (best.scoreDb >= QUIET_DB || marginDb < 6) return null;
-  return { delaySec: best.delaySec, scoreDb: best.scoreDb, marginDb };
+  if (lags.length < 5) return null;
+  const best = lags.reduce((a, b) => (b.r > a.r ? b : a));
+  const others = lags.filter((l) => l !== best).map((l) => l.r).sort((x, y) => x - y);
+  const p90 = others[Math.min(others.length - 1, Math.floor(others.length * 0.9))];
+  const margin = best.r - p90;
+  if (!Number.isFinite(best.r) || best.r < MIN_CORRELATION || margin < MIN_MARGIN) return null;
+  const recSec = ys.length * windowSec;
+  for (const [, b] of wavGaps) if (b + best.delaySec + 0.25 > recSec) return null;
+  return { delaySec: best.delaySec, correlation: Math.round(best.r * 1000) / 1000, margin: Math.round(margin * 1000) / 1000 };
 }
 /** Loudest 100 ms window (dBFS) of [fromSec, toSec] of a file's audio, measured by ffmpeg. */
 export function maxWindowDb(file: string, fromSec: number, toSec: number): number {

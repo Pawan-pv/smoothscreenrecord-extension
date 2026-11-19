@@ -2,6 +2,27 @@
 
 One entry per iteration. Newest first.
 
+## M1 Recording core — session 4 (2026-11-19) — IN PROGRESS
+
+**Fixes committed from the `f62b260` full-suite triage (5 commits):**
+| Commit | Bugs | Change | Unit evidence |
+|---|---|---|---|
+| `3adc2d9` | QA-038 | C1 and both M1 stop paths await `recordingOrigin(editor)` instead of `Date.now()` at the HUD paint; M1 crash measures from the same origin | `tsc --noEmit` clean |
+| `036b3db` | QA-039 | `detectAcousticDelay` matches the known fixture WAV envelope against the recording with Pearson correlation at every 50 ms lag | offline: J1 r 0.693 @ 0.85 s vs p90 0.391; C2 r 0.707 @ 0.60 s vs p90 0.453 |
+| `77db4c9` | QA-040, QA-041 | stop-before-live resumes, emits the last REAL frame and waits ≤400 ms for the first chunk; frame-pump log counts only frames read during the recording | `tsc --noEmit` clean |
+| `781b73f` | QA-042 | silence threshold = local midpoint of 300 ms-averaged p10/p90 (global midpoint fallback), no fixed drop; adds fixture 13 `agc-pauses` | full unit suite **24 files / 172 tests pass**; accuracy matrix 13/13 fixtures recall 1.00, worst speech damage 200 ms (limit 250) |
+| this commit | QA-038..QA-042 | BUGS.md statuses + QA-041/QA-042 rows | — |
+
+**QA-042 detail:** the old rule `min(localFloor + 8 dB, peak - 6 dB)` always took the
+higher floor term, so the "6 dB under the speaker" drop never applied. On the real-mic
+levels (speech -12..-16 dBFS, AGC-lifted pauses -25..-34 dBFS) nothing was found. The
+midpoint rule finds all 13 fixtures; music-only, noise-only, breathing and 0.8 s pauses
+still produce no cuts.
+
+**Next:** QA-043 (J11 epoch-band decoder assumes a full-width band; J11's window spans
+x≈154..1765) and QA-044 (J3 diffs the synthetic Playwright cursor, not the real OS
+cursor), then re-run C1/C2/J1/J3/J11/audit/M1 and the full suite.
+
 ## M1 Recording core — session 3 (2026-11-18) — IN PROGRESS
 
 **Committed the unit-verified batch (3 commits, working tree from session 2):**

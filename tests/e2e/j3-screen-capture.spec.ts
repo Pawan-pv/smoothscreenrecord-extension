@@ -12,7 +12,7 @@ import path from 'path';
 import fs from 'fs';
 import {
   launchApp, serveFixtures, recordPage, mediaInfo, extractFrame, decodeEpochBits,
-  outDir, saveRawRecording, countChangedBlobs, countFrames, streamEndTime
+  outDir, saveRawRecording, countChangedBlobs, countFrames, streamEndTime, moveRealCursor
 } from './helpers/harness';
 
 test.describe.serial('J3 screen capture', () => {
@@ -28,18 +28,15 @@ test.describe.serial('J3 screen capture', () => {
       await target.goto(`${site.base}/static.html`, { waitUntil: 'domcontentloaded' });
       await target.waitForTimeout(500);
 
-      // move the mouse in a straight line during the middle of the recording
+      // Move the REAL OS pointer in a straight line during the first ~3 s of
+      // the recording. Playwright's mouse.move only moves the page's virtual
+      // pointer, and the capture paints the OS one.
       const session = await recordPage(app.context, app.extensionId, `${site.base}/static.html`, {
         seconds: 8,
         includeMic: false,
         target,
-        interact: async (p) => {
-          await p.mouse.move(400, 300);
-          await p.waitForTimeout(1500);
-          for (let i = 0; i <= 20; i++) {
-            await p.mouse.move(400 + i * 60, 300 + i * 20);
-            await p.waitForTimeout(100);
-          }
+        interact: async () => {
+          await moveRealCursor(240, 200, 1150, 600, 30, 100);
         }
       });
 
@@ -68,12 +65,14 @@ test.describe.serial('J3 screen capture', () => {
       expect(fs.statSync(first).size).toBeGreaterThan(1000);
 
       // ---- cursor count ----------------------------------------------------
-      // The mouse is moved during roughly t=1.5 s .. t=3.6 s (the interact
-      // callback runs at the start of the recording). Two frames taken while
-      // the mouse is still must be identical on a static page; two frames
-      // taken while it moves must differ by exactly the cursor.
-      const stillDiff = countChangedBlobs(frames[24], frames[26]);   // t = 6.00 s vs 6.50 s
-      const movingDiff = countChangedBlobs(frames[8], frames[12]);   // t = 2.00 s vs 3.00 s
+      // The pointer is moved during roughly t=0 s .. t=3 s (the interact
+      // callback runs as soon as the recording is live). Two frames taken
+      // while the pointer is still must be identical on a static page; two
+      // frames taken while it moves must differ by exactly the pointer.
+      // The bottom 180 px are ignored: the recorder HUD (pulsing dot + timer)
+      // and the Windows taskbar animate there on their own.
+      const stillDiff = countChangedBlobs(frames[24], frames[26], 8, 180);   // t = 6.00 s vs 6.50 s
+      const movingDiff = countChangedBlobs(frames[8], frames[12], 8, 180);   // t = 2.00 s vs 3.00 s
       console.log('J3 still-window diff (t=6.0s vs 6.5s):', JSON.stringify({ changed: stillDiff.changed, blobs: stillDiff.blobs }));
       console.log('J3 moving-window diff (t=2.0s vs 3.0s):', JSON.stringify({ changed: movingDiff.changed, blobs: movingDiff.blobs }));
       fs.writeFileSync(path.join(dir, 'j3-summary.json'), JSON.stringify({

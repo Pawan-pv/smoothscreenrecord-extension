@@ -7,7 +7,7 @@
  * state is only READ for verification.
  */
 import { chromium, BrowserContext, Page } from '@playwright/test';
-import { execFileSync, spawnSync } from 'child_process';
+import { execFileSync, spawn, spawnSync } from 'child_process';
 import fs from 'fs';
 import http from 'http';
 import os from 'os';
@@ -284,17 +284,22 @@ export function countColor(file: string, rect: { x: number; y: number; w: number
  * Counts the connected components (8-connectivity) of the pixels that differ
  * between two frames. Used to count how many separate objects moved (for
  * example the OS cursor) between two moments of a recording.
+ *
+ * `ignoreBottomPx` drops the bottom rows of the image. J3 needs it: the
+ * recorder's own HUD (a pulsing dot and its timer) and the Windows taskbar sit
+ * there and change on their own, so only the page above them is compared.
  */
-export function countChangedBlobs(fileA: string, fileB: string, minPixels = 8): {
+export function countChangedBlobs(fileA: string, fileB: string, minPixels = 8, ignoreBottomPx = 0): {
   changed: number; blobs: number; boxes: { x: number; y: number; w: number; h: number; pixels: number }[];
 } {
   const A = rawPixels(fileA);
   const B = rawPixels(fileB);
   const w = Math.min(A.w, B.w);
   const h = Math.min(A.h, B.h);
+  const comparedRows = Math.max(0, h - ignoreBottomPx);
   const mask = new Uint8Array(w * h);
   let changed = 0;
-  for (let y = 0; y < h; y++) {
+  for (let y = 0; y < comparedRows; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 3;
       const d = Math.abs(A.buf[i] - B.buf[i]) + Math.abs(A.buf[i + 1] - B.buf[i + 1]) + Math.abs(A.buf[i + 2] - B.buf[i + 2]);
@@ -490,6 +495,31 @@ export function registerContextRaiser(context: BrowserContext, fn: () => void): 
 }
 export function raiseContextWindows(context: BrowserContext): void {
   raisers.get(context)?.();
+}
+
+/**
+ * QA-044: moves the REAL Windows pointer along a straight line and resolves
+ * when the gesture has finished.
+ *
+ * `page.mouse.move` only moves the page's virtual pointer; Chrome paints the
+ * OS pointer into a screen capture. Coordinates are in the desktop's logical
+ * space (the PowerShell is DPI-virtualised, so Windows maps them onto the
+ * captured physical pixels). cursor.ps1 keeps one process alive for the whole
+ * path: a fresh PowerShell per point would take longer than the recording.
+ */
+export function moveRealCursor(x1: number, y1: number, x2: number, y2: number,
+  steps = 30, delayMs = 100): Promise<void> {
+  const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', path.join(__dirname, 'cursor.ps1'),
+    '-X1', String(Math.round(x1)), '-Y1', String(Math.round(y1)),
+    '-X2', String(Math.round(x2)), '-Y2', String(Math.round(y2)),
+    '-Steps', String(steps), '-DelayMs', String(delayMs)], { stdio: 'ignore' });
+  return new Promise<void>((resolve, reject) => {
+    child.on('error', reject);
+    child.on('exit', (code) => code === 0
+      ? resolve()
+      : reject(new Error(`cursor.ps1 exited with code ${code}`)));
+  });
 }
 
 /** Bytes of the recording the editor has LOADED (its <video> blob URL), not yet checked. */

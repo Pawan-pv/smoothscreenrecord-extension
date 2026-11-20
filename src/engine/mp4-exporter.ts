@@ -187,9 +187,13 @@ export class HardwareMp4Exporter {
 
     // QA-002: the longest real track is authoritative. A recorder whose video
     // encoder stopped 400 ms before the audio must not lose that audio; the
-    // video simply holds its last frame for the tail. Never shorter than the
-    // wall clock or the container either.
-    const timelineDurationMs = Math.ceil(Math.max(wallClockDurationMs, containerDurationMs, audioEndMs));
+    // video simply holds its last frame for the tail.
+    // QA-009: clamp the video timeline to the last real decoded frame PTS,
+    // not the padded container duration, to avoid a frozen tail. When the
+    // sequential frame source is available it knows the exact last PTS;
+    // otherwise fall back to the container duration.
+    const videoEndMs = frameSource ? frameSource.lastTimestampUs / 1000 : containerDurationMs;
+    const timelineDurationMs = Math.ceil(Math.max(wallClockDurationMs, videoEndMs, audioEndMs));
     if (timelineDurationMs <= 0) {
       throw new Error('The recording has no timeline: duration, container and audio are all empty.');
     }

@@ -96,6 +96,12 @@ test.describe.serial('J11 MP4 export', () => {
       const mp4 = path.join(dir, 'export.mp4');
       let exported = false;
       let exportError = '';
+      // Diagnostics only (no assertion): the editor tab's JS heap while it
+      // decodes/encodes. `performance.memory` is Chrome's per-renderer measure;
+      // decoded VideoFrames live outside it, so the source's own heldFrames
+      // bound is reported by the exporter log.
+      let peakHeapUsed = 0;
+      let peakHeapTotal = 0;
       try {
         const downloadPromise = session.editor.waitForEvent('download', { timeout: 480000 });
         await session.editor.locator('#export-mp4-btn').click();
@@ -111,6 +117,7 @@ test.describe.serial('J11 MP4 export', () => {
               session.editor.evaluate(() => ({
                 vis: document.visibilityState, focus: document.hasFocus(),
                 pct: ((document.body.innerText.match(/(\d+)%/) || [])[1]) || null,
+                mem: (() => { const m = (performance as any).memory; return m ? { used: m.usedJSHeapSize, total: m.totalJSHeapSize } : null; })(),
                 videos: Array.from(document.querySelectorAll('video')).map((v) => ({
                   id: v.id, rs: v.readyState, ct: +v.currentTime.toFixed(3), seeking: v.seeking, w: v.videoWidth, ns: v.networkState
                 }))
@@ -118,6 +125,11 @@ test.describe.serial('J11 MP4 export', () => {
               new Promise((r) => setTimeout(() => r('EVALUATE TIMED OUT (main thread blocked?)'), 5000))
             ]).catch((e) => 'evaluate failed: ' + String(e).slice(0, 120));
             console.log(`[J11 export sample +${(i + 1) * 10}s, ${Date.now() - t0}ms]`, JSON.stringify(st));
+            const sampleMem = (st as any)?.mem;
+            if (sampleMem) {
+              peakHeapUsed = Math.max(peakHeapUsed, sampleMem.used);
+              peakHeapTotal = Math.max(peakHeapTotal, sampleMem.total);
+            }
           }
         })();
         const download = await downloadPromise;
@@ -140,6 +152,25 @@ test.describe.serial('J11 MP4 export', () => {
         fs.writeFileSync(path.join(dir, 'j11-seek-log.json'), JSON.stringify(seekLog.slice(-200), null, 2));
       }
       console.log('J11 export:', exported ? mp4 : exportError);
+      console.log(`J11 peak editor JS heap during export: ${(peakHeapUsed / 1048576).toFixed(1)} MiB used / `
+        + `${(peakHeapTotal / 1048576).toFixed(1)} MiB total (performance.memory, per-renderer)`);
+      let rendererMetrics: any = null;
+      try {
+        const cdp = await session.editor.context().newCDPSession(session.editor);
+        await cdp.send('Performance.enable');
+        const { metrics } = await cdp.send('Performance.getMetrics');
+        const pick = (name: string) => metrics.find((m: any) => m.name === name)?.value ?? null;
+        rendererMetrics = {
+          JSHeapUsedSize: pick('JSHeapUsedSize'),
+          JSHeapTotalSize: pick('JSHeapTotalSize'),
+          Nodes: pick('Nodes'),
+          Documents: pick('Documents')
+        };
+        await cdp.detach();
+        console.log('J11 editor renderer metrics after export:', JSON.stringify(rendererMetrics));
+      } catch (e) {
+        console.log('J11 CDP renderer metrics failed:', String(e).slice(0, 160));
+      }
       expect(exported, `MP4 export failed: ${exportError}`).toBe(true);
 
       const info = mediaInfo(mp4);
@@ -206,7 +237,8 @@ test.describe.serial('J11 MP4 export', () => {
 
       fs.writeFileSync(path.join(dir, 'j11-summary.json'),
         JSON.stringify({ raw, info, frames, duration, videoState, sourceFrameMs,
-          srcFlash, outFlash, videoShifts, audioTiming }, null, 2));
+          srcFlash, outFlash, videoShifts, audioTiming,
+          peakJsHeap: { used: peakHeapUsed, total: peakHeapTotal }, rendererMetrics }, null, 2));
     } finally {
       await app.cleanup();
       await site.close();

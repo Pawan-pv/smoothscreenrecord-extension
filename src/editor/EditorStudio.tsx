@@ -977,9 +977,12 @@ export function EditorStudio() {
       return;
     }
     // A stop request when this editor is not recording must not load the
-    // previous recording again.
+    // previous recording again. Reset the stop guards so the session can
+    // never become un-stoppable after an ignored stop request.
     if (!passedBlob && !captureEngineRef.current.getStatus()) {
       console.log('[SmoothStudio] Stop request ignored: this editor is not recording.');
+      hasFinalizedRef.current = false;
+      isStoppingRef.current = false;
       return;
     }
     hasFinalizedRef.current = true;

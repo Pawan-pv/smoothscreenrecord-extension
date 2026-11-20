@@ -208,20 +208,34 @@ async function endRecordingSession(expectedSessionId: string | null = null): Pro
  * not known (the editor registered late) the first editor tab is used, exactly
  * like the stop path's fallback.
  */
-function notifyEditorCapture(tabId: number | null | undefined, payload: any): void {
-  const send = (id: number) => {
-    chrome.tabs.sendMessage(id, payload, () => {
-      void chrome.runtime?.lastError;
+/**
+ * Send a message to the editor tab with retry-and-ack. The SW can restart
+ * mid-stop, so a single fire-and-forget sendMessage can be dropped. Retry up
+ * to `retries` times; if no ack arrives, the caller falls back to activating
+ * the editor tab.
+ */
+function sendEditorWithAck(tabId: number, payload: any, retries: number): void {
+  const attempt = (remaining: number) => {
+    chrome.tabs.sendMessage(tabId, payload, (response) => {
+      if (chrome.runtime?.lastError || !response) {
+        if (remaining > 0) {
+          setTimeout(() => attempt(remaining - 1), 100);
+        }
+      }
     });
   };
+  attempt(retries);
+}
+
+function notifyEditorCapture(tabId: number | null | undefined, payload: any): void {
   if (tabId) {
-    send(tabId);
+    sendEditorWithAck(tabId, payload, 3);
     return;
   }
   chrome.tabs.query({ url: chrome.runtime.getURL('editor.html*') }, (tabs) => {
     if (tabs.length > 0 && tabs[0].id) {
       persistSessionState({ activeEditorTabId: tabs[0].id }).catch(() => {});
-      send(tabs[0].id);
+      sendEditorWithAck(tabs[0].id, payload, 3);
     }
   });
 }
@@ -420,11 +434,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // made Chromium composite the tab switch into the last frames. Only a
       // missing editor (sendMessage error) is activated as a fallback.
       const notify = (tabId: number) => {
-        chrome.tabs.sendMessage(tabId, { type: 'STUDIO_STOP_CAPTURE', telemetry, sessionId }, () => {
-          if (chrome.runtime?.lastError) {
-            chrome.tabs.update(tabId, { active: true }).catch(() => undefined);
-          }
-        });
+        sendEditorWithAck(tabId, { type: 'STUDIO_STOP_CAPTURE', telemetry, sessionId }, 3);
+        // Fallback: activate the editor tab so the user sees the stop even if
+        // the SW is restarting and the message is dropped.
+        chrome.tabs.update(tabId, { active: true }).catch(() => undefined);
       };
       if (!fromEditor) {
         if (editorTabId) {

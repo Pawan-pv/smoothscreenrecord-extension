@@ -448,12 +448,24 @@ function injectRecordingHud() {
       e.stopPropagation();
       if (typeof chrome !== 'undefined' && chrome.runtime) {
         console.log('[SmoothStudio DOM-Tracker] HUD stop clicked at epoch', Date.now());
-        chrome.runtime.sendMessage(
-          { type: 'STOP_STUDIO_RECORDING', ...(sessionId ? { sessionId } : {}) },
-          () => {
-            void chrome.runtime?.lastError;
-          }
-        );
+        const sendStop = (remaining: number) => {
+          chrome.runtime.sendMessage(
+            { type: 'STOP_STUDIO_RECORDING', ...(sessionId ? { sessionId } : {}) },
+            (response) => {
+              if (chrome.runtime?.lastError || !response) {
+                if (remaining > 0) {
+                  setTimeout(() => sendStop(remaining - 1), 100);
+                } else {
+                  // Visible HUD feedback: no ack from service worker after retries.
+                  const btn = document.getElementById('smoothstudio-stop-btn');
+                  if (btn) btn.textContent = 'Stopping...';
+                  console.warn('[SmoothStudio DOM-Tracker] HUD stop: no ack from service worker after retries');
+                }
+              }
+            }
+          );
+        };
+        sendStop(3);
       }
     };
   }

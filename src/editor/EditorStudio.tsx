@@ -221,6 +221,9 @@ export function EditorStudio() {
   // QA-037: HUD_VISIBLE arms the recorder's live gate; the recorder starts once
   // the captured picture itself shows the recorded tab.
   const armLiveGateRef = useRef<(epoch?: number) => void>(() => {});
+  // Exposed by the keepalive useEffect so handleStopLiveRecording can speed up
+  // pings while a stop/commit is in flight, keeping the MV3 SW awake.
+  const keepaliveStateRef = useRef<{ startFastPing: () => void; stopFastPing: () => void } | null>(null);
 
   // 1. Initial Load: Try OPFS / storage or generate interactive demo
   useEffect(() => {
@@ -230,18 +233,38 @@ export function EditorStudio() {
         void chrome.runtime?.lastError;
       });
 
-      // Connect persistent keepalive port to prevent MV3 service worker dormancy
+      // Connect persistent keepalive port to prevent MV3 service worker dormancy.
+      // During stop/commit the port must stay open so the SW cannot terminate
+      // mid-handshake; reconnect on disconnect and ping more often while stopping.
       let keepalivePort: chrome.runtime.Port | null = null;
       let pingInterval: any = null;
-      try {
-        keepalivePort = chrome.runtime.connect({ name: 'smoothstudio-keepalive' });
-        keepalivePort.onDisconnect.addListener(() => {
-          void chrome.runtime?.lastError;
-        });
-        pingInterval = setInterval(() => {
+      let stopKeepaliveInterval: any = null;
+      const connectKeepalive = () => {
+        try {
+          keepalivePort = chrome.runtime.connect({ name: 'smoothstudio-keepalive' });
+          keepalivePort.onDisconnect.addListener(() => {
+            void chrome.runtime?.lastError;
+            keepalivePort = null;
+            // Reconnect so the SW stays awake across restarts during stop/commit.
+            if (!isStoppingRef.current) connectKeepalive();
+          });
+        } catch {}
+      };
+      connectKeepalive();
+      pingInterval = setInterval(() => {
+        try { keepalivePort?.postMessage('ping'); } catch {}
+      }, 15000);
+      // Faster ping while a stop/commit is in flight so the SW does not go idle.
+      const startFastPing = () => {
+        if (stopKeepaliveInterval) return;
+        stopKeepaliveInterval = setInterval(() => {
           try { keepalivePort?.postMessage('ping'); } catch {}
-        }, 15000);
-      } catch {}
+        }, 5000);
+      };
+      const stopFastPing = () => {
+        if (stopKeepaliveInterval) { clearInterval(stopKeepaliveInterval); stopKeepaliveInterval = null; }
+      };
+      keepaliveStateRef.current = { startFastPing, stopFastPing };
 
       const messageListener = (msg: any) => {
         if (msg.type === 'STUDIO_STOP_CAPTURE') {
@@ -961,6 +984,7 @@ export function EditorStudio() {
     }
     hasFinalizedRef.current = true;
     isStoppingRef.current = true;
+    keepaliveStateRef.current?.startFastPing();
     if (hudLiveWatchdogRef.current) {
       clearTimeout(hudLiveWatchdogRef.current);
       hudLiveWatchdogRef.current = null;
@@ -1039,6 +1063,7 @@ export function EditorStudio() {
         message: err?.message || 'Error loading recording into editor.'
       });
     } finally {
+      keepaliveStateRef.current?.stopFastPing();
       isStoppingRef.current = false;
       latestTelemetryRef.current = null;
     }

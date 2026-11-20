@@ -44,7 +44,7 @@ interface Element {
   unknownSize: boolean;
 }
 
-function readVint(bytes: Uint8Array, pos: number, limit: number): { length: number; value: number; unknown: boolean } | null {
+export function readVint(bytes: Uint8Array, pos: number, limit: number): { length: number; value: number; unknown: boolean } | null {
   if (pos >= limit) return null;
   const first = bytes[pos];
   if (first === 0) return null;
@@ -88,7 +88,7 @@ function readElement(bytes: Uint8Array, pos: number, limit: number): Element | n
   return { id, start: pos, contentStart, contentEnd, unknownSize: size.unknown };
 }
 
-function readUint(bytes: Uint8Array, start: number, end: number): number {
+export function readUint(bytes: Uint8Array, start: number, end: number): number {
   let value = 0;
   for (let i = start; i < end; i++) value = value * 256 + bytes[i];
   return value;

@@ -24,6 +24,7 @@ import {
   AAC_OUTPUT_CHANNELS
 } from './audio-track';
 import { VideoFrameSeeker } from './video-seeker';
+import { SequentialVideoFrameSource } from './sequential-frame-source';
 
 function abortError(): Error {
   const err = new Error('The export was cancelled.');
@@ -112,7 +113,28 @@ export class HardwareMp4Exporter {
     let video: HTMLVideoElement | HTMLCanvasElement = videoSource;
     let exportVideoUrl: string | null = null;
     let attachedExportVideo: HTMLVideoElement | null = null;
-    if (videoBlob) {
+    let frameSource: SequentialVideoFrameSource | null = null;
+    let stagingCanvas: HTMLCanvasElement | null = null;
+    // Every resource below is released in the finally block, including when
+    // audio decoding or cut validation throws before the frame loop starts.
+    try {
+    // QA-001: decode the recording once, in order, with WebCodecs. Seeking a
+    // <video> per output frame re-decodes from the previous keyframe every time
+    // (O(GOP) per frame) and is only kept as the fallback path.
+    if (videoBlob && typeof VideoEncoder !== 'undefined') {
+      const opened = await SequentialVideoFrameSource.open(videoBlob);
+      if (opened.ok) {
+        frameSource = opened.source;
+        stagingCanvas = document.createElement('canvas');
+        stagingCanvas.width = frameSource.width || sourceW;
+        stagingCanvas.height = frameSource.height || Math.round(sourceW * 9 / 16);
+        video = stagingCanvas;
+        console.log(`[SmoothStudio MP4 Exporter] Frame source: sequential ${frameSource.codec} decode (${frameSource.frameCount} frames).`);
+      } else {
+        console.warn(`[SmoothStudio MP4 Exporter] Frame source: <video> seeks (${opened.reason}).`);
+      }
+    }
+    if (videoBlob && !frameSource) {
       try {
         const dedicatedVideo = document.createElement('video');
         dedicatedVideo.muted = true;
@@ -190,10 +212,11 @@ export class HardwareMp4Exporter {
     // Check if WebCodecs VideoEncoder is available
     const hasWebCodecs = typeof VideoEncoder !== 'undefined';
 
-    try {
       if (hasWebCodecs) {
         return await this.exportWithWebCodecs({
           video,
+          frameSource,
+          stagingCanvas,
           onRenderCanvasFrame,
           exportCanvas,
           outW,
@@ -264,6 +287,7 @@ export class HardwareMp4Exporter {
         onProgress
       });
     } finally {
+      frameSource?.close();
       if (exportVideoUrl) {
         URL.revokeObjectURL(exportVideoUrl);
       }
@@ -275,6 +299,9 @@ export class HardwareMp4Exporter {
 
   private async exportWithWebCodecs(params: {
     video: HTMLVideoElement | HTMLCanvasElement;
+    /** Sequential decoder of the recording; when set, `stagingCanvas` is the render source. */
+    frameSource?: SequentialVideoFrameSource | null;
+    stagingCanvas?: HTMLCanvasElement | null;
     audioTrack?: PcmTrack | null;
     onRenderCanvasFrame?: (timeMs: number) => void;
     exportCanvas: HTMLCanvasElement;
@@ -311,6 +338,8 @@ export class HardwareMp4Exporter {
   }): Promise<Blob> {
     const {
       video,
+      frameSource,
+      stagingCanvas,
       audioTrack,
       onRenderCanvasFrame,
       exportCanvas,
@@ -354,9 +383,13 @@ export class HardwareMp4Exporter {
     // real seekable range, assigns currentTime once, and treats "already on the
     // requested frame" as a success instead of waiting for an event Chrome will
     // never fire. Disposed in the finally block below.
-    const frameSeeker = video instanceof HTMLVideoElement ? new VideoFrameSeeker(video) : null;
+    const frameSeeker = !frameSource && video instanceof HTMLVideoElement ? new VideoFrameSeeker(video) : null;
     if (frameSeeker) {
       await frameSeeker.waitUntilReady(signal);
+    }
+    const stagingCtx = frameSource && stagingCanvas ? stagingCanvas.getContext('2d') : null;
+    if (frameSource && !stagingCtx) {
+      throw new Error('Could not create the 2D context that receives the decoded recording frames.');
     }
 
     let isFinalized = false;
@@ -470,8 +503,21 @@ export class HardwareMp4Exporter {
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
 
       if (signal?.aborted) throw abortError();
-      // Seek video to frame timestamp or render canvas frame
-      if (video instanceof HTMLVideoElement && frameSeeker) {
+      // Select the recording frame on screen at this timeline time.
+      if (frameSource && stagingCanvas && stagingCtx) {
+        if (videoEncoder.encodeQueueSize > 12) {
+          while (videoEncoder.encodeQueueSize > 6) {
+            if (signal?.aborted) throw abortError();
+            await new Promise((r) => setTimeout(r, 2));
+          }
+        }
+        const frame = await frameSource.frameAt(currentMs, signal);
+        if (stagingCanvas.width !== frame.displayWidth || stagingCanvas.height !== frame.displayHeight) {
+          stagingCanvas.width = frame.displayWidth;
+          stagingCanvas.height = frame.displayHeight;
+        }
+        stagingCtx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
+      } else if (video instanceof HTMLVideoElement && frameSeeker) {
         // Backpressure BEFORE the seek: a saturated encoder queue starves the
         // decoder, which is what made a healthy seek look like a timeout.
         if (videoEncoder.encodeQueueSize > 12) {
@@ -524,8 +570,13 @@ export class HardwareMp4Exporter {
       });
 
       const isKeyFrame = f === 0 || f % 120 === 0;
-      videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
-      videoFrame.close();
+      // encode() can throw (a closed encoder, an invalid frame); the frame must
+      // be released on that path too, not only after a successful encode.
+      try {
+        videoEncoder.encode(videoFrame, { keyFrame: isKeyFrame });
+      } finally {
+        videoFrame.close();
+      }
 
       // Yield to the event loop and apply backpressure only if encoder queue is filling excessively
       if (videoEncoder.encodeQueueSize > 30) {
@@ -548,6 +599,9 @@ export class HardwareMp4Exporter {
 
     if (onProgress) {
       onProgress(100, totalFrames, totalFrames);
+    }
+    if (frameSource) {
+      console.log(`[SmoothStudio MP4 Exporter] Frame source decoded ${frameSource.decodedChunks} of ${frameSource.frameCount} recording frames (${frameSource.restarts} keyframe restarts).`);
     }
 
     // Drain remaining encoder queue before flushing

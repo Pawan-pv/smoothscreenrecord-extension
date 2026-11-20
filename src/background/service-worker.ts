@@ -394,8 +394,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const result = await endRecordingSession(wanted);
 
       if (!result.ended) {
-        // Never stop, focus or re-notify the editor of a session this request
-        // does not own: it may be recording a newer one right now.
+        // Even when the SW didn't own this session's end (stale/superseded/
+        // not_recording), the editor may still be recording and needs to know
+        // to stop so the recording reaches it. The editor's own guards
+        // (hasFinalizedRef / isStoppingRef / getStatus()) prevent double-stops.
+        const editorTabId = currState.activeEditorTabId;
+        if (editorTabId && !fromEditor) {
+          notifyEditorCapture(editorTabId, { type: 'STUDIO_STOP_CAPTURE', sessionId: currState.activeSessionId });
+          console.log('[SmoothStudio SW] Editor told to stop (non-ended session) at epoch', Date.now());
+        }
         const status = result.reason === 'stale'
           ? 'stop_ignored'
           : result.reason === 'superseded'

@@ -934,6 +934,15 @@ export function EditorStudio() {
       // No originEpoch is sent: the content script owns the HUD-visible epoch
       // and publishes it back with HUD_VISIBLE.
       if (typeof chrome !== 'undefined' && chrome.runtime) {
+        // QA-006: forward privacy options to the target tab when starting from
+        // the editor, matching popup.tsx:103-109. Default to all categories ON
+        // so sensitive data is never recorded unblurred.
+        chrome.runtime.sendMessage({
+          type: 'APPLY_PRIVACY_OPTIONS',
+          options: { blurEmails: true, blurRevenue: true, blurApiKeys: true }
+        }, () => {
+          void chrome.runtime?.lastError;
+        });
         chrome.runtime.sendMessage(
           {
             type: 'START_STUDIO_RECORDING',

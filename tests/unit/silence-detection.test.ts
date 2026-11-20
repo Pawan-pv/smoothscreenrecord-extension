@@ -88,4 +88,44 @@ describe('QA-021 silence detection with a real microphone', () => {
     expect(segs).toHaveLength(1);
     expect(Math.abs(segs[0].startTime - 15000)).toBeLessThan(250);
   });
+
+  it('finds pauses under AGC-lifted room noise at -25 dBFS under -12 dBFS speech (QA-034 range)', () => {
+    const data = buildSignal({
+      seconds: 20, speechAmp: dbToAmp(-12), pauseAmp: dbToAmp(-25), pauses: [[5, 7], [15, 17]]
+    });
+    const segs = detectSilenceSegments(data, SR, [], []);
+    expect(segs.map((s) => [s.startTime, s.endTime])).toHaveLength(2);
+    expect(Math.abs(segs[0].startTime - 5000)).toBeLessThan(250);
+    expect(Math.abs(segs[1].startTime - 15000)).toBeLessThan(250);
+  });
+
+  it('finds pauses under AGC-lifted room noise at -34 dBFS under -15 dBFS speech (QA-034 range)', () => {
+    const data = buildSignal({
+      seconds: 20, speechAmp: dbToAmp(-15), pauseAmp: dbToAmp(-34), pauses: [[5, 7], [15, 17]]
+    });
+    const segs = detectSilenceSegments(data, SR, [], []);
+    expect(segs.map((s) => [s.startTime, s.endTime])).toHaveLength(2);
+    expect(Math.abs(segs[0].startTime - 5000)).toBeLessThan(250);
+    expect(Math.abs(segs[1].startTime - 15000)).toBeLessThan(250);
+  });
+
+  it('does not split a pause on short breath blips (hysteresis / min-duration merge)', () => {
+    const r = rng(7);
+    const out = new Float32Array(Math.round(20 * SR));
+    const speechAmp = dbToAmp(-15);
+    const pauseAmp = dbToAmp(-38);
+    const blipAmp = dbToAmp(-20);
+    for (let i = 0; i < out.length; i++) {
+      const t = i / SR;
+      const inPause = t >= 5 && t < 7;
+      // 80 ms breath blip at t=5.9s inside the first pause
+      const inBlip = inPause && t >= 5.9 && t < 5.98;
+      const amp = inBlip ? blipAmp : (inPause ? pauseAmp : speechAmp);
+      out[i] = r() * amp * Math.sqrt(3);
+    }
+    const segs = detectSilenceSegments(out, SR, [], []);
+    expect(segs.map((s) => [s.startTime, s.endTime])).toHaveLength(2);
+    expect(Math.abs(segs[0].startTime - 5000)).toBeLessThan(250);
+    expect(Math.abs(segs[0].endTime - 7000)).toBeLessThan(250);
+  });
 });

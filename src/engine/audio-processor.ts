@@ -87,6 +87,13 @@ export class AudioProcessor {
   }
 
   // Decodes audio from recorded video blob and detects pauses > 1.2s
+  //
+  // QA-034: `dbThreshold` is NOT the detector threshold any more, it is only
+  // the absolute floor below which a window is never called speech. The real
+  // threshold comes from detectSilenceSegments: per-window noise-floor
+  // calibration between the local quiet and local speech level (so AGC-lifted
+  // room noise at -25..-34 dBFS still yields cuts), with hysteresis and a
+  // min-duration merge. Keep it at -42 so a quiet-but-real room is never cut.
   public async analyzeSilences(
     videoBlob: Blob,
     clicks: ClickEvent[] = [],

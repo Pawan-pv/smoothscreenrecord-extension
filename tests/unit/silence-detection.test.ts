@@ -109,16 +109,25 @@ describe('QA-021 silence detection with a real microphone', () => {
     expect(Math.abs(segs[1].startTime - 15000)).toBeLessThan(250);
   });
 
-  it('finds two pauses without blip', () => {
-    const out = new Float32Array(20 * SR);
-    const speechAmp = dbToAmp(-15);
-    const pauseAmp = dbToAmp(-38);
-    out.fill(speechAmp);
-    for (let i = 5 * SR; i < 7 * SR; i++) out[i] = pauseAmp;
-    for (let i = 15 * SR; i < 17 * SR; i++) out[i] = pauseAmp;
-    const segs = detectSilenceSegments(out, SR, [], []);
+  it('does not split a pause on a short breath blip (hysteresis / merge)', () => {
+    // 50 ms of breath noise at -20 dBFS inside the 2 s pause. It straddles two
+    // 42.7 ms analysis windows, so this exercises the MAX_BLIP_WINDOWS = 2
+    // budget: the pause must stay one segment. A split would leave two
+    // sub-1.2 s halves and the detector would drop both.
+    const data = buildSignal({
+      seconds: 20, speechAmp: dbToAmp(-15), pauseAmp: dbToAmp(-38), pauses: [[5, 7], [15, 17]]
+    });
+    const r = rng(11);
+    const blipStart = Math.round(5.945 * SR);
+    const blipEnd = blipStart + Math.round(0.05 * SR);
+    for (let i = blipStart; i < blipEnd && i < data.length; i++) {
+      data[i] = r() * dbToAmp(-20) * Math.sqrt(3);
+    }
+    const segs = detectSilenceSegments(data, SR, [], []);
     expect(segs.map((s) => [s.startTime, s.endTime])).toHaveLength(2);
-    expect(Math.abs(segs[0].startTime - 5000)).toBeLessThan(500);
-    expect(Math.abs(segs[0].endTime - 7000)).toBeLessThan(500);
+    expect(Math.abs(segs[0].startTime - 5000)).toBeLessThan(250);
+    expect(Math.abs(segs[0].endTime - 7000)).toBeLessThan(250);
+    expect(Math.abs(segs[1].startTime - 15000)).toBeLessThan(250);
+    expect(Math.abs(segs[1].endTime - 17000)).toBeLessThan(250);
   });
 });

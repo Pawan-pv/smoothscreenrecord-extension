@@ -25,6 +25,7 @@ import {
 } from './audio-track';
 import { VideoFrameSeeker } from './video-seeker';
 import { SequentialVideoFrameSource } from './sequential-frame-source';
+import { resolveExportTimelineMs } from './export-timeline';
 
 function abortError(): Error {
   const err = new Error('The export was cancelled.');
@@ -185,15 +186,17 @@ export class HardwareMp4Exporter {
     }
     const audioEndMs = decodedPcm ? pcmDurationMs(decodedPcm) : 0;
 
-    // QA-002: the longest real track is authoritative. A recorder whose video
-    // encoder stopped 400 ms before the audio must not lose that audio; the
-    // video simply holds its last frame for the tail.
-    // QA-009: clamp the video timeline to the last real decoded frame PTS,
-    // not the padded container duration, to avoid a frozen tail. When the
-    // sequential frame source is available it knows the exact last PTS;
-    // otherwise fall back to the container duration.
-    const videoEndMs = frameSource ? frameSource.lastTimestampUs / 1000 : containerDurationMs;
-    const timelineDurationMs = Math.ceil(Math.max(wallClockDurationMs, videoEndMs, audioEndMs));
+    // QA-002 + QA-009: the real tracks beat the padded durations. The video
+    // ends on the last decoded frame PTS (the wall clock and the WebM container
+    // both include ~190 ms of trailing encoder padding, which used to be
+    // exported as a frozen tail); audio that outlives the video still extends
+    // the timeline and the video holds its last frame for that tail.
+    const timelineDurationMs = resolveExportTimelineMs({
+      wallClockDurationMs,
+      containerDurationMs,
+      audioEndMs,
+      lastVideoPtsMs: frameSource ? frameSource.lastTimestampUs / 1000 : 0
+    });
     if (timelineDurationMs <= 0) {
       throw new Error('The recording has no timeline: duration, container and audio are all empty.');
     }

@@ -149,9 +149,11 @@ export class CursorSplineEngine {
     }
 
     // 2. Motion trail / directional motion blur if moving fast
-    if (cursor.speed > 350) {
+    // Handles normalized (0..1) speeds (scaled to ~1920px equivalent) as well as legacy pixel speeds
+    const effectiveSpeed = cursor.x <= 1.0 ? cursor.speed * 1920 : cursor.speed;
+    if (effectiveSpeed > 350) {
       ctx.save();
-      const blurLen = Math.min(24, cursor.speed * 0.02) * cursorScale;
+      const blurLen = Math.min(24, effectiveSpeed * 0.02) * cursorScale;
       const angle = Math.atan2(cursor.vy, cursor.vx);
       ctx.beginPath();
       ctx.moveTo(screenX, screenY);
@@ -208,6 +210,9 @@ export class CursorSplineEngine {
   ): void {
     ctx.save();
 
+    const canvasW = ctx.canvas?.width || 1920;
+    const canvasH = ctx.canvas?.height || 1080;
+
     // 1. Draw Active Click Ripples
     for (const click of this.clicks) {
       const elapsed = currentTimeMs - click.t;
@@ -216,9 +221,12 @@ export class CursorSplineEngine {
         const radius = 10 + progress * 34;
         const alpha = Math.max(0, (1 - progress) * 0.85);
 
+        const clickX = click.x <= 1.0 ? click.x * canvasW : click.x;
+        const clickY = click.y <= 1.0 ? click.y * canvasH : click.y;
+
         ctx.save();
         ctx.beginPath();
-        ctx.arc(click.x, click.y, radius, 0, Math.PI * 2);
+        ctx.arc(clickX, clickY, radius, 0, Math.PI * 2);
         ctx.strokeStyle = ringColor;
         ctx.lineWidth = 2.5 * (1 - progress * 0.5);
         ctx.globalAlpha = alpha;
@@ -229,7 +237,7 @@ export class CursorSplineEngine {
         // Inner solid dot pop
         if (progress < 0.4) {
           ctx.beginPath();
-          ctx.arc(click.x, click.y, 4 * (1 - progress * 2), 0, Math.PI * 2);
+          ctx.arc(clickX, clickY, 4 * (1 - progress * 2), 0, Math.PI * 2);
           ctx.fillStyle = '#FFFFFF';
           ctx.fill();
         }
@@ -237,16 +245,20 @@ export class CursorSplineEngine {
       }
     }
 
+    const cursorX = cursor.x <= 1.0 ? cursor.x * canvasW : cursor.x;
+    const cursorY = cursor.y <= 1.0 ? cursor.y * canvasH : cursor.y;
+    const effectiveSpeed = cursor.x <= 1.0 ? cursor.speed * canvasW : cursor.speed;
+
     // 2. Motion trail / directional motion blur if moving fast
-    if (cursor.speed > 350) {
+    if (effectiveSpeed > 350) {
       ctx.save();
-      const blurLen = Math.min(24, cursor.speed * 0.02);
+      const blurLen = Math.min(24, effectiveSpeed * 0.02);
       const angle = Math.atan2(cursor.vy, cursor.vx);
       ctx.beginPath();
-      ctx.moveTo(cursor.x, cursor.y);
+      ctx.moveTo(cursorX, cursorY);
       ctx.lineTo(
-        cursor.x - Math.cos(angle) * blurLen,
-        cursor.y - Math.sin(angle) * blurLen
+        cursorX - Math.cos(angle) * blurLen,
+        cursorY - Math.sin(angle) * blurLen
       );
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
       ctx.lineWidth = 4;
@@ -256,7 +268,7 @@ export class CursorSplineEngine {
     }
 
     // 3. Render High-Resolution Vector Cursor
-    ctx.translate(cursor.x, cursor.y);
+    ctx.translate(cursorX, cursorY);
 
     // Subtle drop shadow for vector cursor
     ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';

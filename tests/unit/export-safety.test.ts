@@ -85,6 +85,17 @@ describe('export-safety', () => {
       expect(toPercent(540, 1080)).toBe('50.0');
     });
 
+    it('correctly converts normalized 0..1 coordinates directly to percentages without collapsing to 0%', () => {
+      expect(toPercent(0.5, 1920)).toBe('50.0');
+      expect(toPercent(0.25, 1080)).toBe('25.0');
+      expect(toPercent(0.752, 1920)).toBe('75.2');
+      expect(toPercent(1.0, 1920)).toBe('100.0');
+      expect(toPercent(0.0, 1920)).toBe('0.0');
+      // Normalized coordinates work even if metadata width/height is 0 or missing
+      expect(toPercent(0.42, 0)).toBe('42.0');
+      expect(toPercent(0.88, NaN)).toBe('88.0');
+    });
+
     it('clamps negative values to 0.0 and overflow values to 100.0', () => {
       expect(toPercent(-20, 100)).toBe('0.0');
       expect(toPercent(150, 100)).toBe('100.0');

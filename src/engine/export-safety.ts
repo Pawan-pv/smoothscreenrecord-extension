@@ -62,13 +62,25 @@ export function serializeForInlineScript(value: unknown): string {
 }
 
 /**
- * Percentage of `total`, clamped to 0..100. A zero, negative or missing total
- * (a telemetry file recorded without viewport metadata) falls back to 50 so
- * the hotspot stays centred instead of becoming NaN.
+ * Percentage of `total`, clamped to 0..100.
+ * Supports dual-mode coordinates: if `value` is in 0..1, it represents a normalized
+ * capture coordinate and is converted directly to percentage (0..100%).
+ * A legacy pixel value is divided by `total`.
+ * A zero, negative or missing total with legacy coordinates falls back to `fallback` (50)
+ * so the hotspot stays centred instead of becoming NaN.
  */
 export function toPercent(value: number, total: number, fallback = 50): string {
   const safeFallback = Number.isFinite(fallback) ? fallback : 50;
-  if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) {
+  if (!Number.isFinite(value)) {
+    return safeFallback.toFixed(1);
+  }
+  // Dual-mode coordinate support:
+  // If value is in 0..1, it is already a normalized capture coordinate.
+  if (value >= 0 && value <= 1.0) {
+    return (value * 100).toFixed(1);
+  }
+  // Legacy pixel coordinates require total (viewport width/height).
+  if (!Number.isFinite(total) || total <= 0) {
     return safeFallback.toFixed(1);
   }
   const percent = (value / total) * 100;

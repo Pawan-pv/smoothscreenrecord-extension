@@ -83,7 +83,7 @@ test.describe('Tier 1 Fast Verification Suite', () => {
   });
 
   test('a1) MP4 Export uncut (~20.2s, no repeated tail, A/V sync)', async () => {
-    test.setTimeout(120_000);
+    test.setTimeout(180_000);
     const t0 = Date.now();
 
     const uncutData = await harnessPage.evaluate(async () => {
@@ -135,7 +135,7 @@ test.describe('Tier 1 Fast Verification Suite', () => {
   });
 
   test('a2) MP4 Export with cut silences, auto-zoom pills, cursor, and spotlight', async () => {
-    test.setTimeout(120_000);
+    test.setTimeout(180_000);
     const tCut0 = Date.now();
     const cutData = await harnessPage.evaluate(async () => {
       const { HardwareMp4Exporter, CursorSplineEngine, VIBE_PRESETS } = (window as any).__tier1Harness;

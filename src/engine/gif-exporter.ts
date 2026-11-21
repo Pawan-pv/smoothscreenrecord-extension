@@ -12,9 +12,23 @@ import {
 import { StudioRenderer, getAspectDimensions } from './renderer';
 import { computeCinematicCameraState, SpringCameraSolver } from './spring-physics';
 import { CursorSplineEngine } from './cursor-spline';
+import { SequentialVideoFrameSource } from './sequential-frame-source';
+import {
+  assertGifBufferHasRoom,
+  gifFrameHeadroomBytes,
+  planGifBufferBytes,
+  resolveGifMaxDimension
+} from './gif-budget';
 
 export interface GifExportOptions {
   videoSource: HTMLVideoElement | HTMLCanvasElement;
+  /**
+   * The recording itself. When present, frames are decoded sequentially with
+   * WebCodecs instead of seeking the <video> element once per output frame
+   * (QA-028: seeking re-decodes a whole GOP per frame and made long exports
+   * quadratic). The <video> path stays as the fallback.
+   */
+  videoBlob?: Blob;
   onRenderCanvasFrame?: (timeMs: number) => void;
   durationMs: number;
   aspectRatio: AspectRatioType;
@@ -198,6 +212,7 @@ export class HardwareGifExporter {
   public async exportGif(options: GifExportOptions): Promise<Blob> {
     const {
       videoSource,
+      videoBlob,
       onRenderCanvasFrame,
       durationMs,
       aspectRatio,
@@ -233,7 +248,8 @@ export class HardwareGifExporter {
 
     const presetConfig = GIF_QUALITY_PRESETS[qualityPreset] || GIF_QUALITY_PRESETS.compact;
     const fps = explicitFps ?? presetConfig.fps;
-    const maxDimension = explicitMaxDimension ?? presetConfig.maxDimension;
+    // QA-028: a caller must not be able to ask for a 4K GIF and OOM the tab.
+    const maxDimension = resolveGifMaxDimension(explicitMaxDimension ?? presetConfig.maxDimension);
     const maxColors = explicitMaxColors ?? presetConfig.maxColors;
 
     const { width: fullW, height: fullH } = getAspectDimensions(aspectRatio, 1920);
@@ -274,8 +290,11 @@ export class HardwareGifExporter {
     }
 
     const totalFrames = timestamps.length;
-    const estimatedSize = outW * outH * totalFrames * 0.4 + 1024 * 1024;
-    const buffer = new Uint8Array(Math.max(4 * 1024 * 1024, estimatedSize));
+    // QA-028: bounded allocation. The estimate can be gigabytes for a long
+    // 1080p clip; the buffer is capped and every frame checks for room before
+    // it is written, so the export fails with a clear message instead of OOM.
+    const buffer = new Uint8Array(planGifBufferBytes(outW, outH, totalFrames));
+    const frameHeadroom = gifFrameHeadroomBytes(outW, outH);
     const gifWriter = new GifWriter(buffer, outW, outH, { loop: 0 });
 
     const delayHundredths = Math.max(2, Math.round(100 / fps));
@@ -296,138 +315,188 @@ export class HardwareGifExporter {
     // When adjacent frames are visual duplicates, accumulate their delay instead of encoding redundant frames.
     let pendingFrameData: Uint8ClampedArray | null = null;
     let pendingDelayHundredths = 0;
+    let writtenFrames = 0;
 
     const flushPendingFrame = () => {
       if (!pendingFrameData) return;
       const { indexed, palette } = quantizeFrame(pendingFrameData, outW, outH, maxColors);
-      gifWriter.addFrame(0, 0, outW, outH, indexed as unknown as number[], {
-        palette,
-        delay: Math.min(65535, pendingDelayHundredths)
-      });
+      assertGifBufferHasRoom(gifWriter.end(), buffer.length, frameHeadroom, writtenFrames);
+      try {
+        gifWriter.addFrame(0, 0, outW, outH, indexed as unknown as number[], {
+          palette,
+          delay: Math.min(65535, pendingDelayHundredths)
+        });
+      } catch (err) {
+        throw new Error(
+          `GIF export could not write frame ${writtenFrames}: ${(err as Error)?.message || err}`
+        );
+      }
+      writtenFrames++;
       pendingFrameData = null;
       pendingDelayHundredths = 0;
     };
 
-    for (let f = 0; f < totalFrames; f++) {
-      const currentMs = timestamps[f];
-
-      const cursor = cursorEngine.getCursorAt(currentMs);
-      const targetCamera = computeCinematicCameraState(
-        currentMs,
-        pills,
-        cursor,
-        metadata?.width || fullW,
-        metadata?.height || fullH,
-        true
-      );
-      springCamera.setTarget(targetCamera);
-      const camera = f === 0 ? targetCamera : springCamera.update(1 / fps);
-      const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
-
-      if (videoSource instanceof HTMLVideoElement) {
-        // Wait for the frame to actually be presented.
-        //
-        // The listener has to be attached BEFORE currentTime is assigned, and
-        // the "already there" case has to be checked BEFORE the assignment:
-        // reading video.currentTime right after assigning it returns the NEW
-        // target, so the old check always passed and the wait resolved before
-        // the decoder had produced a frame. Every exported frame was then the
-        // same picture and the deduplication collapsed the whole GIF into a
-        // single frame.
-        const targetSec = currentMs / 1000;
-        await new Promise<void>((resolve) => {
-          let settled = false;
-          let timer: any = null;
-          const done = () => {
-            if (settled) return;
-            settled = true;
-            videoSource.removeEventListener('seeked', onSeeked);
-            if (timer !== null) clearTimeout(timer);
-            resolve();
-          };
-          const onSeeked = () => done();
-          if (Math.abs(videoSource.currentTime - targetSec) < 0.005) {
-            // The element already holds this frame: nothing to wait for.
-            done();
-            return;
-          }
-          videoSource.addEventListener('seeked', onSeeked);
-          // A seek that never completes must not hang the whole export.
-          timer = setTimeout(done, 2000);
-          try {
-            videoSource.currentTime = targetSec;
-          } catch {
-            done();
-          }
-        });
-      } else if (onRenderCanvasFrame) {
-        onRenderCanvasFrame(currentMs);
-      }
-
-      this.renderer.renderFrame({
-        canvas: exportCanvas,
-        video: videoSource,
-        currentTimeMs: currentMs,
-        durationMs,
-        camera,
-        activePill,
-        cursorEngine,
-        keystrokes,
-        preset,
-        aspectRatio,
-        showSpotlight,
-        showCursor,
-        showHud,
-        metadata,
-        cursorTheme,
-        cursorScale,
-        captions,
-        captionStyle,
-        captionBackdrop,
-        showCaptions,
-       showIntroCard,
-       introHeadline,
-       introSubheadline,
-       showOutroCard,
-       outroHeadline,
-       outroCtaText
-      });
-
-      // Downscale to target GIF resolution
-      downscaleCtx.clearRect(0, 0, outW, outH);
-      downscaleCtx.drawImage(exportCanvas, 0, 0, outW, outH);
-      const imgData = downscaleCtx.getImageData(0, 0, outW, outH).data;
-
-      if (enableDeduplication && pendingFrameData && areFramesSimilar(pendingFrameData, imgData)) {
-        // Increment delay of pending frame rather than writing a duplicate frame
-        pendingDelayHundredths += delayHundredths;
+    // QA-028: decode the recording sequentially (the same path as the MP4
+    // exporter) instead of seeking the <video> element per output frame. The
+    // seek path stays as the fallback when WebCodecs or the codec is missing.
+    let frameSource: SequentialVideoFrameSource | null = null;
+    let stagingCanvas: HTMLCanvasElement | null = null;
+    let stagingCtx: CanvasRenderingContext2D | null = null;
+    let renderVideo: HTMLVideoElement | HTMLCanvasElement = videoSource;
+    if (videoBlob && typeof VideoDecoder !== 'undefined') {
+      const opened = await SequentialVideoFrameSource.open(videoBlob);
+      if (opened.ok) {
+        frameSource = opened.source;
+        stagingCanvas = document.createElement('canvas');
+        stagingCanvas.width = frameSource.width || outW;
+        stagingCanvas.height = frameSource.height || outH;
+        stagingCtx = stagingCanvas.getContext('2d');
+        if (!stagingCtx) {
+          frameSource.close();
+          frameSource = null;
+          stagingCanvas = null;
+        } else {
+          renderVideo = stagingCanvas;
+          console.log(`[SmoothStudio GIF Exporter] Frame source: sequential ${frameSource.codec} decode (${frameSource.frameCount} frames).`);
+        }
       } else {
-        flushPendingFrame();
-        pendingFrameData = new Uint8ClampedArray(imgData);
-        pendingDelayHundredths = delayHundredths;
-      }
-
-      if (f % 5 === 0) {
-        await new Promise((r) => setTimeout(r, 1));
-      }
-
-      if (f % 6 === 0 && onProgress) {
-        const percent = Math.round(((f + 1) / totalFrames) * 100);
-        onProgress(percent, f + 1, totalFrames);
+        console.warn(`[SmoothStudio GIF Exporter] Frame source: <video> seeks (${opened.reason}).`);
       }
     }
 
-    // Flush any pending trailing frame
-    flushPendingFrame();
+    // The frame source owns its VideoFrames; close() releases the current and
+    // queued frames plus the decoder on both the success and the error path.
+    try {
+      for (let f = 0; f < totalFrames; f++) {
+        const currentMs = timestamps[f];
 
-    if (onProgress) {
-      onProgress(100, totalFrames, totalFrames);
+        const cursor = cursorEngine.getCursorAt(currentMs);
+        const targetCamera = computeCinematicCameraState(
+          currentMs,
+          pills,
+          cursor,
+          metadata?.width || fullW,
+          metadata?.height || fullH,
+          true
+        );
+        springCamera.setTarget(targetCamera);
+        const camera = f === 0 ? targetCamera : springCamera.update(1 / fps);
+        const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
+
+        if (frameSource && stagingCanvas && stagingCtx) {
+          const frame = await frameSource.frameAt(currentMs);
+          if (stagingCanvas.width !== frame.displayWidth || stagingCanvas.height !== frame.displayHeight) {
+            stagingCanvas.width = frame.displayWidth;
+            stagingCanvas.height = frame.displayHeight;
+          }
+          stagingCtx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
+        } else if (videoSource instanceof HTMLVideoElement) {
+          // Wait for the frame to actually be presented.
+          //
+          // The listener has to be attached BEFORE currentTime is assigned, and
+          // the "already there" case has to be checked BEFORE the assignment:
+          // reading video.currentTime right after assigning it returns the NEW
+          // target, so the old check always passed and the wait resolved before
+          // the decoder had produced a frame. Every exported frame was then the
+          // same picture and the deduplication collapsed the whole GIF into a
+          // single frame.
+          const targetSec = currentMs / 1000;
+          await new Promise<void>((resolve) => {
+            let settled = false;
+            let timer: any = null;
+            const done = () => {
+              if (settled) return;
+              settled = true;
+              videoSource.removeEventListener('seeked', onSeeked);
+              if (timer !== null) clearTimeout(timer);
+              resolve();
+            };
+            const onSeeked = () => done();
+            if (Math.abs(videoSource.currentTime - targetSec) < 0.005) {
+              // The element already holds this frame: nothing to wait for.
+              done();
+              return;
+            }
+            videoSource.addEventListener('seeked', onSeeked);
+            // A seek that never completes must not hang the whole export.
+            timer = setTimeout(done, 2000);
+            try {
+              videoSource.currentTime = targetSec;
+            } catch {
+              done();
+            }
+          });
+        } else if (onRenderCanvasFrame) {
+          onRenderCanvasFrame(currentMs);
+        }
+
+        this.renderer.renderFrame({
+          canvas: exportCanvas,
+          video: renderVideo,
+          currentTimeMs: currentMs,
+          durationMs,
+          camera,
+          activePill,
+          cursorEngine,
+          keystrokes,
+          preset,
+          aspectRatio,
+          showSpotlight,
+          showCursor,
+          showHud,
+          metadata,
+          cursorTheme,
+          cursorScale,
+          captions,
+          captionStyle,
+          captionBackdrop,
+          showCaptions,
+          showIntroCard,
+          introHeadline,
+          introSubheadline,
+          showOutroCard,
+          outroHeadline,
+          outroCtaText
+        });
+
+        // Downscale to target GIF resolution
+        downscaleCtx.clearRect(0, 0, outW, outH);
+        downscaleCtx.drawImage(exportCanvas, 0, 0, outW, outH);
+        const imgData = downscaleCtx.getImageData(0, 0, outW, outH).data;
+
+        if (enableDeduplication && pendingFrameData && areFramesSimilar(pendingFrameData, imgData)) {
+          // Increment delay of pending frame rather than writing a duplicate frame
+          pendingDelayHundredths += delayHundredths;
+        } else {
+          flushPendingFrame();
+          pendingFrameData = new Uint8ClampedArray(imgData);
+          pendingDelayHundredths = delayHundredths;
+        }
+
+        if (f % 5 === 0) {
+          await new Promise((r) => setTimeout(r, 1));
+        }
+
+        if (f % 6 === 0 && onProgress) {
+          const percent = Math.round(((f + 1) / totalFrames) * 100);
+          onProgress(percent, f + 1, totalFrames);
+        }
+      }
+
+      // Flush any pending trailing frame
+      flushPendingFrame();
+
+      if (onProgress) {
+        onProgress(100, totalFrames, totalFrames);
+      }
+
+      const gifBytes = buffer.subarray(0, gifWriter.end());
+      const gifBlob = new Blob([gifBytes], { type: 'image/gif' });
+      console.log('[SmoothStudio GIF Exporter] GIF export complete! Size:', (gifBlob.size / 1024 / 1024).toFixed(2), 'MB');
+      return gifBlob;
+    } finally {
+      frameSource?.close();
     }
-
-    const gifBytes = buffer.subarray(0, gifWriter.end());
-    const gifBlob = new Blob([gifBytes], { type: 'image/gif' });
-    console.log('[SmoothStudio GIF Exporter] GIF export complete! Size:', (gifBlob.size / 1024 / 1024).toFixed(2), 'MB');
-    return gifBlob;
   }
 
   public static downloadBlob(blob: Blob, filename = 'SmoothStudio_Capture.gif') {

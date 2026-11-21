@@ -1268,6 +1268,7 @@ export function EditorStudio() {
       const config = GIF_QUALITY_PRESETS[gifPreset] || GIF_QUALITY_PRESETS.compact;
       const gifBlob = await exporter.exportGif({
         videoSource: videoElement,
+        videoBlob: videoBlob ?? undefined,
         durationMs,
         aspectRatio,
         preset,

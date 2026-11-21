@@ -109,7 +109,20 @@ export function detectSilences(file: string, minDur = 0.5): { start: number; end
   const text = r.stderr || '';
   const starts = [...text.matchAll(/silence_start: (-?[\d.]+)/g)].map((m) => parseFloat(m[1]));
   const ends = [...text.matchAll(/silence_end: (-?[\d.]+)/g)].map((m) => parseFloat(m[1]));
-  return starts.map((s, i) => ({ start: s, end: ends[i] ?? NaN }));
+  // QA-048: a fixed -35 dB threshold splits a real 2 s pause when room noise
+  // briefly rises above it (C2's first pause arrived as 3 spans separated by
+  // 65 ms and 266 ms). Merge spans separated by less than 0.4 s: the fixture's
+  // pauses are 2 s and the product requires >= 0.5 s, so a sub-0.4 s blip
+  // inside a pause is noise, not speech.
+  const merged: { start: number; end: number }[] = [];
+  for (let i = 0; i < starts.length; i++) {
+    const span = { start: starts[i], end: ends[i] ?? NaN };
+    if (!Number.isFinite(span.end) || span.end <= span.start) continue;
+    const last = merged[merged.length - 1];
+    if (last && span.start - last.end <= 0.4) last.end = Math.max(last.end, span.end);
+    else merged.push(span);
+  }
+  return merged;
 }
 
 /**

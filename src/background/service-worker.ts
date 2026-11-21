@@ -211,17 +211,26 @@ async function endRecordingSession(expectedSessionId: string | null = null): Pro
 /**
  * Send a message to the editor tab with retry-and-ack. The SW can restart
  * mid-stop, so a single fire-and-forget sendMessage can be dropped. Retry up
- * to `retries` times; if no ack arrives, the caller falls back to activating
- * the editor tab.
+ * to `retries` times; `onResult(true)` fires once the editor acknowledges,
+ * `onResult(false)` when every attempt went unanswered.
  */
-function sendEditorWithAck(tabId: number, payload: any, retries: number): void {
+function sendEditorWithAck(
+  tabId: number,
+  payload: any,
+  retries: number,
+  onResult?: (acked: boolean) => void
+): void {
   const attempt = (remaining: number) => {
     chrome.tabs.sendMessage(tabId, payload, (response) => {
       if (chrome.runtime?.lastError || !response) {
         if (remaining > 0) {
           setTimeout(() => attempt(remaining - 1), 100);
+        } else {
+          onResult?.(false);
         }
+        return;
       }
+      onResult?.(true);
     });
   };
   attempt(retries);
@@ -410,11 +419,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!result.ended) {
         // Even when the SW didn't own this session's end (stale/superseded/
         // not_recording), the editor may still be recording and needs to know
-        // to stop so the recording reaches it. The editor's own guards
-        // (hasFinalizedRef / isStoppingRef / getStatus()) prevent double-stops.
-        const editorTabId = currState.activeEditorTabId;
-        if (editorTabId && !fromEditor) {
-          notifyEditorCapture(editorTabId, { type: 'STUDIO_STOP_CAPTURE', sessionId: currState.activeSessionId });
+        // to stop so the recording reaches it. Never forward a stop for a
+        // session that is not the live one: it would kill a newer recording.
+        const targetSessionId = currState.activeSessionId;
+        const refersToLiveSession = !wanted || !targetSessionId || targetSessionId === wanted;
+        if (editorTabId && !fromEditor && refersToLiveSession) {
+          notifyEditorCapture(editorTabId, { type: 'STUDIO_STOP_CAPTURE', sessionId: targetSessionId });
           console.log('[SmoothStudio SW] Editor told to stop (non-ended session) at epoch', Date.now());
         }
         const status = result.reason === 'stale'
@@ -434,10 +444,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // made Chromium composite the tab switch into the last frames. Only a
       // missing editor (sendMessage error) is activated as a fallback.
       const notify = (tabId: number) => {
-        sendEditorWithAck(tabId, { type: 'STUDIO_STOP_CAPTURE', telemetry, sessionId }, 3);
-        // Fallback: activate the editor tab so the user sees the stop even if
-        // the SW is restarting and the message is dropped.
-        chrome.tabs.update(tabId, { active: true }).catch(() => undefined);
+        sendEditorWithAck(tabId, { type: 'STUDIO_STOP_CAPTURE', telemetry, sessionId }, 3, (acked) => {
+          if (acked) return;
+          // Fallback only: activate the editor tab so the user sees the stop
+          // even if the SW is restarting and the message was never delivered.
+          // Never do this on a delivered stop: activating the tab at stop time
+          // made Chromium composite the tab switch into the last frames
+          // (QA-029).
+          chrome.tabs.update(tabId, { active: true }).catch(() => undefined);
+        });
       };
       if (!fromEditor) {
         if (editorTabId) {

@@ -266,9 +266,13 @@ export function EditorStudio() {
       };
       keepaliveStateRef.current = { startFastPing, stopFastPing };
 
-      const messageListener = (msg: any) => {
+      const messageListener = (msg: any, _sender: chrome.runtime.MessageSender, sendResponse: (response?: any) => void) => {
         if (msg.type === 'STUDIO_STOP_CAPTURE') {
           console.log('[SmoothStudio] Received STUDIO_STOP_CAPTURE message from service worker:', msg.telemetry);
+          // Delivery ack (QA-012): the service worker retries until it hears
+          // back, so a stop sent during an SW restart is delivered exactly once
+          // and the retry loop terminates instead of firing four stops.
+          sendResponse({ ok: true });
           handleStopLiveRecordingRef.current?.(msg.telemetry);
         } else if (msg.type === 'HUD_VISIBLE') {
           // QA-029/QA-037: the recorded tab is visible; arm the recorder's live

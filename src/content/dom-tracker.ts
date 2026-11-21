@@ -127,9 +127,63 @@ export function extractBrandColors(): { primary: string; secondary: string; acce
   }
 }
 
+export interface NormalizedCoordinates {
+  x: number; // 0..1 normalized focal X
+  y: number; // 0..1 normalized focal Y
+  rawX: number; // raw CSS pixels relative to top viewport
+  rawY: number; // raw CSS pixels relative to top viewport
+  offsetX: number; // same-origin iframe offset X
+  offsetY: number; // same-origin iframe offset Y
+}
+
+/**
+ * Normalizes capture-time mouse and click coordinates into 0..1 relative to the
+ * top-level recording viewport, taking into account capture-time viewport size, DPR,
+ * and same-origin iframe offsets.
+ */
+export function normalizeCaptureCoordinates(
+  e: MouseEvent,
+  topWindow: Window = window
+): NormalizedCoordinates {
+  let offsetX = 0;
+  let offsetY = 0;
+
+  try {
+    const targetNode = e.target as Node | null;
+    const targetDoc = targetNode?.ownerDocument || (e.view as Window | null)?.document;
+    if (targetDoc && targetDoc !== topWindow.document) {
+      let curWin: Window | null = targetDoc.defaultView;
+      while (curWin && curWin !== topWindow) {
+        const frame = curWin.frameElement as HTMLElement | null;
+        if (frame) {
+          const rect = frame.getBoundingClientRect();
+          offsetX += rect.left;
+          offsetY += rect.top;
+          curWin = frame.ownerDocument?.defaultView || null;
+        } else {
+          break;
+        }
+      }
+    }
+  } catch {
+    // Cross-origin iframe boundaries safely ignored
+  }
+
+  const rawX = e.clientX + offsetX;
+  const rawY = e.clientY + offsetY;
+
+  const vpW = topWindow.innerWidth || topWindow.document?.documentElement?.clientWidth || 1920;
+  const vpH = topWindow.innerHeight || topWindow.document?.documentElement?.clientHeight || 1080;
+
+  const normX = Math.max(0, Math.min(1, rawX / vpW));
+  const normY = Math.max(0, Math.min(1, rawY / vpH));
+
+  return { x: normX, y: normY, rawX, rawY, offsetX, offsetY };
+}
+
 // DOM tree climbing to find meaningful UI container for smart camera framing
 // Strictly uses viewport client coordinates so coordinates match getDisplayMedia viewport
-function findParentContainer(target: Element | null): BoundingBox | undefined {
+function findParentContainer(target: Element | null, offsetX = 0, offsetY = 0): BoundingBox | undefined {
   if (!target) return undefined;
 
   const selector = 'dialog, [role="dialog"], [role="alertdialog"], form, [class*="modal"], [class*="card"], [class*="dialog"], section, article, table, nav, aside';
@@ -137,8 +191,8 @@ function findParentContainer(target: Element | null): BoundingBox | undefined {
 
   const rect = container.getBoundingClientRect();
   return {
-    x: rect.left,
-    y: rect.top,
+    x: rect.left + offsetX,
+    y: rect.top + offsetY,
     width: rect.width,
     height: rect.height
   };
@@ -149,8 +203,9 @@ function handleMouseMove(e: MouseEvent) {
   if (!isRecording) return;
   if ((e.target as HTMLElement)?.closest('#smoothstudio-floating-hud')) return;
 
-  lastMouseX = e.clientX;
-  lastMouseY = e.clientY;
+  const coords = normalizeCaptureCoordinates(e);
+  lastMouseX = coords.x;
+  lastMouseY = coords.y;
 
   const now = performance.now();
   if (now - lastSampleTime >= SAMPLE_INTERVAL_MS) {
@@ -159,9 +214,10 @@ function handleMouseMove(e: MouseEvent) {
     // Detect computed cursor style
     let cursorStyle = 'default';
     try {
-      const target = document.elementFromPoint(e.clientX, e.clientY);
+      const doc = (e.target as Node)?.ownerDocument || document;
+      const target = doc.elementFromPoint(e.clientX, e.clientY);
       if (target) {
-        cursorStyle = window.getComputedStyle(target).cursor || 'default';
+        cursorStyle = (doc.defaultView || window).getComputedStyle(target).cursor || 'default';
       }
     } catch {
       cursorStyle = 'default';
@@ -170,8 +226,8 @@ function handleMouseMove(e: MouseEvent) {
 
     mousePoints.push({
       t: Math.round(getRelativeTime()),
-      x: e.clientX,
-      y: e.clientY,
+      x: coords.x,
+      y: coords.y,
       c: cursorStyle
     });
   }
@@ -182,6 +238,7 @@ function handleClick(e: MouseEvent) {
   if (!isRecording) return;
   if ((e.target as HTMLElement)?.closest('#smoothstudio-floating-hud')) return;
 
+  const coords = normalizeCaptureCoordinates(e);
   const target = e.target as Element | null;
   const tag = target?.tagName.toLowerCase() || 'unknown';
   const fullText = (target?.textContent?.trim() || '').slice(0, 2000);
@@ -204,12 +261,12 @@ function handleClick(e: MouseEvent) {
   if (sensitive) {
     text = '[hidden input]';
   }
-  const containerBounds = findParentContainer(target);
+  const containerBounds = findParentContainer(target, coords.offsetX, coords.offsetY);
 
   clicks.push({
     t: Math.round(getRelativeTime()),
-    x: e.clientX,
-    y: e.clientY,
+    x: coords.x,
+    y: coords.y,
     button: e.button,
     targetTag: tag,
     targetText: text,
@@ -220,8 +277,8 @@ function handleClick(e: MouseEvent) {
   // Ensure an immediate mouse point is also captured on click
   mousePoints.push({
     t: Math.round(getRelativeTime()),
-    x: e.clientX,
-    y: e.clientY,
+    x: coords.x,
+    y: coords.y,
     c: lastCursor
   });
 }
@@ -587,6 +644,40 @@ function armHudLiveSignal(): void {
   hudFallbackTimer = setTimeout(markRecordingLiveOnScreen, HUD_VISIBLE_FALLBACK_MS);
 }
 
+let attachedIframeDocs: Document[] = [];
+
+function attachSameOriginIframes() {
+  try {
+    const iframes = document.querySelectorAll('iframe');
+    for (const iframe of Array.from(iframes)) {
+      try {
+        const doc = iframe.contentDocument;
+        if (doc && !attachedIframeDocs.includes(doc)) {
+          attachedIframeDocs.push(doc);
+          doc.addEventListener('mousemove', handleMouseMove, { passive: true, capture: true });
+          doc.addEventListener('click', handleClick, { passive: true, capture: true });
+        }
+      } catch {
+        // Cross-origin iframe
+      }
+    }
+  } catch {
+    // Ignore
+  }
+}
+
+function detachSameOriginIframes() {
+  for (const doc of attachedIframeDocs) {
+    try {
+      doc.removeEventListener('mousemove', handleMouseMove, { capture: true });
+      doc.removeEventListener('click', handleClick, { capture: true });
+    } catch {
+      // Ignore
+    }
+  }
+  attachedIframeDocs = [];
+}
+
 export function startTracking(originEpochMs?: number, recordingSessionId?: string | null): void {
   const nextSessionId = recordingSessionId || null;
   // A repeated START for the session that is already running is a no-op: a
@@ -617,6 +708,7 @@ export function startTracking(originEpochMs?: number, recordingSessionId?: strin
   window.addEventListener('focusin', handleFocusIn, { passive: true, capture: true });
   window.addEventListener('focusout', handleFocusOut, { passive: true, capture: true });
   window.addEventListener('input', handleInput, { passive: true, capture: true });
+  attachSameOriginIframes();
 
   armHudLiveSignal();
   console.log('[SmoothStudio DOM-Tracker] Tracking armed. Waiting for the HUD to be on screen. Session:', nextSessionId);
@@ -648,6 +740,7 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
   window.removeEventListener('focusin', handleFocusIn, { capture: true });
   window.removeEventListener('focusout', handleFocusOut, { capture: true });
   window.removeEventListener('input', handleInput, { capture: true });
+  detachSameOriginIframes();
 
   const durationMs = Math.round(getRelativeTime());
   const stoppedSessionId = sessionId;

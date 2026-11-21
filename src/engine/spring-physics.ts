@@ -149,13 +149,36 @@ export function computeCinematicCameraState(
     }
   }
 
-  // Normalized cursor coordinates
+  // Normalized cursor coordinates: support both normalized (0..1) and legacy pixel coordinates
   let normCursorX = 0.5;
   let normCursorY = 0.5;
   const hasCursor = Boolean(cursor && viewportWidth > 0 && viewportHeight > 0);
   if (hasCursor && cursor) {
-    normCursorX = Math.max(0.05, Math.min(0.95, cursor.x / viewportWidth));
-    normCursorY = Math.max(0.05, Math.min(0.95, cursor.y / viewportHeight));
+    const rawX = cursor.x <= 1.0 ? cursor.x : cursor.x / viewportWidth;
+    const rawY = cursor.y <= 1.0 ? cursor.y : cursor.y / viewportHeight;
+    normCursorX = Math.max(0.05, Math.min(0.95, rawX));
+    normCursorY = Math.max(0.05, Math.min(0.95, rawY));
+  }
+
+  // Check if timeMs is in an inter-pill gap between chained pills (<= 800ms)
+  if (!activePill && pills.length > 1) {
+    for (let i = 0; i < pills.length - 1; i++) {
+      const p1 = pills[i];
+      const p2 = pills[i + 1];
+      const gap = p2.startTime - p1.endTime;
+      if (gap >= 0 && gap <= 800 && timeMs >= p1.endTime && timeMs <= p2.startTime) {
+        // Smoothly glide across inter-pill gap without dipping to neutral scale 1.0
+        const p = gap > 0 ? (timeMs - p1.endTime) / gap : 0;
+        const ease = smootherStep(p);
+        return {
+          x: p1.targetX + (p2.targetX - p1.targetX) * ease,
+          y: p1.targetY + (p2.targetY - p1.targetY) * ease,
+          scale: p1.targetScale + (p2.targetScale - p1.targetScale) * ease,
+          tiltX: p1.tiltX + (p2.tiltX - p1.tiltX) * ease,
+          tiltY: p1.tiltY + (p2.tiltY - p1.tiltY) * ease
+        };
+      }
+    }
   }
 
   if (activePill) {
@@ -164,13 +187,13 @@ export function computeCinematicCameraState(
     const totalPillDuration = Math.max(1, end - start);
     const actualTransition = Math.max(1, Math.min(TRANSITION_MS, totalPillDuration * 0.35));
 
-    // Check if next pill starts soon (within 750ms of this pill ending)
+    // Check if next pill starts soon (within 800ms of this pill ending)
     const nextPill = activePillIndex >= 0 && activePillIndex < pills.length - 1 ? pills[activePillIndex + 1] : undefined;
-    const isChainedToNext = nextPill && (nextPill.startTime - end <= 750);
+    const isChainedToNext = nextPill && (nextPill.startTime - end <= 800);
 
-    // Check if previous pill ended soon (within 750ms before this pill starting)
+    // Check if previous pill ended soon (within 800ms before this pill starting)
     const prevPill = activePillIndex > 0 ? pills[activePillIndex - 1] : undefined;
-    const isChainedFromPrev = prevPill && (start - prevPill.endTime <= 750);
+    const isChainedFromPrev = prevPill && (start - prevPill.endTime <= 800);
 
     // Compute cursor tracking bias for active pill (30% dynamic follow keeps target centered while gliding)
     let targetX = activePill.targetX;
@@ -192,15 +215,14 @@ export function computeCinematicCameraState(
         tiltY: activePill.tiltY * ease
       };
     } else if (timeMs < start + actualTransition && isChainedFromPrev && prevPill) {
-      // Chained transition directly from previous pill to this pill without dipping
-      const p = Math.max(0, Math.min(1, (timeMs - start) / actualTransition));
-      const ease = smootherStep(p);
+      // Already arrived at active pill target from prevPill's transition / gap glide;
+      // hold firmly at active target without re-transitioning or snapping
       return {
-        x: prevPill.targetX + (targetX - prevPill.targetX) * ease,
-        y: prevPill.targetY + (targetY - prevPill.targetY) * ease,
-        scale: prevPill.targetScale + (activePill.targetScale - prevPill.targetScale) * ease,
-        tiltX: prevPill.tiltX + (activePill.tiltX - prevPill.tiltX) * ease,
-        tiltY: prevPill.tiltY + (activePill.tiltY - prevPill.tiltY) * ease
+        x: targetX,
+        y: targetY,
+        scale: activePill.targetScale,
+        tiltX: activePill.tiltX,
+        tiltY: activePill.tiltY
       };
     } else if (timeMs > end - actualTransition && isChainedToNext && nextPill) {
       // Chained transition directly towards next pill
@@ -290,7 +312,7 @@ export function generateAutoZoomPills(
   if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) return [];
 
   const fitsRecording = (t: number) => Number.isFinite(t) && t >= 0 && t <= videoDurationMs;
-  const clampNorm = (v: number) => (Number.isFinite(v) ? Math.max(0.15, Math.min(0.85, v)) : 0.5);
+  const clampNorm = (v: number) => (Number.isFinite(v) ? Math.max(0.12, Math.min(0.88, v)) : 0.5);
   const finiteBounds = (b?: BoundingBox) =>
     Boolean(b && Number.isFinite(b.x) && Number.isFinite(b.y) && Number.isFinite(b.width) && Number.isFinite(b.height));
 
@@ -312,10 +334,17 @@ export function generateAutoZoomPills(
     const firstClick = currentCluster[0];
     const prevClick = currentCluster[currentCluster.length - 1];
 
-    const distFromFirst = Math.hypot(click.x - firstClick.x, click.y - firstClick.y);
+    // Coordinate-normalization aware distance calculation (handles both 0..1 and legacy pixels)
+    const clickPxX = click.x <= 1.0 ? click.x * viewportWidth : click.x;
+    const clickPxY = click.y <= 1.0 ? click.y * viewportHeight : click.y;
+    const firstPxX = firstClick.x <= 1.0 ? firstClick.x * viewportWidth : firstClick.x;
+    const firstPxY = firstClick.y <= 1.0 ? firstClick.y * viewportHeight : firstClick.y;
+
+    const distFromFirst = Math.hypot(clickPxX - firstPxX, clickPxY - firstPxY);
     const timeDelta = click.t - prevClick.t;
 
-    if (distFromFirst <= CLUSTER_DISTANCE_PX && timeDelta <= CLUSTER_TIME_WINDOW_MS) {
+    // Coalesce rapid clicks within 400ms into a single cluster, or standard temporal/spatial cluster
+    if (timeDelta <= 400 || (distFromFirst <= CLUSTER_DISTANCE_PX && timeDelta <= CLUSTER_TIME_WINDOW_MS)) {
       currentCluster.push(click);
     } else {
       // Flush current cluster into a zoom pill
@@ -331,8 +360,14 @@ export function generateAutoZoomPills(
   // Also create zoom pills for text input typing sessions
   for (const inputEv of inputEvents) {
     if ((inputEv.type === 'focus' || inputEv.type === 'type') && fitsRecording(inputEv.t) && finiteBounds(inputEv.bounds)) {
-      const centerX = (inputEv.bounds.x + inputEv.bounds.width / 2) / viewportWidth;
-      const centerY = (inputEv.bounds.y + inputEv.bounds.height / 2) / viewportHeight;
+      const b = inputEv.bounds;
+      const bX = b.x <= 1.0 ? b.x * viewportWidth : b.x;
+      const bY = b.y <= 1.0 ? b.y * viewportHeight : b.y;
+      const bW = b.width <= 1.0 ? b.width * viewportWidth : b.width;
+      const bH = b.height <= 1.0 ? b.height * viewportHeight : b.height;
+
+      const centerX = (bX + bW / 2) / viewportWidth;
+      const centerY = (bY + bH / 2) / viewportHeight;
 
       const normX = clampNorm(centerX);
       const normY = clampNorm(centerY);
@@ -343,24 +378,20 @@ export function generateAutoZoomPills(
       // the recording, but it is also not cut down to nothing.
       const endTime = Math.min(videoDurationMs, Math.max(startTime + 400, inputEv.t + 2200));
 
-      // Check if overlapping an existing pill
-      const overlap = pills.some((p) => Math.abs(p.startTime - startTime) < 1500);
-      if (!overlap) {
-        const tilt = calculateIsometricTilt(normX, normY, 1.8);
-        pills.push({
-          id: 'zoom_input_' + Math.round(startTime),
-          startTime,
-          endTime,
-          targetX: normX,
-          targetY: normY,
-          targetScale: 1.8,
-          tiltX: tilt.tiltX,
-          tiltY: tilt.tiltY,
-          spotlight: true,
-          label: 'Typing Focus',
-          autoGenerated: true
-        });
-      }
+      const tilt = calculateIsometricTilt(normX, normY, 1.8);
+      pills.push({
+        id: 'zoom_input_' + Math.round(startTime),
+        startTime,
+        endTime,
+        targetX: normX,
+        targetY: normY,
+        targetScale: 1.8,
+        tiltX: tilt.tiltX,
+        tiltY: tilt.tiltY,
+        spotlight: true,
+        label: 'Typing Focus',
+        autoGenerated: true
+      });
     }
   }
 
@@ -369,16 +400,22 @@ export function generateAutoZoomPills(
 
     // Use parent container bounding box if available from DOM climbing
     const primary = cluster[0];
-    let focalX = primary.x;
-    let focalY = primary.y;
+    let focalX: number;
+    let focalY: number;
     let scale = 1.6;
 
     if (finiteBounds(primary.containerBounds) && primary.containerBounds!.width > 50) {
-      focalX = primary.containerBounds!.x + primary.containerBounds!.width / 2;
-      focalY = primary.containerBounds!.y + primary.containerBounds!.height / 2;
+      const cb = primary.containerBounds!;
+      const cbX = cb.x <= 1.0 ? cb.x * viewportWidth : cb.x;
+      const cbY = cb.y <= 1.0 ? cb.y * viewportHeight : cb.y;
+      const cbW = cb.width <= 1.0 ? cb.width * viewportWidth : cb.width;
+      const cbH = cb.height <= 1.0 ? cb.height * viewportHeight : cb.height;
+
+      focalX = cbX + cbW / 2;
+      focalY = cbY + cbH / 2;
 
       // Smart zoom scaling based on container size
-      const coverage = primary.containerBounds!.width / viewportWidth;
+      const coverage = cbW / viewportWidth;
       if (coverage > 0.6) {
         scale = 1.35; // Large modal/form: gentle zoom
       } else if (coverage < 0.2) {
@@ -387,9 +424,9 @@ export function generateAutoZoomPills(
         scale = 1.7;  // Medium card/section
       }
     } else {
-      // Average cluster positions
-      const avgX = cluster.reduce((sum, c) => sum + c.x, 0) / cluster.length;
-      const avgY = cluster.reduce((sum, c) => sum + c.y, 0) / cluster.length;
+      // Average cluster positions (handles both 0..1 and legacy pixels)
+      const avgX = cluster.reduce((sum, c) => sum + (c.x <= 1.0 ? c.x * viewportWidth : c.x), 0) / cluster.length;
+      const avgY = cluster.reduce((sum, c) => sum + (c.y <= 1.0 ? c.y * viewportHeight : c.y), 0) / cluster.length;
       focalX = avgX;
       focalY = avgY;
     }
@@ -421,6 +458,87 @@ export function generateAutoZoomPills(
     });
   }
 
-  // Sort pills chronologically and return
-  return pills.sort((a, b) => a.startTime - b.startTime);
+  return settleAndMergePills(pills, videoDurationMs);
+}
+
+/**
+ * Eliminates overlapping zoom pills by enforcing a minimum settle hold
+ * (MIN_SETTLE_MS = 1500ms) on each focal target, merging spatially close actions
+ * (distance < 0.25), and bridging small inter-pill gaps (< 800ms) so the camera
+ * does not dip to neutral scale (1.0) between adjacent actions.
+ */
+export function settleAndMergePills(
+  rawPills: ZoomPill[],
+  videoDurationMs: number
+): ZoomPill[] {
+  if (rawPills.length <= 1) return rawPills;
+
+  const MIN_SETTLE_MS = 1500;
+  const BRIDGE_GAP_MS = 800;
+  const SPATIAL_MERGE_DIST = 0.25;
+
+  // Clone and sort chronologically
+  const sorted = rawPills
+    .map((p) => ({ ...p }))
+    .sort((a, b) => a.startTime - b.startTime);
+
+  const result: ZoomPill[] = [];
+
+  for (let i = 0; i < sorted.length; i++) {
+    const cur = sorted[i];
+
+    if (result.length === 0) {
+      result.push(cur);
+      continue;
+    }
+
+    const prev = result[result.length - 1];
+
+    if (cur.startTime < prev.endTime) {
+      // Overlapping pills detected
+      const dist = Math.hypot(cur.targetX - prev.targetX, cur.targetY - prev.targetY);
+
+      if (dist < SPATIAL_MERGE_DIST) {
+        // Spatially close targets: coalesce into a single continuous zoom pill
+        prev.endTime = Math.max(prev.endTime, cur.endTime);
+        prev.endTime = Math.min(videoDurationMs, prev.endTime);
+        continue;
+      } else {
+        // Distinct focal targets: enforce minimum settle hold on previous pill
+        const minPrevEnd = prev.startTime + MIN_SETTLE_MS;
+        if (cur.startTime < minPrevEnd) {
+          cur.startTime = Math.min(videoDurationMs, minPrevEnd);
+          cur.endTime = Math.max(cur.endTime, cur.startTime + MIN_SETTLE_MS);
+        }
+        // Direct pill-to-pill transition without overlap
+        prev.endTime = cur.startTime;
+      }
+    } else {
+      // No overlap: bridge small inter-pill gaps to prevent scale dip to 1.0
+      const gap = cur.startTime - prev.endTime;
+      if (gap > 0 && gap < BRIDGE_GAP_MS) {
+        prev.endTime = cur.startTime;
+      }
+    }
+
+    prev.endTime = Math.min(videoDurationMs, prev.endTime);
+    cur.endTime = Math.min(videoDurationMs, cur.endTime);
+
+    if (cur.startTime < videoDurationMs && cur.endTime > cur.startTime) {
+      result.push(cur);
+    }
+  }
+
+  // Final enforcement pass ensuring strictly zero overlaps and bridging small gaps
+  for (let i = 0; i < result.length - 1; i++) {
+    const p1 = result[i];
+    const p2 = result[i + 1];
+    if (p1.endTime > p2.startTime) {
+      p1.endTime = p2.startTime;
+    } else if (p2.startTime - p1.endTime > 0 && p2.startTime - p1.endTime < BRIDGE_GAP_MS) {
+      p1.endTime = p2.startTime;
+    }
+  }
+
+  return result.filter((p) => p.endTime > p.startTime);
 }

@@ -499,8 +499,10 @@ export class StudioRenderer {
         const metaW = metadata?.width || sourceW;
         const metaH = metadata?.height || sourceH;
 
-        const normCursorX = Math.max(0.01, Math.min(0.99, cursor.x / metaW));
-        const normCursorY = Math.max(0.01, Math.min(0.99, cursor.y / metaH));
+        const rawCursorX = cursor.x <= 1.0 ? cursor.x : (metaW > 0 ? cursor.x / metaW : cursor.x);
+        const rawCursorY = cursor.y <= 1.0 ? cursor.y : (metaH > 0 ? cursor.y / metaH : cursor.y);
+        const normCursorX = Math.max(0.01, Math.min(0.99, rawCursorX));
+        const normCursorY = Math.max(0.01, Math.min(0.99, rawCursorY));
 
         // Calculate cursor screen position mapped into window frame
         const cursorScreenX = (windowW * 0.5) + (normCursorX - clampedCamX) * windowW * S;
@@ -511,8 +513,8 @@ export class StudioRenderer {
         for (const click of cursorEngine.getClicks()) {
           const elapsed = currentTimeMs - click.t;
           if (elapsed >= 0 && elapsed <= 500) {
-            const clickNormX = click.x / metaW;
-            const clickNormY = click.y / metaH;
+            const clickNormX = click.x <= 1.0 ? click.x : (metaW > 0 ? click.x / metaW : click.x);
+            const clickNormY = click.y <= 1.0 ? click.y : (metaH > 0 ? click.y / metaH : click.y);
             const rx = (windowW * 0.5) + (clickNormX - clampedCamX) * windowW * S;
             const ry = (windowH * 0.5) + (clickNormY - clampedCamY) * windowH * S;
             this.activeRipplesScratch.push({ x: rx, y: ry, progress: elapsed / 500 });

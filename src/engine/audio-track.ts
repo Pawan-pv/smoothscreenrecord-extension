@@ -3,6 +3,8 @@
 // audio track it must decode and encode, or the export fails with an error.
 
 import { readWebmAudioStartMs } from './webm-timestamps';
+import { composeTrimAndCuts, TimeRangeMs } from './export-timeline';
+export type { TimeRangeMs };
 
 export interface PcmTrack {
   /** One Float32Array per channel, all the same length. */
@@ -41,10 +43,7 @@ export function alignPcmToTimeline(pcm: PcmTrack, startTimeMs: number): PcmTrack
 }
 
 
-export interface TimeRangeMs {
-  startTime: number;
-  endTime: number;
-}
+
 
 /**
  * True when the WebM container declares an audio track (Opus or Vorbis).
@@ -99,32 +98,14 @@ export function pcmDurationMs(pcm: PcmTrack): number {
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
-/** Complement of the cut ranges inside [0, durationMs]: the spans that stay in the export. */
-export function keepRangesFromCuts(cuts: TimeRangeMs[], durationMs: number): TimeRangeMs[] {
-  const duration = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
-  if (duration === 0) return [];
-
-  // Cut ranges come from telemetry, so treat them as untrusted: drop
-  // non-finite/inverted spans, clamp them to the recording and merge overlaps.
-  // A NaN that slipped through used to turn `cursor` into NaN and silently
-  // drop the whole audio track.
-  const normalized: Array<{ start: number; end: number }> = [];
-  for (const c of cuts) {
-    if (!Number.isFinite(c?.startTime) || !Number.isFinite(c?.endTime)) continue;
-    const start = clamp(c.startTime, 0, duration);
-    const end = clamp(c.endTime, 0, duration);
-    if (end > start) normalized.push({ start, end });
-  }
-  normalized.sort((a, b) => a.start - b.start);
-
-  const keep: TimeRangeMs[] = [];
-  let cursor = 0;
-  for (const c of normalized) {
-    if (c.start > cursor) keep.push({ startTime: cursor, endTime: c.start });
-    cursor = Math.max(cursor, c.end);
-  }
-  if (cursor < duration) keep.push({ startTime: cursor, endTime: duration });
-  return keep;
+/** Complement of the cut ranges inside [trimStartMs, trimEndMs]: the spans that stay in the export. */
+export function keepRangesFromCuts(
+  cuts: TimeRangeMs[],
+  durationMs: number,
+  trimStartMs: number = 0,
+  trimEndMs?: number
+): TimeRangeMs[] {
+  return composeTrimAndCuts(cuts, durationMs, trimStartMs, trimEndMs);
 }
 
 /**

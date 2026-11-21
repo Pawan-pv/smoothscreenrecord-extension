@@ -19,6 +19,7 @@ import {
   planGifBufferBytes,
   resolveGifMaxDimension
 } from './gif-budget';
+import { clampTrimBounds } from './export-timeline';
 
 export interface GifExportOptions {
   videoSource?: HTMLVideoElement | HTMLCanvasElement;
@@ -54,6 +55,11 @@ export interface GifExportOptions {
   showOutroCard?: boolean;
   outroHeadline?: string;
   outroCtaText?: string;
+  trimStartMs?: number;
+  trimEndMs?: number;
+  framePadding?: number;
+  backgroundColor?: string | null;
+  backgroundImage?: CanvasImageSource | null;
   qualityPreset?: GifQualityPreset;
   fps?: number; // defaults to 12fps (Compact preset) for optimal GIF size (<5MB)
   maxDimension?: number; // defaults to 640px (Compact preset)
@@ -266,7 +272,13 @@ export class HardwareGifExporter {
     downscaleCanvas.height = outH;
     const downscaleCtx = downscaleCanvas.getContext('2d', { willReadFrequently: true })!;
 
-    // Build timeline timestamps
+    // Build timeline timestamps with trim bounds
+    const { trimStartMs: effTrimStart, trimEndMs: effTrimEnd } = clampTrimBounds(
+      durationMs,
+      options.trimStartMs,
+      options.trimEndMs
+    );
+
     const frameIntervalMs = 1000 / fps;
     const timestamps: number[] = [];
     // When the Outro CTA card is enabled, clamp cut windows so the final 1.5s
@@ -276,13 +288,13 @@ export class HardwareGifExporter {
           .filter((s) => s.markedForCut)
           .map((s) =>
             showOutroCard
-              ? { ...s, endTime: Math.min(s.endTime, Math.max(s.startTime, durationMs - 1500)) }
+              ? { ...s, endTime: Math.min(s.endTime, Math.max(s.startTime, effTrimEnd - 1500)) }
               : s
           )
           .filter((s) => s.endTime > s.startTime)
       : [];
 
-    for (let t = 0; t < durationMs; t += frameIntervalMs) {
+    for (let t = effTrimStart; t <= effTrimEnd; t += frameIntervalMs) {
       const inCut = cutIntervals.some((c) => t >= c.startTime && t <= c.endTime);
       if (!inCut) {
         timestamps.push(t);
@@ -434,7 +446,7 @@ export class HardwareGifExporter {
           canvas: exportCanvas,
           video: renderVideo,
           currentTimeMs: currentMs,
-          durationMs,
+          durationMs: effTrimEnd,
           camera,
           activePill,
           cursorEngine,
@@ -456,7 +468,10 @@ export class HardwareGifExporter {
           introSubheadline,
           showOutroCard,
           outroHeadline,
-          outroCtaText
+          outroCtaText,
+          framePadding: options.framePadding,
+          backgroundColor: options.backgroundColor,
+          backgroundImage: options.backgroundImage
         });
 
         // Downscale to target GIF resolution

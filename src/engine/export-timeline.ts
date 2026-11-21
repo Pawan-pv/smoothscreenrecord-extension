@@ -1,7 +1,7 @@
 /**
- * Export timeline arithmetic for the MP4 exporter.
+ * Export timeline arithmetic for the MP4 exporter and GIF exporter.
  *
- * Kept in its own module (no DOM, no WebCodecs) so the clamping rules can be
+ * Kept in its own module (no DOM, no WebCodecs) so the clamping and composition rules can be
  * unit-tested without a browser.
  */
 
@@ -14,6 +14,112 @@ export interface ExportTimelineInput {
   audioEndMs: number;
   /** Presentation timestamp of the last real decoded video frame, 0 when unknown. */
   lastVideoPtsMs: number;
+}
+
+export interface TimeRangeMs {
+  startTime: number;
+  endTime: number;
+}
+
+/**
+ * Resolves safe, clamped trim start and trim end bounds.
+ * Enforces:
+ * - 0 <= trimStartMs <= trimEndMs <= durationMs
+ * - (trimEndMs - trimStartMs) >= minDurationMs (unless durationMs < minDurationMs)
+ */
+export function clampTrimBounds(
+  durationMs: number,
+  trimStartMs?: number,
+  trimEndMs?: number,
+  minDurationMs = 500
+): { trimStartMs: number; trimEndMs: number } {
+  const safeDur = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
+  if (safeDur <= 0) {
+    return { trimStartMs: 0, trimEndMs: 0 };
+  }
+
+  const effectiveMin = Math.min(minDurationMs, safeDur);
+
+  let start = Number.isFinite(trimStartMs) ? Math.max(0, Math.min(safeDur, trimStartMs!)) : 0;
+  let end = Number.isFinite(trimEndMs) ? Math.max(0, Math.min(safeDur, trimEndMs!)) : safeDur;
+
+  if (start > end) {
+    const tmp = start;
+    start = end;
+    end = tmp;
+  }
+
+  if (end - start < effectiveMin) {
+    if (start + effectiveMin <= safeDur) {
+      end = start + effectiveMin;
+    } else {
+      start = Math.max(0, end - effectiveMin);
+    }
+  }
+
+  return { trimStartMs: start, trimEndMs: end };
+}
+
+/**
+ * Composes silence cuts with trim bounds [trimStartMs, trimEndMs],
+ * returning the kept spans inside the trim window.
+ *
+ * Spans outside [trimStartMs, trimEndMs] are discarded.
+ * Silence cuts partially overlapping trim edges are clipped to [trimStartMs, trimEndMs].
+ */
+export function composeTrimAndCuts(
+  cuts: TimeRangeMs[],
+  durationMs: number,
+  trimStartMs: number = 0,
+  trimEndMs?: number
+): TimeRangeMs[] {
+  const safeDur = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
+  if (safeDur <= 0) return [];
+
+  const { trimStartMs: effStart, trimEndMs: effEnd } = clampTrimBounds(
+    safeDur,
+    trimStartMs,
+    trimEndMs ?? safeDur,
+    0
+  );
+
+  if (effEnd <= effStart) return [];
+
+  // Filter, clamp and sort cuts within [effStart, effEnd]
+  const normalized: Array<{ start: number; end: number }> = [];
+  for (const c of cuts) {
+    if (!Number.isFinite(c?.startTime) || !Number.isFinite(c?.endTime)) continue;
+    const start = Math.max(effStart, Math.min(effEnd, c.startTime));
+    const end = Math.max(effStart, Math.min(effEnd, c.endTime));
+    if (end > start) normalized.push({ start, end });
+  }
+  normalized.sort((a, b) => a.start - b.start);
+
+  // Merge overlapping or adjacent cut intervals
+  const mergedCuts: Array<{ start: number; end: number }> = [];
+  for (const c of normalized) {
+    const last = mergedCuts[mergedCuts.length - 1];
+    if (last && c.start <= last.end) {
+      last.end = Math.max(last.end, c.end);
+    } else {
+      mergedCuts.push({ ...c });
+    }
+  }
+
+  // Complement of cuts within [effStart, effEnd] gives the kept spans
+  const keep: TimeRangeMs[] = [];
+  let cursor = effStart;
+  for (const c of mergedCuts) {
+    if (c.start > cursor) {
+      keep.push({ startTime: cursor, endTime: c.start });
+    }
+    cursor = Math.max(cursor, c.end);
+  }
+  if (cursor < effEnd) {
+    keep.push({ startTime: cursor, endTime: effEnd });
+  }
+
+  return keep;
 }
 
 /**

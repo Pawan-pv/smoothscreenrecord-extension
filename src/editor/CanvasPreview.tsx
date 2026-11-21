@@ -44,6 +44,9 @@ interface CanvasPreviewProps {
   outroHeadline?: string;
   outroCtaText?: string;
   backdropParams?: BackdropMatrixParams;
+  framePadding?: number;
+  backgroundColor?: string | null;
+  backgroundImage?: CanvasImageSource | null;
   onCanvasClickToAddZoom?: (normalizedX: number, normalizedY: number) => void;
 }
 
@@ -77,6 +80,9 @@ export function CanvasPreview({
   outroHeadline,
   outroCtaText,
   backdropParams,
+  framePadding,
+  backgroundColor,
+  backgroundImage,
   onCanvasClickToAddZoom
 }: CanvasPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -187,6 +193,9 @@ export function CanvasPreview({
     opts.outroHeadline = outroHeadline;
     opts.outroCtaText = outroCtaText;
     opts.backdropParams = backdropParams;
+    opts.framePadding = framePadding;
+    opts.backgroundColor = backgroundColor;
+    opts.backgroundImage = backgroundImage;
 
     rendererRef.current.renderFrame(opts);
   }, [
@@ -217,7 +226,10 @@ export function CanvasPreview({
     showOutroCard,
     outroHeadline,
     outroCtaText,
-    backdropParams
+    backdropParams,
+    framePadding,
+    backgroundColor,
+    backgroundImage
   ]);
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -228,8 +240,11 @@ export function CanvasPreview({
 
     const canvasW = canvasRef.current.width;
     const canvasH = canvasRef.current.height;
-    const paddingX = canvasW * 0.08;
-    const paddingY = canvasH * 0.08;
+    const padFraction = typeof framePadding === 'number' && Number.isFinite(framePadding)
+      ? Math.max(0, Math.min(0.2, framePadding))
+      : 0.08;
+    const paddingX = canvasW * padFraction;
+    const paddingY = canvasH * padFraction;
     const availW = canvasW - paddingX * 2;
     const availH = canvasH - paddingY * 2;
     const sourceW = (video as HTMLVideoElement).videoWidth || (video as HTMLCanvasElement).width || 1920;

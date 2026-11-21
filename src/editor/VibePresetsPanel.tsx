@@ -22,7 +22,9 @@ import {
   Scissors,
   Layers,
   RotateCcw,
-  Info
+  Info,
+  Upload,
+  Sliders
 } from 'lucide-react';
 
 interface VibePresetsPanelProps {
@@ -68,6 +70,12 @@ interface VibePresetsPanelProps {
   onChangeOutroHeadline?: (val: string) => void;
   outroCtaText?: string;
   onChangeOutroCtaText?: (val: string) => void;
+  framePadding?: number;
+  onChangeFramePadding?: (val: number) => void;
+  backgroundColor?: string | null;
+  onSelectBackgroundColor?: (val: string | null) => void;
+  backgroundImageUrl?: string | null;
+  onSelectBackgroundImage?: (url: string | null, img: HTMLImageElement | null) => void;
 }
 
 export function VibePresetsPanel({
@@ -112,8 +120,36 @@ export function VibePresetsPanel({
   outroHeadline,
   onChangeOutroHeadline,
   outroCtaText,
-  onChangeOutroCtaText
+  onChangeOutroCtaText,
+  framePadding,
+  onChangeFramePadding,
+  backgroundColor,
+  onSelectBackgroundColor,
+  backgroundImageUrl,
+  onSelectBackgroundImage
 }: VibePresetsPanelProps) {
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (backgroundImageUrl && backgroundImageUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(backgroundImageUrl);
+    }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      onSelectBackgroundImage?.(url, img);
+    };
+    img.src = url;
+  };
+
+  const handleResetBackground = () => {
+    if (backgroundImageUrl && backgroundImageUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(backgroundImageUrl);
+    }
+    onSelectBackgroundImage?.(null, null);
+    onSelectBackgroundColor?.(null);
+  };
+
   const handleMatchBrand = () => {
     if (!metadata?.brandColors) return;
     const { primary, secondary, background } = metadata.brandColors;
@@ -202,6 +238,18 @@ export function VibePresetsPanel({
           >
             <Tv className="w-3.5 h-3.5" />
             4:3 (Classic)
+          </button>
+
+          <button
+            onClick={() => onChangeAspectRatio('4:5')}
+            className={`flex items-center gap-2 p-2 rounded-lg text-xs transition-colors col-span-2 ${
+              aspectRatio === '4:5'
+                ? 'bg-purple-600 text-white font-medium shadow-md shadow-purple-600/30'
+                : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+            }`}
+          >
+            <Smartphone className="w-3.5 h-3.5" />
+            4:5 (Instagram/LinkedIn)
           </button>
         </div>
       </div>
@@ -462,6 +510,83 @@ export function VibePresetsPanel({
           onChange={(e) => onUpdatePresetBorderRadius(parseInt(e.target.value))}
           className="w-full accent-purple-500"
         />
+      </div>
+
+      {/* Frame Padding Slider (0% - 20%, default 8%) */}
+      <div>
+        <div className="flex items-center justify-between text-xs mb-1.5 text-gray-300">
+          <span className="flex items-center gap-1.5">
+            <Sliders className="w-3.5 h-3.5 text-purple-400" />
+            Frame Padding
+          </span>
+          <span className="font-mono text-purple-400">{Math.round((framePadding ?? 0.08) * 100)}%</span>
+        </div>
+        <input
+          type="range"
+          min="0"
+          max="20"
+          value={Math.round((framePadding ?? 0.08) * 100)}
+          onChange={(e) => onChangeFramePadding?.(parseInt(e.target.value, 10) / 100)}
+          className="w-full accent-purple-500 cursor-pointer"
+        />
+      </div>
+
+      {/* Custom Background: Solid Colors & Image Upload */}
+      <div className="pt-2 border-t border-white/10 space-y-2">
+        <div className="flex items-center justify-between text-xs font-semibold text-gray-300 uppercase tracking-wider">
+          <span className="flex items-center gap-1.5">
+            <Palette className="w-3.5 h-3.5 text-pink-400" />
+            Custom Background
+          </span>
+          {(backgroundColor || backgroundImageUrl) && (
+            <button
+              type="button"
+              onClick={handleResetBackground}
+              className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1 transition-colors"
+              title="Reset custom background to preset backdrop"
+            >
+              <RotateCcw className="w-2.5 h-2.5" />
+              Reset
+            </button>
+          )}
+        </div>
+
+        {/* Solid Color Swatches */}
+        <div className="flex items-center gap-1.5">
+          {['#000000', '#0F172A', '#1E1B4B', '#18181B', '#3B0764', '#064E3B'].map((color) => (
+            <button
+              key={color}
+              type="button"
+              onClick={() => onSelectBackgroundColor?.(color)}
+              className={`w-5 h-5 rounded-full border transition-all ${
+                backgroundColor === color ? 'border-white scale-110 shadow-sm shadow-white/50' : 'border-white/20 hover:scale-105'
+              }`}
+              style={{ backgroundColor: color }}
+              title={color}
+            />
+          ))}
+          <input
+            type="color"
+            value={backgroundColor || '#000000'}
+            onChange={(e) => onSelectBackgroundColor?.(e.target.value)}
+            className="w-5 h-5 rounded-full border border-white/20 p-0 cursor-pointer bg-transparent"
+            title="Custom solid color"
+          />
+        </div>
+
+        {/* Custom Background Image Upload */}
+        <div className="pt-1">
+          <label className="w-full py-1.5 px-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs text-gray-300 cursor-pointer flex items-center justify-center gap-2 transition-colors">
+            <Upload className="w-3.5 h-3.5 text-indigo-400" />
+            <span>{backgroundImageUrl ? 'Replace Custom Image' : 'Upload Background Image'}</span>
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleImageUpload}
+            />
+          </label>
+        </div>
       </div>
 
       {/* Cursor Theme & Scale Customizer */}

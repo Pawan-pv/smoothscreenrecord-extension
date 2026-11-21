@@ -25,7 +25,7 @@ import {
 } from './audio-track';
 import { VideoFrameSeeker } from './video-seeker';
 import { SequentialVideoFrameSource } from './sequential-frame-source';
-import { resolveExportTimelineMs } from './export-timeline';
+import { resolveExportTimelineMs, clampTrimBounds } from './export-timeline';
 
 function abortError(): Error {
   const err = new Error('The export was cancelled.');
@@ -62,11 +62,16 @@ export interface ExportOptions {
   showOutroCard?: boolean;
   outroHeadline?: string;
   outroCtaText?: string;
+  framePadding?: number;
+  backgroundColor?: string | null;
+  backgroundImage?: CanvasImageSource | null;
   targetWidth?: number;
   /** Cancels the export during a seek or between frames. */
   signal?: AbortSignal;
   /** Real container duration of the recording, when known. */
   mediaDurationMs?: number;
+  trimStartMs?: number;
+  trimEndMs?: number;
   onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
 }
 
@@ -93,6 +98,9 @@ export class HardwareMp4Exporter {
       showSpotlight,
       showCursor,
       showHud,
+      framePadding,
+      backgroundColor,
+      backgroundImage,
       signal,
       onProgress
     } = options;
@@ -163,20 +171,6 @@ export class HardwareMp4Exporter {
     const fps = 60;
     const frameIntervalMs = 1000 / fps;
 
-    // Filter cut silences if requested.
-    // When the Outro CTA card is enabled, clamp cut windows so the final 1.5s
-    // (the outro animation) is never skipped in the exported video.
-    const activeCutSilences = cutSilences
-      ? silences
-          .filter((s) => s.markedForCut)
-          .map((s) =>
-            options.showOutroCard
-              ? { ...s, endTime: Math.min(s.endTime, Math.max(s.startTime, durationMs - 1500)) }
-              : s
-          )
-          .filter((s) => s.endTime > s.startTime)
-      : [];
-
     // C2: audio. If the recording has an audio track it MUST be decoded and
     // encoded; a failure aborts the export (no silent video-only MP4).
     // The decoded PCM is already on the media timeline (track-start aligned).
@@ -200,13 +194,34 @@ export class HardwareMp4Exporter {
     if (timelineDurationMs <= 0) {
       throw new Error('The recording has no timeline: duration, container and audio are all empty.');
     }
+
+    const { trimStartMs: effTrimStart, trimEndMs: effTrimEnd } = clampTrimBounds(
+      timelineDurationMs,
+      options.trimStartMs,
+      options.trimEndMs
+    );
+
+    // Filter cut silences if requested.
+    // When the Outro CTA card is enabled, clamp cut windows so the final 1.5s
+    // (the outro animation) is never skipped in the exported video.
+    const activeCutSilences = cutSilences
+      ? silences
+          .filter((s) => s.markedForCut)
+          .map((s) =>
+            options.showOutroCard
+              ? { ...s, endTime: Math.min(s.endTime, Math.max(s.startTime, effTrimEnd - 1500)) }
+              : s
+          )
+          .filter((s) => s.endTime > s.startTime)
+      : [];
+
     const audioTrack = decodedPcm
-      ? cutPcmToKeepRanges(decodedPcm, keepRangesFromCuts(activeCutSilences, timelineDurationMs))
+      ? cutPcmToKeepRanges(decodedPcm, keepRangesFromCuts(activeCutSilences, timelineDurationMs, effTrimStart, effTrimEnd))
       : null;
 
     // Build timeline frames to render (skipping cut silences)
     const timelineTimestamps: number[] = [];
-    for (let t = 0; t <= timelineDurationMs; t += frameIntervalMs) {
+    for (let t = effTrimStart; t <= effTrimEnd; t += frameIntervalMs) {
       const isCut = activeCutSilences.some((s) => t >= s.startTime && t <= s.endTime);
       if (!isCut) {
         timelineTimestamps.push(t);
@@ -229,7 +244,7 @@ export class HardwareMp4Exporter {
           outW,
           outH,
           fps,
-          durationMs: timelineDurationMs,
+          durationMs: effTrimEnd,
           totalFrames,
           timelineTimestamps,
           pills,
@@ -254,6 +269,9 @@ export class HardwareMp4Exporter {
           showOutroCard: options.showOutroCard,
           outroHeadline: options.outroHeadline,
           outroCtaText: options.outroCtaText,
+          framePadding,
+          backgroundColor,
+          backgroundImage,
           onProgress,
           audioTrack
         });
@@ -268,7 +286,7 @@ export class HardwareMp4Exporter {
         video,
         onRenderCanvasFrame,
         exportCanvas,
-        durationMs,
+        durationMs: effTrimEnd,
         timelineTimestamps,
         pills,
         preset,
@@ -291,6 +309,9 @@ export class HardwareMp4Exporter {
         showOutroCard: options.showOutroCard,
         outroHeadline: options.outroHeadline,
         outroCtaText: options.outroCtaText,
+        framePadding,
+        backgroundColor,
+        backgroundImage,
         onProgress
       });
     } finally {
@@ -339,6 +360,9 @@ export class HardwareMp4Exporter {
     showOutroCard?: boolean;
     outroHeadline?: string;
     outroCtaText?: string;
+    framePadding?: number;
+    backgroundColor?: string | null;
+    backgroundImage?: CanvasImageSource | null;
     /** Cancels the export during a seek or between frames. */
     signal?: AbortSignal;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
@@ -364,6 +388,9 @@ export class HardwareMp4Exporter {
       showSpotlight,
       showCursor,
       showHud,
+      framePadding,
+      backgroundColor,
+      backgroundImage,
       metadata,
       cursorTheme,
       cursorScale,
@@ -565,7 +592,10 @@ export class HardwareMp4Exporter {
         introSubheadline,
         showOutroCard,
         outroHeadline,
-        outroCtaText
+        outroCtaText,
+        framePadding,
+        backgroundColor,
+        backgroundImage
       });
 
       // Encode frame
@@ -692,6 +722,9 @@ export class HardwareMp4Exporter {
     showOutroCard?: boolean;
     outroHeadline?: string;
     outroCtaText?: string;
+    framePadding?: number;
+    backgroundColor?: string | null;
+    backgroundImage?: CanvasImageSource | null;
     /** Cancels the export during a seek or between frames. */
     signal?: AbortSignal;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
@@ -710,6 +743,9 @@ export class HardwareMp4Exporter {
       showSpotlight,
       showCursor,
       showHud,
+      framePadding,
+      backgroundColor,
+      backgroundImage,
       metadata,
       cursorTheme,
       cursorScale,
@@ -818,7 +854,10 @@ export class HardwareMp4Exporter {
         introSubheadline,
         showOutroCard,
         outroHeadline,
-        outroCtaText
+        outroCtaText,
+        framePadding,
+        backgroundColor,
+        backgroundImage
       });
 
       if (f % 10 === 0) {

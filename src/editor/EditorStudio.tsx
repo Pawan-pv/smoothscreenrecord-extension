@@ -94,6 +94,8 @@ export function EditorStudio() {
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | HTMLCanvasElement | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
   const [durationMs, setDurationMs] = useState<number>(10000);
+  const [trimStartMs, setTrimStartMs] = useState<number>(0);
+  const [trimEndMs, setTrimEndMs] = useState<number>(0);
   /** Real container duration of the loaded recording (before the UI override). */
   const mediaDurationRef = useRef<number | null>(null);
   const [currentTimeMs, setCurrentTimeMs] = useState<number>(0);
@@ -143,6 +145,18 @@ export function EditorStudio() {
   const [showOutroCard, setShowOutroCard] = useState<boolean>(false);
   const [outroHeadline, setOutroHeadline] = useState<string>('');
   const [outroCtaText, setOutroCtaText] = useState<string>('');
+  const [framePadding, setFramePadding] = useState<number>(0.08);
+  const [backgroundColor, setBackgroundColor] = useState<string | null>(null);
+  const [backgroundImageUrl, setBackgroundImageUrl] = useState<string | null>(null);
+  const [backgroundImage, setBackgroundImage] = useState<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (backgroundImageUrl && backgroundImageUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(backgroundImageUrl);
+      }
+    };
+  }, [backgroundImageUrl]);
   const [followCursor, setFollowCursor] = useState<boolean>(true);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
 
@@ -453,6 +467,8 @@ export function EditorStudio() {
       ? measuredDurationMs
       : (data.metadata?.durationMs && data.metadata.durationMs > 0 ? data.metadata.durationMs : 10000);
     setDurationMs(safeDuration);
+    setTrimStartMs(0);
+    setTrimEndMs(safeDuration);
 
     // Revoke previous object URL if any, preserving the currently active one
     const newObjectUrl = URL.createObjectURL(blob);
@@ -523,6 +539,7 @@ export function EditorStudio() {
       } catch {}
       console.log('[SmoothStudio] Video element metadata loaded. Duration:', resolvedDur, 'container:', realDurMs, 'Dimensions:', video.videoWidth, 'x', video.videoHeight);
       setDurationMs(resolvedDur);
+      setTrimEndMs((prev) => (prev === 0 || prev > resolvedDur ? resolvedDur : prev));
       setVideoElement(video);
       // Nudge Chromium video decoder to decode the first frame so readyState advances to HAVE_CURRENT_DATA (2) / HAVE_ENOUGH_DATA (4)
       try {
@@ -596,6 +613,55 @@ export function EditorStudio() {
     }
   };
 
+  const handleUpdateTrim = useCallback((start: number, end: number) => {
+    setTrimStartMs(start);
+    setTrimEndMs(end);
+    if (currentTimeRef.current < start) {
+      currentTimeRef.current = start;
+      setCurrentTimeMs(start);
+      if (videoElement instanceof HTMLVideoElement) videoElement.currentTime = start / 1000;
+    } else if (currentTimeRef.current > end) {
+      currentTimeRef.current = end;
+      setCurrentTimeMs(end);
+      if (videoElement instanceof HTMLVideoElement) videoElement.currentTime = end / 1000;
+    }
+  }, [videoElement]);
+
+  const handleResetTrim = useCallback(() => {
+    setTrimStartMs(0);
+    setTrimEndMs(durationMs);
+  }, [durationMs]);
+
+  const handleTogglePlay = useCallback(() => {
+    setIsPlaying((prev) => {
+      const nextPlaying = !prev;
+      if (nextPlaying) {
+        const safeDur = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000;
+        const safeTrimStart = Math.max(0, Math.min(safeDur, trimStartMs));
+        const safeTrimEnd = Math.max(safeTrimStart, Math.min(safeDur, trimEndMs > 0 ? trimEndMs : safeDur));
+        if (currentTimeRef.current >= safeTrimEnd || currentTimeRef.current < safeTrimStart) {
+          currentTimeRef.current = safeTrimStart;
+          setCurrentTimeMs(safeTrimStart);
+          if (videoElement instanceof HTMLVideoElement) {
+            videoElement.currentTime = safeTrimStart / 1000;
+          }
+        }
+      }
+      return nextPlaying;
+    });
+  }, [durationMs, trimStartMs, trimEndMs, videoElement]);
+
+  const handleRestart = useCallback(() => {
+    firedSfxRef.current.clear();
+    const safeDur = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000;
+    const safeTrimStart = Math.max(0, Math.min(safeDur, trimStartMs));
+    currentTimeRef.current = safeTrimStart;
+    setCurrentTimeMs(safeTrimStart);
+    if (videoElement instanceof HTMLVideoElement) {
+      videoElement.currentTime = safeTrimStart / 1000;
+    }
+  }, [durationMs, trimStartMs, videoElement]);
+
   useEffect(() => {
     if (import.meta.env.DEV) {
       (window as any).__setupLoadedRecording = setupLoadedRecording;
@@ -605,6 +671,9 @@ export function EditorStudio() {
       (window as any).__setAutoCutSilences = setAutoCutSilences;
       (window as any).__durationMs = durationMs;
       (window as any).__captions = captions;
+      (window as any).__trimStartMs = trimStartMs;
+      (window as any).__trimEndMs = trimEndMs;
+      (window as any).__setTrim = (start: number, end: number) => handleUpdateTrim(start, end);
     }
   });
 
@@ -622,9 +691,15 @@ export function EditorStudio() {
       lastTimeRef.current = now;
 
       const safeDur = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000;
+      const safeTrimStart = Math.max(0, Math.min(safeDur, trimStartMs));
+      const safeTrimEnd = Math.max(safeTrimStart, Math.min(safeDur, trimEndMs > 0 ? trimEndMs : safeDur));
       let next = currentTimeRef.current + dt;
       if (videoElement instanceof HTMLVideoElement && !videoElement.paused) {
         next = videoElement.currentTime * 1000;
+      }
+
+      if (next < safeTrimStart) {
+        next = safeTrimStart;
       }
 
       if (autoCutSilences) {
@@ -635,7 +710,7 @@ export function EditorStudio() {
           // Never skip across the Outro CTA window: clamp the jump so the final
           // 1.5s always plays in full when the outro card is enabled.
           const clampEnd = showOutroCard
-            ? Math.min(activeSilence.endTime, Math.max(activeSilence.startTime, safeDur - 1500))
+            ? Math.min(activeSilence.endTime, Math.max(activeSilence.startTime, safeTrimEnd - 1500))
             : activeSilence.endTime;
           if (clampEnd > next) {
             next = clampEnd;
@@ -643,10 +718,13 @@ export function EditorStudio() {
         }
       }
 
-      if (next >= safeDur) {
+      if (next >= safeTrimEnd) {
         setIsPlaying(false);
-        currentTimeRef.current = 0;
-        setCurrentTimeMs(0);
+        currentTimeRef.current = safeTrimStart;
+        setCurrentTimeMs(safeTrimStart);
+        if (videoElement instanceof HTMLVideoElement) {
+          videoElement.currentTime = safeTrimStart / 1000;
+        }
         firedSfxRef.current.clear();
         // no extra frame scheduled on natural end
         return;
@@ -701,7 +779,7 @@ export function EditorStudio() {
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isPlaying, durationMs, soundEnabled, telemetry, pills, silences, autoCutSilences, showOutroCard]);
+  }, [isPlaying, durationMs, trimStartMs, trimEndMs, soundEnabled, telemetry, pills, silences, autoCutSilences, showOutroCard]);
 
   // Timeline Interactions
   const handleAddPillAtPlayhead = useCallback((targetX = 0.5, targetY = 0.5) => {
@@ -788,15 +866,17 @@ export function EditorStudio() {
 
       if (e.code === 'Space') {
         e.preventDefault();
-        setIsPlaying((p) => !p);
+        handleTogglePlay();
       } else if (e.code === 'ArrowLeft') {
         e.preventDefault();
         firedSfxRef.current.clear();
-        setCurrentTimeMs((t) => Math.max(0, t - 1000));
+        const safeTrimStart = Math.max(0, Math.min(durationMs, trimStartMs));
+        setCurrentTimeMs((t) => Math.max(safeTrimStart, t - 1000));
       } else if (e.code === 'ArrowRight') {
         e.preventDefault();
         firedSfxRef.current.clear();
-        setCurrentTimeMs((t) => Math.min(durationMs, t + 1000));
+        const safeTrimEnd = Math.max(0, Math.min(durationMs, trimEndMs > 0 ? trimEndMs : durationMs));
+        setCurrentTimeMs((t) => Math.min(safeTrimEnd, t + 1000));
       } else if (e.code === 'KeyZ' && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
         if (!e.metaKey && !e.ctrlKey) {
           handleAddPillAtPlayhead(0.5, 0.5);
@@ -805,7 +885,7 @@ export function EditorStudio() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [durationMs, currentTimeMs, handleAddPillAtPlayhead]);
+  }, [durationMs, trimStartMs, trimEndMs, currentTimeMs, handleAddPillAtPlayhead, handleTogglePlay]);
 
   useEffect(() => { currentTimeRef.current = currentTimeMs; }, [currentTimeMs]);
   useEffect(() => { sfxSynthesizerRef.current.setEnabled(soundEnabled); }, [soundEnabled]);
@@ -1103,7 +1183,10 @@ export function EditorStudio() {
   // Timeline seek: reset SFX dedup so re-scrubbing can re-arm event triggers
   const handleSeek = (timeMs: number) => {
     firedSfxRef.current.clear();
-    setCurrentTimeMs(timeMs);
+    const safeTrimStart = Math.max(0, Math.min(durationMs, trimStartMs));
+    const safeTrimEnd = Math.max(safeTrimStart, Math.min(durationMs, trimEndMs > 0 ? trimEndMs : durationMs));
+    const clamped = Math.max(safeTrimStart, Math.min(safeTrimEnd, timeMs));
+    setCurrentTimeMs(clamped);
   };
 
   const handleCutAllSilences = () => {
@@ -1234,6 +1317,11 @@ export function EditorStudio() {
         showOutroCard,
         outroHeadline,
         outroCtaText,
+        trimStartMs: trimStartMs > 0 ? trimStartMs : undefined,
+        trimEndMs: trimEndMs > 0 && trimEndMs < durationMs ? trimEndMs : undefined,
+        framePadding,
+        backgroundColor,
+        backgroundImage,
         targetWidth: targetExportWidth,
         mediaDurationMs: mediaDurationRef.current ?? undefined,
         onProgress: (pct) => setExportProgress(pct)
@@ -1294,6 +1382,11 @@ export function EditorStudio() {
         showOutroCard,
         outroHeadline,
         outroCtaText,
+        trimStartMs: trimStartMs > 0 ? trimStartMs : undefined,
+        trimEndMs: trimEndMs > 0 && trimEndMs < durationMs ? trimEndMs : undefined,
+        framePadding,
+        backgroundColor,
+        backgroundImage,
         qualityPreset: gifPreset,
         fps: config.fps,
         maxDimension: config.maxDimension,
@@ -1622,6 +1715,15 @@ export function EditorStudio() {
           onChangeOutroHeadline={setOutroHeadline}
           outroCtaText={outroCtaText}
           onChangeOutroCtaText={setOutroCtaText}
+          framePadding={framePadding}
+          onChangeFramePadding={setFramePadding}
+          backgroundColor={backgroundColor}
+          onSelectBackgroundColor={setBackgroundColor}
+          backgroundImageUrl={backgroundImageUrl}
+          onSelectBackgroundImage={(url, img) => {
+            setBackgroundImageUrl(url);
+            setBackgroundImage(img);
+          }}
         />
         {/* Center Canvas Preview Viewport */}
         <CanvasPreview
@@ -1629,11 +1731,8 @@ export function EditorStudio() {
           currentTimeMs={currentTimeMs}
           durationMs={durationMs}
           isPlaying={isPlaying}
-          onTogglePlay={() => setIsPlaying((p) => !p)}
-          onRestart={() => {
-            firedSfxRef.current.clear();
-            setCurrentTimeMs(0);
-          }}
+          onTogglePlay={handleTogglePlay}
+          onRestart={handleRestart}
           pills={pills}
           cursorEngine={cursorEngineRef.current}
           keystrokes={telemetry?.keystrokes || []}
@@ -1656,6 +1755,9 @@ export function EditorStudio() {
           showOutroCard={showOutroCard}
           outroHeadline={outroHeadline}
           outroCtaText={outroCtaText}
+          framePadding={framePadding}
+          backgroundColor={backgroundColor}
+          backgroundImage={backgroundImage}
           onCanvasClickToAddZoom={handleAddPillAtPlayhead}
           showCaptions={showCaptions}
         />
@@ -1711,8 +1813,12 @@ export function EditorStudio() {
         durationMs={durationMs}
         currentTimeMs={currentTimeMs}
         isPlaying={isPlaying}
-        onTogglePlay={() => setIsPlaying((p) => !p)}
+        onTogglePlay={handleTogglePlay}
         onSeek={handleSeek}
+        trimStartMs={trimStartMs}
+        trimEndMs={trimEndMs > 0 ? trimEndMs : durationMs}
+        onUpdateTrim={handleUpdateTrim}
+        onResetTrim={handleResetTrim}
         pills={pills}
         onUpdatePill={handleUpdatePill}
         onDeletePill={handleDeletePill}

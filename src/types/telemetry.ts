@@ -121,7 +121,7 @@ export interface SilenceSegment {
   markedForCut: boolean;
 }
 
-export type AspectRatioType = '16:9' | '9:16' | '1:1' | '4:3';
+export type AspectRatioType = '16:9' | '9:16' | '1:1' | '4:3' | '4:5';
 
 export type VibePresetId =
   | 'keynote-pro'

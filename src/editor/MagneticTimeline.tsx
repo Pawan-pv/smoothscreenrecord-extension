@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { ZoomPill, SilenceSegment, KeystrokeEvent, CaptionBlock } from '../types/telemetry';
-import { Scissors, Plus, Trash2, Eye, Box, Sliders, Subtitles } from 'lucide-react';
+import { Scissors, Plus, Trash2, Eye, Box, Sliders, Subtitles, RotateCcw } from 'lucide-react';
 
 interface MagneticTimelineProps {
   durationMs: number;
@@ -25,6 +25,10 @@ interface MagneticTimelineProps {
   onAddCaptionAtPlayhead?: () => void;
   onUpdateCaption?: (caption: CaptionBlock) => void;
   onDeleteCaption?: (id: string) => void;
+  trimStartMs?: number;
+  trimEndMs?: number;
+  onUpdateTrim?: (startMs: number, endMs: number) => void;
+  onResetTrim?: () => void;
 }
 
 export function MagneticTimeline({
@@ -48,14 +52,23 @@ export function MagneticTimeline({
   showCaptions = false,
   onAddCaptionAtPlayhead,
   onUpdateCaption,
-  onDeleteCaption
+  onDeleteCaption,
+  trimStartMs,
+  trimEndMs,
+  onUpdateTrim,
+  onResetTrim
 }: MagneticTimelineProps) {
   const timelineRef = useRef<HTMLDivElement>(null);
   const [selectedPillId, setSelectedPillId] = useState<string | null>(null);
   const [selectedCaptionId, setSelectedCaptionId] = useState<string | null>(null);
   const [resizingPill, setResizingPill] = useState<{ id: string; edge: 'start' | 'end' } | null>(null);
   const [resizingCaption, setResizingCaption] = useState<{ id: string; edge: 'start' | 'end' } | null>(null);
+  const [draggingTrim, setDraggingTrim] = useState<'start' | 'end' | null>(null);
   const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
+
+  const effectiveTrimStart = Math.max(0, Math.min(durationMs, trimStartMs ?? 0));
+  const effectiveTrimEnd = Math.max(effectiveTrimStart, Math.min(durationMs, trimEndMs ?? durationMs));
+  const isTrimmed = effectiveTrimStart > 0 || (durationMs > 0 && effectiveTrimEnd < durationMs);
 
   const handleMouseDownResize = (e: React.MouseEvent, pillId: string, edge: 'start' | 'end') => {
     e.stopPropagation();
@@ -67,9 +80,9 @@ export function MagneticTimeline({
     setResizingCaption({ id: captionId, edge });
   };
 
-  // Continuous scrubbing, pill resizing, and caption resizing effect
+  // Continuous scrubbing, trim dragging, pill resizing, and caption resizing effect
   useEffect(() => {
-    if (!resizingPill && !resizingCaption && !isScrubbing) return;
+    if (!resizingPill && !resizingCaption && !isScrubbing && !draggingTrim) return;
 
     const handleMouseMove = (e: MouseEvent) => {
       if (!timelineRef.current || durationMs <= 0) return;
@@ -78,8 +91,21 @@ export function MagneticTimeline({
       const ratio = Math.max(0, Math.min(1, clickX / rect.width));
       const targetTimeMs = Math.round(ratio * durationMs);
 
+      if (draggingTrim === 'start') {
+        const nextStart = Math.max(0, Math.min(effectiveTrimEnd - 500, targetTimeMs));
+        onUpdateTrim?.(nextStart, effectiveTrimEnd);
+        return;
+      }
+
+      if (draggingTrim === 'end') {
+        const nextEnd = Math.max(effectiveTrimStart + 500, Math.min(durationMs, targetTimeMs));
+        onUpdateTrim?.(effectiveTrimStart, nextEnd);
+        return;
+      }
+
       if (isScrubbing) {
-        onSeek(targetTimeMs);
+        const clampedSeek = Math.max(effectiveTrimStart, Math.min(effectiveTrimEnd, targetTimeMs));
+        onSeek(clampedSeek);
         return;
       }
 
@@ -113,6 +139,7 @@ export function MagneticTimeline({
     const handleMouseUp = () => {
       setResizingPill(null);
       setResizingCaption(null);
+      setDraggingTrim(null);
       setIsScrubbing(false);
     };
 
@@ -122,7 +149,21 @@ export function MagneticTimeline({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [resizingPill, resizingCaption, isScrubbing, durationMs, pills, captions, onUpdatePill, onUpdateCaption, onSeek]);
+  }, [
+    resizingPill,
+    resizingCaption,
+    draggingTrim,
+    isScrubbing,
+    durationMs,
+    effectiveTrimStart,
+    effectiveTrimEnd,
+    pills,
+    captions,
+    onUpdatePill,
+    onUpdateCaption,
+    onUpdateTrim,
+    onSeek
+  ]);
 
   const selectedPill = pills.find((p) => p.id === selectedPillId);
   const selectedCaption = captions.find((c) => c.id === selectedCaptionId);
@@ -132,7 +173,8 @@ export function MagneticTimeline({
     const rect = timelineRef.current.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const ratio = Math.max(0, Math.min(1, clickX / rect.width));
-    onSeek(ratio * durationMs);
+    const clampedSeek = Math.max(effectiveTrimStart, Math.min(effectiveTrimEnd, Math.round(ratio * durationMs)));
+    onSeek(clampedSeek);
     setIsScrubbing(true);
   };
 
@@ -205,6 +247,18 @@ export function MagneticTimeline({
                 Cut All ({silences.length})
               </button>
             </div>
+          )}
+
+          {isTrimmed && onResetTrim && (
+            <button
+              data-testid="reset-trim-btn"
+              onClick={onResetTrim}
+              className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 transition-colors text-xs"
+              title="Reset Trim bounds to full recording"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              Reset Trim
+            </button>
           )}
         </div>
 
@@ -508,6 +562,53 @@ export function MagneticTimeline({
           style={{ left: `${getPercent(currentTimeMs)}%` }}
         >
           <div className="w-3 h-3 bg-white rounded-full -translate-x-[5px] -translate-y-1 shadow-lg border border-purple-600" />
+        </div>
+
+        {/* Shaded Trim Out Regions */}
+        {effectiveTrimStart > 0 && (
+          <div
+            data-testid="trim-shade-left"
+            className="absolute top-0 bottom-0 left-0 bg-black/60 backdrop-blur-[1px] pointer-events-none z-20 border-r border-amber-400/50"
+            style={{ width: `${getPercent(effectiveTrimStart)}%` }}
+          />
+        )}
+        {effectiveTrimEnd < durationMs && (
+          <div
+            data-testid="trim-shade-right"
+            className="absolute top-0 bottom-0 right-0 bg-black/60 backdrop-blur-[1px] pointer-events-none z-20 border-l border-amber-400/50"
+            style={{ width: `${100 - getPercent(effectiveTrimEnd)}%` }}
+          />
+        )}
+
+        {/* Draggable Trim Handles */}
+        <div
+          data-testid="trim-handle-start"
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            setDraggingTrim('start');
+          }}
+          className="absolute top-0 bottom-0 w-3 -translate-x-1.5 cursor-ew-resize z-25 flex flex-col items-center justify-center group"
+          style={{ left: `${getPercent(effectiveTrimStart)}%` }}
+          title="Drag to trim start (In)"
+        >
+          <div className="w-1.5 h-full bg-amber-400 group-hover:bg-amber-300 rounded-full shadow-[0_0_8px_rgba(251,191,36,0.6)] flex items-center justify-center">
+            <div className="w-0.5 h-4 bg-black/60 rounded" />
+          </div>
+        </div>
+
+        <div
+          data-testid="trim-handle-end"
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            setDraggingTrim('end');
+          }}
+          className="absolute top-0 bottom-0 w-3 -translate-x-1.5 cursor-ew-resize z-25 flex flex-col items-center justify-center group"
+          style={{ left: `${getPercent(effectiveTrimEnd)}%` }}
+          title="Drag to trim end (Out)"
+        >
+          <div className="w-1.5 h-full bg-amber-400 group-hover:bg-amber-300 rounded-full shadow-[0_0_8px_rgba(251,191,36,0.6)] flex items-center justify-center">
+            <div className="w-0.5 h-4 bg-black/60 rounded" />
+          </div>
         </div>
       </div>
     </div>

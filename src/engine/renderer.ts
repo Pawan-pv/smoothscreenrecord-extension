@@ -214,6 +214,57 @@ export interface RenderFrameOptions {
   outroHeadline?: string;
   outroCtaText?: string;
   backdropParams?: BackdropMatrixParams;
+  framePadding?: number; // 0..0.20 (0% to 20%, default 0.08)
+  backgroundColor?: string | null;
+  backgroundImage?: CanvasImageSource | null;
+}
+
+export interface CoverFitResult {
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+  dx: number;
+  dy: number;
+  dw: number;
+  dh: number;
+}
+
+export function computeCoverFit(
+  imgW: number,
+  imgH: number,
+  targetW: number,
+  targetH: number
+): CoverFitResult {
+  const safeImgW = Math.max(1, imgW);
+  const safeImgH = Math.max(1, imgH);
+  const targetAspect = targetW / targetH;
+  const imgAspect = safeImgW / safeImgH;
+  let sx = 0;
+  let sy = 0;
+  let sw = safeImgW;
+  let sh = safeImgH;
+
+  if (imgAspect > targetAspect) {
+    // Image is wider than canvas: crop horizontal sides
+    sw = Math.round(safeImgH * targetAspect);
+    sx = Math.round((safeImgW - sw) / 2);
+  } else {
+    // Image is taller than canvas: crop vertical top & bottom
+    sh = Math.round(safeImgW / targetAspect);
+    sy = Math.round((safeImgH - sh) / 2);
+  }
+
+  return {
+    sx,
+    sy,
+    sw,
+    sh,
+    dx: 0,
+    dy: 0,
+    dw: targetW,
+    dh: targetH
+  };
 }
 
 export function getAspectDimensions(aspect: AspectRatioType, targetWidth = 1920): { width: number; height: number } {
@@ -226,6 +277,8 @@ export function getAspectDimensions(aspect: AspectRatioType, targetWidth = 1920)
       return { width: targetWidth, height: targetWidth };
     case '4:3':
       return { width: targetWidth, height: Math.round((targetWidth * 3) / 4) };
+    case '4:5':
+      return { width: Math.round((targetWidth * 4) / 5), height: targetWidth };
     default:
       return { width: 1920, height: 1080 };
   }
@@ -289,8 +342,19 @@ export class StudioRenderer {
     const canvasW = canvas.width;
     const canvasH = canvas.height;
 
-    // 1. Draw Advanced Backdrop Rendering Matrix (Canvas Layer Optimization: drawn behind 3D isometric frame)
-    this.drawBackdropMatrix(ctx, canvasW, canvasH, preset, currentTimeMs, backdropParams);
+    // 1. Draw Advanced Backdrop (Custom Cover Image, Solid Color, or Preset Matrix)
+    if (options.backgroundImage) {
+      const img = options.backgroundImage as any;
+      const imgW = img.naturalWidth || img.videoWidth || img.width || canvasW;
+      const imgH = img.naturalHeight || img.videoHeight || img.height || canvasH;
+      const fit = computeCoverFit(imgW, imgH, canvasW, canvasH);
+      ctx.drawImage(options.backgroundImage, fit.sx, fit.sy, fit.sw, fit.sh, fit.dx, fit.dy, fit.dw, fit.dh);
+    } else if (options.backgroundColor) {
+      ctx.fillStyle = options.backgroundColor;
+      ctx.fillRect(0, 0, canvasW, canvasH);
+    } else {
+      this.drawBackdropMatrix(ctx, canvasW, canvasH, preset, currentTimeMs, backdropParams);
+    }
 
     // Calculate Intro / Outro Transition Factors & 3D Spring Zoom
     let introCardAlpha = 0;
@@ -356,9 +420,12 @@ export class StudioRenderer {
     const windowTiltX = windowIntroTiltX + windowOutroTiltX;
     const windowTiltY = windowIntroTiltY + windowOutroTiltY;
 
-    // 2. Calculate Window Dimensions with Studio Padding
-    const paddingX = canvasW * 0.08;
-    const paddingY = canvasH * 0.08;
+    // 2. Calculate Window Dimensions with Studio Padding (0% to 20%, default 8%)
+    const padFraction = typeof options.framePadding === 'number' && Number.isFinite(options.framePadding)
+      ? Math.max(0, Math.min(0.2, options.framePadding))
+      : 0.08;
+    const paddingX = canvasW * padFraction;
+    const paddingY = canvasH * padFraction;
     const availW = canvasW - paddingX * 2;
     const availH = canvasH - paddingY * 2;
 

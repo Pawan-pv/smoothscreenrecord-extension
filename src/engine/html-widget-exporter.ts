@@ -1,5 +1,13 @@
 import { TelemetryData } from '../types/telemetry';
-import { redactTextString, isSensitiveString } from '../content/privacy-redactor';
+import {
+  findNearestSnapshot,
+  toPercent,
+  serializeForInlineScript,
+  escapeHtmlText,
+  scheduleObjectUrlRevoke,
+  maskIfSensitive,
+  BlurOptions
+} from './export-safety';
 
 export class HtmlWidgetExporter {
   public static generateInteractiveWidget(
@@ -7,45 +15,62 @@ export class HtmlWidgetExporter {
     snapshots: { timestamp: number; dataUrl: string }[] = [],
     autoBlur: boolean | { blurEmails?: boolean; blurRevenue?: boolean; blurApiKeys?: boolean } = true
   ): string {
-    const isAutoBlurOn = typeof autoBlur === 'boolean'
-      ? autoBlur
-      : Boolean(autoBlur?.blurEmails || autoBlur?.blurRevenue || autoBlur?.blurApiKeys);
+    const blurOptions: BlurOptions = typeof autoBlur === 'boolean'
+      ? { blurEmails: autoBlur, blurRevenue: autoBlur, blurApiKeys: autoBlur }
+      : {
+          blurEmails: Boolean(autoBlur?.blurEmails),
+          blurRevenue: Boolean(autoBlur?.blurRevenue),
+          blurApiKeys: Boolean(autoBlur?.blurApiKeys)
+        };
+    const isAutoBlurOn = Boolean(blurOptions.blurEmails || blurOptions.blurRevenue || blurOptions.blurApiKeys);
 
     const { metadata, clicks } = telemetry;
 
+    const rawTitle = metadata.title || 'Screen Recording';
+    const maskedTitle = maskIfSensitive(rawTitle, false, blurOptions);
+    const safeTitle = maskedTitle.hidden ? maskedTitle.text : rawTitle;
+    const escapedTitle = escapeHtmlText(safeTitle);
+
     const steps = clicks.map((c, idx) => {
-      let snap = snapshots.find((s) => Math.abs(s.timestamp - c.t) < 2500);
-      if (!snap && snapshots.length > 0) {
-        snap = [...snapshots].sort((a, b) => Math.abs(a.timestamp - c.t) - Math.abs(b.timestamp - c.t))[0];
-      }
+      const snap = findNearestSnapshot(snapshots, c.t, 3000);
+
       // Mask ONLY genuinely sensitive values. Ordinary labels stay readable.
       const raw = c.targetText;
-      const sensitive = !raw || raw === '[hidden input]' || (isAutoBlurOn && isSensitiveString(raw));
-      let safeText = raw;
-      if (sensitive) {
-        safeText = redactTextString(raw || '');
-        if (!raw || raw === '[hidden input]' || safeText.includes('••••')) {
-          safeText = '[hidden input]';
-        }
+      const maskedRaw = maskIfSensitive(raw, raw === '[hidden input]', blurOptions);
+      const safeText = maskedRaw.hidden ? '[hidden input]' : (raw || undefined);
+
+      let label = c.targetLabel && c.targetLabel !== '[hidden input]' ? c.targetLabel : undefined;
+      if (label) {
+        const maskedLabel = maskIfSensitive(label, false, blurOptions);
+        label = maskedLabel.hidden ? '[hidden input]' : maskedLabel.text;
       }
-      const label = c.targetLabel && c.targetLabel !== '[hidden input]' ? c.targetLabel : undefined;
+
+      let stepTitle: string;
+      if (label) {
+        stepTitle = `Click "${label.slice(0, 30)}"`;
+      } else if (safeText) {
+        stepTitle = `Click "${safeText.slice(0, 30)}"`;
+      } else {
+        stepTitle = `Click <${c.targetTag || 'element'}>`;
+      }
+
       return {
         step: idx + 1,
-        title: label
-          ? `Click "${label.slice(0, 30)}"`
-          : (safeText ? `Click "${safeText.slice(0, 30)}"` : `Click <${c.targetTag}>`),
-        xPercent: ((c.x / metadata.width) * 100).toFixed(1),
-        yPercent: ((c.y / metadata.height) * 100).toFixed(1),
+        title: stepTitle,
+        xPercent: toPercent(c.x, metadata.width),
+        yPercent: toPercent(c.y, metadata.height),
         img: snap?.dataUrl || ''
       };
     });
+
+    const initialStepDesc = escapeHtmlText(steps[0]?.title || 'Follow the highlighted steps.');
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Interactive Walkthrough — ${metadata.title}</title>
+  <title>Interactive Walkthrough — ${escapedTitle}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -164,7 +189,7 @@ export class HtmlWidgetExporter {
 <body>
   <div class="container">
     <div class="header">
-      <div class="title">${metadata.title}</div>
+      <div class="title">${escapedTitle}</div>
       <div class="progress-pill" id="step-pill">Step 1 of ${steps.length || 1}</div>
     </div>
     <div class="viewport" id="viewport">
@@ -178,7 +203,7 @@ export class HtmlWidgetExporter {
       </div>
     </div>
     <div class="footer">
-      <div class="step-desc" id="step-desc">${steps[0]?.title || 'Follow the highlighted steps.'}</div>
+      <div class="step-desc" id="step-desc">${initialStepDesc}</div>
       <div style="display:flex; gap:8px;">
         <button class="btn" id="prev-btn" onclick="prevStep()" disabled>Previous</button>
         <button class="btn" id="next-btn" onclick="nextStep()">Next Step</button>
@@ -187,7 +212,7 @@ export class HtmlWidgetExporter {
   </div>
 
   <script>
-    const steps = window.steps = ${JSON.stringify(steps)};
+    const steps = window.steps = ${serializeForInlineScript(steps)};
     let currentIdx = 0;
 
     function renderStep() {
@@ -243,9 +268,7 @@ export class HtmlWidgetExporter {
     a.download = filename;
     document.body.appendChild(a);
     a.click();
-    setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 1000);
+    document.body.removeChild(a);
+    scheduleObjectUrlRevoke(url);
   }
 }

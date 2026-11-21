@@ -1,11 +1,10 @@
 import { TelemetryData, TypingSession } from '../types/telemetry';
 import {
-  redactTextString,
-  isSensitiveString,
-  EMAIL_DETECT,
-  REVENUE_DETECT,
-  API_KEY_DETECT
-} from '../content/privacy-redactor';
+  findNearestSnapshot,
+  scheduleObjectUrlRevoke,
+  maskIfSensitive,
+  BlurOptions
+} from './export-safety';
 
 interface Snapshot {
   timestamp: number;
@@ -18,39 +17,6 @@ type SopStep =
   | { kind: 'shortcut'; t: number; combo: string };
 
 const TYPING_ABSORB_WINDOW_MS = 3000;
-
-interface BlurOptions {
-  blurEmails: boolean;
-  blurRevenue: boolean;
-  blurApiKeys: boolean;
-}
-
-/**
- * Masks a string ONLY when it is actually sensitive.
- * Sensitive means: the source already flagged it as a hidden input, or the
- * text matches the email / API key / revenue patterns.
- * Normal text such as a git branch name must stay readable.
- */
-function maskIfSensitive(
-  text: string | undefined,
-  alreadyHidden: boolean,
-  blur: BlurOptions
-): { text: string; hidden: boolean } {
-  if (!text) return { text: '', hidden: false };
-  if (alreadyHidden || text === '[hidden input]') {
-    return { text: '[hidden input]', hidden: true };
-  }
-  const patternHit =
-    (blur.blurEmails && EMAIL_DETECT.test(text)) ||
-    (blur.blurRevenue && REVENUE_DETECT.test(text)) ||
-    (blur.blurApiKeys && API_KEY_DETECT.test(text)) ||
-    /(password|secret|sk_live_|bearer\s+)/i.test(text);
-  if (patternHit || isSensitiveString(text)) {
-    const redacted = redactTextString(text);
-    return { text: redacted.includes('••••') ? '[hidden input]' : redacted, hidden: true };
-  }
-  return { text, hidden: false };
-}
 
 export class SopGuideExporter {
   public static generateMarkdownGuide(
@@ -71,13 +37,17 @@ export class SopGuideExporter {
     const { metadata, clicks, keystrokes } = telemetry;
     const typingSessions: TypingSession[] = telemetry.typingSessions || [];
     const durationSec = (metadata.durationMs / 1000).toFixed(1);
+    // QA: the title is page-controlled text too; a revenue figure or an email
+    // in the document title must not become the SOP heading.
+    const safeTitle = maskIfSensitive(metadata.title, false, blurOptions).text
+      || 'Screen Recording';
     const dateStr = new Date(metadata.startTime).toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
       year: 'numeric'
     });
 
-    let md = `# Standard Operating Procedure (SOP): ${metadata.title}\n\n`;
+    let md = `# Standard Operating Procedure (SOP): ${safeTitle}\n\n`;
     md += `> **Source URL**: [${metadata.url || 'Web Application'}](${metadata.url || '#'})\n`;
     md += `> **Recorded On**: ${dateStr} | **Duration**: ${durationSec}s | **Actions**: ${clicks.length} clicks, ${keystrokes.length} keystrokes\n\n`;
     md += `---\n\n`;
@@ -145,19 +115,9 @@ export class SopGuideExporter {
       md += `*No discrete click or keyboard actions were recorded during this session.*\n\n`;
     }
 
-    const findSnapshot = (t: number): Snapshot | undefined => {
-      if (snapshots.length === 0) return undefined;
-      let best: Snapshot | undefined;
-      let bestDelta = Infinity;
-      for (const s of snapshots) {
-        const d = Math.abs(s.timestamp - t);
-        if (d < bestDelta) {
-          bestDelta = d;
-          best = s;
-        }
-      }
-      return best;
-    };
+    const findSnapshot = (t: number): Snapshot | undefined =>
+      // QA: never attach a screenshot from minutes away to a step.
+      findNearestSnapshot(snapshots, t);
 
     let stepNumber = 1;
     for (const step of filteredSteps) {
@@ -167,11 +127,16 @@ export class SopGuideExporter {
         const masked = maskIfSensitive(step.text, false, blurOptions);
         const target = masked.hidden
           ? '**[hidden input]**'
-          : (step.text ? `**"${step.text}"**` : `the **${step.tag.toUpperCase()}** element`);
-        const label = step.label && step.label !== '[hidden input]' ? ` (${step.label})` : '';
+          : (masked.text ? `**"${masked.text}"**` : `the **${step.tag.toUpperCase()}** element`);
+        // QA: the label is page-controlled text and may itself contain an email,
+        // a revenue figure or an API key. Redact it before it becomes a heading.
+        const maskedLabel = maskIfSensitive(step.label, false, blurOptions);
+        const label = maskedLabel.hidden
+          ? ' ([hidden input])'
+          : (maskedLabel.text ? ` (${maskedLabel.text})` : '');
         md += `### Step ${stepNumber}: Click on ${target}${label} \`[${timeStr}]\`\n\n`;
         md += `1. Locate the **${step.tag.toUpperCase()}** component on the screen.\n`;
-        md += `2. Perform a primary click action on ${masked.hidden ? '**[hidden input]**' : (step.text ? `**"${step.text}"**` : 'the element')}.\n\n`;
+        md += `2. Perform a primary click action on ${masked.hidden ? '**[hidden input]**' : (masked.text ? `**"${masked.text}"**` : 'the element')}.\n\n`;
       } else if (step.kind === 'type') {
         if (step.sensitive) {
           md += `### Step ${stepNumber}: Enter \`[hidden input]\` into \`[hidden input]\` \`[${timeStr}]\`\n\n`;
@@ -179,7 +144,8 @@ export class SopGuideExporter {
           md += `2. Enter the value. It is intentionally not recorded.\n\n`;
         } else {
           const masked = maskIfSensitive(step.text, false, blurOptions);
-          const fieldName = step.label || step.tag;
+          const maskedLabel = maskIfSensitive(step.label, false, blurOptions);
+          const fieldName = maskedLabel.text || step.tag;
           md += `### Step ${stepNumber}: Type **"${masked.text}"** into **"${fieldName}"** \`[${timeStr}]\`\n\n`;
           md += `1. Click the **${fieldName}** field to focus it.\n`;
           md += `2. Type **${masked.text}**.\n\n`;
@@ -213,9 +179,7 @@ export class SopGuideExporter {
     a.download = filename;
     document.body.appendChild(a);
     a.click();
-    setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 1000);
+    // QA: 60 s (or pagehide) instead of 1 s so a slow download is not cut off.
+    scheduleObjectUrlRevoke(url);
   }
 }

@@ -20,6 +20,7 @@ import { HardwareMp4Exporter } from '../engine/mp4-exporter';
 import { HardwareGifExporter, GIF_QUALITY_PRESETS, GifQualityPreset } from '../engine/gif-exporter';
 import { SopGuideExporter } from '../engine/sop-guide-exporter';
 import { HtmlWidgetExporter } from '../engine/html-widget-exporter';
+import { scheduleObjectUrlRevoke } from '../engine/export-safety';
 import {
   getRecordingBlob, loadTelemetry, saveTelemetry, setUseOpfs, newSessionId, getFinalSessionId,
   recoverInterruptedSession, isSessionLockHeld
@@ -1188,7 +1189,7 @@ export function EditorStudio() {
         a.href = url;
         a.download = `${telemetry?.metadata.title || 'SmoothStudio'}_Raw_Stream.webm`;
         a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        scheduleObjectUrlRevoke(url);
         setExportComplete(true);
         setIsExporting(false);
         showToast({

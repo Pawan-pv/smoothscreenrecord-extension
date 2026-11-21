@@ -35,7 +35,7 @@ function abortError(): Error {
 
 
 export interface ExportOptions {
-  videoSource: HTMLVideoElement | HTMLCanvasElement;
+  videoSource?: HTMLVideoElement | HTMLCanvasElement;
   videoBlob?: Blob | null;
   onRenderCanvasFrame?: (timeMs: number) => void;
   durationMs: number;
@@ -111,7 +111,7 @@ export class HardwareMp4Exporter {
     exportCanvas.width = outW;
     exportCanvas.height = outH;
 
-    let video: HTMLVideoElement | HTMLCanvasElement = videoSource;
+    let video: HTMLVideoElement | HTMLCanvasElement = videoSource || document.createElement('canvas');
     let exportVideoUrl: string | null = null;
     let attachedExportVideo: HTMLVideoElement | null = null;
     let frameSource: SequentialVideoFrameSource | null = null;

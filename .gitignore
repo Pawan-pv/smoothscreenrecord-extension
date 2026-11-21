@@ -28,6 +28,8 @@ tests/strict-exports/
 .agents/
 tests/fixtures/*.wav
 tests/fixtures/*.webm
+!tests/fixtures/tier1-c2.webm
+!tests/fixtures/c2-mic-audio.webm
 tests/fixtures/audio/*.wav
 tests/round4/out/
 tests/verify/out/

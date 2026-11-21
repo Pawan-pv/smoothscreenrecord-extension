@@ -21,7 +21,7 @@ import {
 } from './gif-budget';
 
 export interface GifExportOptions {
-  videoSource: HTMLVideoElement | HTMLCanvasElement;
+  videoSource?: HTMLVideoElement | HTMLCanvasElement;
   /**
    * The recording itself. When present, frames are decoded sequentially with
    * WebCodecs instead of seeking the <video> element once per output frame
@@ -342,7 +342,7 @@ export class HardwareGifExporter {
     let frameSource: SequentialVideoFrameSource | null = null;
     let stagingCanvas: HTMLCanvasElement | null = null;
     let stagingCtx: CanvasRenderingContext2D | null = null;
-    let renderVideo: HTMLVideoElement | HTMLCanvasElement = videoSource;
+    let renderVideo: HTMLVideoElement | HTMLCanvasElement = videoSource || document.createElement('canvas');
     if (videoBlob && typeof VideoDecoder !== 'undefined') {
       const opened = await SequentialVideoFrameSource.open(videoBlob);
       if (opened.ok) {

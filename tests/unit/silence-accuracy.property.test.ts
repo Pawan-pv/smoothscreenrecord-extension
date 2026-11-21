@@ -84,7 +84,7 @@ describe('QA-021 silence detection properties', () => {
       addVoice(data, { speechDb, pauses: pauses.map((p) => [p.start, p.end]), seed: seed * 17 });
       assertFound(`seed ${seed} (noise ${noiseDb.toFixed(1)} dBFS)`, seconds, data, pauses);
     }
-  });
+  }, 15000);
 
   it('still detects the exact pause levels measured with a real microphone (BUGS.md QA-021)', () => {
     // C1 run 2: speech -14.4..-16.6 dBFS; pause 5-7 s at

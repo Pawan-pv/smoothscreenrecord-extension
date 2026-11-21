@@ -3,6 +3,11 @@ import {
   newSessionId, setSessionOrigin, holdSessionLock
 } from './opfs-storage';
 import { patchWebmBlobDuration } from './webm-fixer';
+import { diagnosticChannel } from './diagnostic-channel';
+import {
+  computeSnapshotSize,
+  shouldCaptureSnapshot
+} from './snapshot-policy';
 
 /**
  * Recording failure reasons surfaced to the user.
@@ -32,11 +37,13 @@ const PUMP_SAFETY_INTERVAL_MS = 500;  // re-push the last frame if the source st
 const FIRST_FRAME_TIMEOUT_MS = 3000;  // never block the start on the first frame
 const RECORDER_TIMESLICE_MS = 250;    // flush encoded data to storage 4x/second
 const MAX_SNAPSHOTS = 160;
-// A 1280 px JPEG costs tens of ms on the main thread: on an animating page
-// the detector took 6.4 snapshots/s and kept the editor busy 39 % of the
-// time, which slowed the capture itself (M1-03). At most one transition
-// snapshot per SNAPSHOT_MIN_INTERVAL_MS.
-const SNAPSHOT_MIN_INTERVAL_MS = 700;
+// QA-030: snapshots are documentation images. A 1024 px JPEG encoded with
+// async toBlob costs a fraction of the 1280 px synchronous toDataURL, and one
+// reusable canvas removes the per-snapshot allocation from the capture path.
+// The cadence and the size rules live in snapshot-policy.ts so they are unit
+// tested; the JPEG quality and the encode watchdog stay here.
+const SNAPSHOT_JPEG_QUALITY = 0.72;
+const SNAPSHOT_ENCODE_TIMEOUT_MS = 5000;
 // QA-037: the live gate watches the CAPTURED picture to find the real instant
 // the screen shows the recorded surface. Measured on a real run: two frames of
 // the editor change 0.8 % of a 64x36 thumbnail, the editor->recorded-page switch
@@ -77,6 +84,15 @@ export class ScreenCaptureEngine {
   private detectorBusyMs = 0;
   private snapshotCount = 0;
   private snapshots: { timestamp: number; dataUrl: string }[] = [];
+  /** QA-030: one reusable downscaled canvas for every documentation snapshot. */
+  private snapshotCanvas: HTMLCanvasElement | null = null;
+  private snapshotCtx: CanvasRenderingContext2D | null = null;
+  /** Only one JPEG encode may run at a time: the canvas is shared. */
+  private snapshotInFlight = false;
+  private snapshotPending: Promise<void> | null = null;
+  /** Wall-clock time of the last snapshot START (the encode is async). */
+  private lastSnapshotAt = 0;
+  private snapshotErrorReported = false;
   private recordingStartTime = 0;
   private recordingDurationMs = 0;
   private onStopHandler: ((blob: Blob | null) => void) | null = null;
@@ -148,6 +164,10 @@ export class ScreenCaptureEngine {
     this.releaseSessionLock = holdSessionLock(this.sessionId);
     this.chunkCount = 0;
     this.snapshots = [];
+    this.snapshotInFlight = false;
+    this.snapshotPending = null;
+    this.lastSnapshotAt = 0;
+    this.snapshotErrorReported = false;
     this.lastBlob = null;
     this.stopPromise = null;
     this.recordingDurationMs = 0;
@@ -854,11 +874,13 @@ export class ScreenCaptureEngine {
         this.frameDiffCtx.drawImage(pic.src, 0, 0, 160, 90);
         const currentData = this.frameDiffCtx.getImageData(0, 0, 160, 90).data;
 
-        const now = performance.now();
-        const timeSinceLastSnap = this.snapshots.length > 0
-          ? (Date.now() - this.timelineOriginEpoch - this.snapshots[this.snapshots.length - 1].timestamp)
+        // QA-030: the last snapshot's capture time is tracked separately; the
+        // data URL only appears after the async JPEG encode completes.
+        const timeSinceLastSnap = this.lastSnapshotAt > 0
+          ? Date.now() - this.lastSnapshotAt
           : Infinity;
 
+        let transition = true;
         if (this.lastFrameData) {
           let diffSum = 0;
           let changedPixels = 0;
@@ -869,52 +891,136 @@ export class ScreenCaptureEngine {
           }
 
           const avgDiff = diffSum / (currentData.length / 16);
-          // If a visual transition occurred (>4 avg or >20 changed sampled pixels) or periodic cadence reached
-          const transition = avgDiff > 4 || changedPixels > 20;
-          if ((transition && timeSinceLastSnap >= SNAPSHOT_MIN_INTERVAL_MS) || timeSinceLastSnap >= 1800) {
-            this.captureSnapshot();
-          }
-        } else {
-          // Capture initial reference frame
+          // A visible transition (>4 avg or >20 changed sampled pixels).
+          transition = avgDiff > 4 || changedPixels > 20;
+        }
+
+        // QA-030: one snapshot at a time, and the transition/idle cadence is
+        // decided by the policy module instead of an inline timer.
+        if (shouldCaptureSnapshot({
+          recording: this.isRecording,
+          inFlight: this.snapshotInFlight,
+          transition,
+          sinceLastMs: timeSinceLastSnap
+        })) {
           this.captureSnapshot();
         }
 
         this.lastFrameData = new Uint8ClampedArray(currentData);
-      } catch {
-        // Video frame might be temporarily unavailable
+      } catch (err) {
+        // Video frame might be temporarily unavailable. QA-030: never swallow
+        // the failure silently - surface it once per recording.
+        this.reportSnapshotError(err);
       }
       this.detectorBusyMs += performance.now() - tickStart;
     }, 150);
   }
 
   private captureSnapshot() {
+    if (!this.isRecording || this.snapshotInFlight) return;
     try {
       const pic = this.latestPicture();
       if (!pic || !pic.w || !pic.h) return;
-      // Keep the documentation screenshot reasonably small: 1280px wide JPEG.
-      const maxWidth = 1280;
-      const scale = Math.min(1, maxWidth / pic.w);
-      const snapCanvas = document.createElement('canvas');
-      snapCanvas.width = Math.max(1, Math.round(pic.w * scale));
-      snapCanvas.height = Math.max(1, Math.round(pic.h * scale));
-      const ctx = snapCanvas.getContext('2d');
-      if (!ctx) return;
-      ctx.drawImage(pic.src, 0, 0, snapCanvas.width, snapCanvas.height);
-      const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.62);
-      this.snapshotCount++;
-      this.snapshots.push({
-        // Snapshot timestamps use the SAME origin as the telemetry timeline.
-        timestamp: this.timelineOriginEpoch > 0
-          ? Math.round(Date.now() - this.timelineOriginEpoch)
-          : Math.round(performance.now() - this.recordingStartTime),
-        dataUrl
-      });
-      if (this.snapshots.length > MAX_SNAPSHOTS) {
-        this.snapshots.splice(0, this.snapshots.length - MAX_SNAPSHOTS);
+      // QA-030: reuse ONE downscaled canvas and encode asynchronously. The old
+      // path allocated a 1280 px canvas and ran a synchronous toDataURL JPEG on
+      // the capture thread for every transition.
+      const { width, height } = computeSnapshotSize(pic.w, pic.h);
+      if (!this.snapshotCanvas) {
+        this.snapshotCanvas = document.createElement('canvas');
+        this.snapshotCtx = this.snapshotCanvas.getContext('2d');
       }
-    } catch {
-      // Ignore snapshot error
+      if (!this.snapshotCanvas || !this.snapshotCtx) return;
+      if (this.snapshotCanvas.width !== width || this.snapshotCanvas.height !== height) {
+        this.snapshotCanvas.width = width;
+        this.snapshotCanvas.height = height;
+      }
+      this.snapshotCtx.drawImage(pic.src, 0, 0, width, height);
+      // Snapshot timestamps use the SAME origin as the telemetry timeline.
+      const timestamp = this.timelineOriginEpoch > 0
+        ? Math.round(Date.now() - this.timelineOriginEpoch)
+        : Math.round(performance.now() - this.recordingStartTime);
+      this.lastSnapshotAt = Date.now();
+      this.snapshotInFlight = true;
+      this.snapshotPending = this.encodeSnapshot(timestamp).finally(() => {
+        this.snapshotInFlight = false;
+        this.snapshotPending = null;
+      });
+    } catch (err) {
+      this.reportSnapshotError(err);
     }
+  }
+
+  /** Async JPEG encode + data-URL read; never blocks the capture pump. */
+  private encodeSnapshot(timestamp: number): Promise<void> {
+    const canvas = this.snapshotCanvas;
+    if (!canvas) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      let timer: any = null;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimeout(timer);
+        resolve();
+      };
+      // A toBlob callback that never fires must not disable snapshots forever.
+      timer = setTimeout(() => {
+        this.reportSnapshotError(new Error('JPEG snapshot encoding timed out'));
+        finish();
+      }, SNAPSHOT_ENCODE_TIMEOUT_MS);
+      try {
+        canvas.toBlob((blob) => {
+          if (settled) return;
+          if (!blob) {
+            this.reportSnapshotError(new Error('toBlob returned no JPEG data'));
+            finish();
+            return;
+          }
+          const reader = new FileReader();
+          reader.onload = () => {
+            if (settled) return;
+            try {
+              const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+              if (!dataUrl) {
+                this.reportSnapshotError(new Error('FileReader returned no data URL'));
+              } else {
+                this.snapshotCount++;
+                this.snapshots.push({ timestamp, dataUrl });
+                if (this.snapshots.length > MAX_SNAPSHOTS) {
+                  this.snapshots.splice(0, this.snapshots.length - MAX_SNAPSHOTS);
+                }
+              }
+            } catch (err) {
+              this.reportSnapshotError(err);
+            }
+            finish();
+          };
+          reader.onerror = () => {
+            if (settled) return;
+            this.reportSnapshotError(reader.error || new Error('FileReader failed'));
+            finish();
+          };
+          reader.readAsDataURL(blob);
+        }, 'image/jpeg', SNAPSHOT_JPEG_QUALITY);
+      } catch (err) {
+        this.reportSnapshotError(err);
+        finish();
+      }
+    });
+  }
+
+  private reportSnapshotError(err: unknown) {
+    if (this.snapshotErrorReported) return;
+    this.snapshotErrorReported = true;
+    const message = (err as Error)?.message || String(err);
+    console.warn('[SmoothStudio CaptureEngine] Snapshot capture failed:', message);
+    diagnosticChannel.reportDegradation({
+      source: 'canvas',
+      severity: 'warning',
+      title: 'Snapshot capture degraded',
+      message: 'Documentation screenshots could not be captured for this recording; the video itself is unaffected.',
+      details: message
+    });
   }
 
   public getSnapshots() {
@@ -931,7 +1037,14 @@ export class ScreenCaptureEngine {
       return this.lastBlob;
     }
 
-    this.stopPromise = this._executeStop();
+    this.stopPromise = (async () => {
+      // QA-030: the last snapshot is encoded asynchronously; let it land before
+      // the caller reads getSnapshots(), so the final state is never missing.
+      try {
+        await this.snapshotPending;
+      } catch { /* the encode reports its own failure */ }
+      return this._executeStop();
+    })();
     return this.stopPromise;
   }
 

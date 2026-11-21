@@ -26,7 +26,6 @@ export default defineConfig({
         index: resolve(import.meta.dirname, 'index.html'),
         editor: resolve(import.meta.dirname, 'editor.html'),
         popup: resolve(import.meta.dirname, 'popup.html'),
-        offscreen: resolve(import.meta.dirname, 'offscreen.html'),
         'background/service-worker': resolve(import.meta.dirname, 'src/background/service-worker.ts')
       },
       output: {

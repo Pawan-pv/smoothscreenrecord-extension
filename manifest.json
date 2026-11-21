@@ -5,11 +5,7 @@
   "description": "DOM-aware smart auto-zoom, 3D Keynote camera tilts, hardware 60fps MP4 exports, and instant SOP documentation.",
   "permissions": [
     "storage",
-    "activeTab",
-    "scripting",
-    "offscreen",
-    "downloads",
-    "tabCapture"
+    "activeTab"
   ],
   "host_permissions": [
     "<all_urls>"

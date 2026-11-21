@@ -218,6 +218,65 @@ test.describe('Tier 1 Fast Verification Suite', () => {
     expect(cutSkew).toBeLessThan(0.25);
   });
 
+  test('a3) MP4 Export with trimStartMs, trimEndMs and cut silences', async () => {
+    test.setTimeout(180_000);
+    const tTrim0 = Date.now();
+    const trimmedData = await harnessPage.evaluate(async () => {
+      const { HardwareMp4Exporter, CursorSplineEngine, VIBE_PRESETS } = (window as any).__tier1Harness;
+      const resp = await fetch('/tier1-c2.webm');
+      const blob = await resp.blob();
+
+      // Trim 2000ms off start and 2000ms off end (total 4000ms trim)
+      // Cut one 2200ms silence inside the trim window [2000, 18221]
+      const silences = [
+        { id: 's1', startTime: 4750, endTime: 6950, duration: 2200, markedForCut: true }
+      ];
+
+      const exporter = new HardwareMp4Exporter();
+      const mp4Blob = await exporter.exportMp4({
+        videoBlob: blob,
+        durationMs: 20221,
+        trimStartMs: 2000,
+        trimEndMs: 18221,
+        aspectRatio: '16:9',
+        preset: VIBE_PRESETS['keynote-pro'],
+        pills: [],
+        silences,
+        cursorEngine: new CursorSplineEngine(),
+        keystrokes: [],
+        cutSilences: true,
+        showSpotlight: false,
+        showCursor: false,
+        showHud: false
+      });
+
+      const buffer = await mp4Blob.arrayBuffer();
+      return Array.from(new Uint8Array(buffer));
+    });
+
+    const trimPath = path.join(ARTIFACTS_DIR, 'tier1-trimmed.mp4');
+    fs.writeFileSync(trimPath, Buffer.from(trimmedData));
+
+    const trimInfo = mediaInfo(trimPath);
+    console.log(`[Tier 1] Trimmed MP4 exported in ${Date.now() - tTrim0}ms, size: ${trimInfo.sizeBytes} bytes, duration: ${trimInfo.durationSec}s`);
+
+    const trimVideo = trimInfo.streams.find((s: any) => s.codec_type === 'video');
+    const trimAudio = trimInfo.streams.find((s: any) => s.codec_type === 'audio');
+
+    expect(trimVideo, 'video stream exists').toBeDefined();
+    expect(trimVideo.codec_name).toBe('h264');
+    expect(trimAudio, 'audio stream exists').toBeDefined();
+    expect(trimAudio.codec_name).toBe('aac');
+
+    // Expected duration: 20.22s - 4.0s (trim) - 2.2s (silence cut) ≈ 14.02s (± 0.4s)
+    expect(trimInfo.durationSec).toBeGreaterThan(13.6);
+    expect(trimInfo.durationSec).toBeLessThan(14.5);
+
+    // Assert A/V sync stays locked when both trim and silence cuts are active
+    const trimSkew = Math.abs((trimVideo.durationSec || trimInfo.durationSec) - (trimAudio.durationSec || trimInfo.durationSec));
+    expect(trimSkew).toBeLessThan(0.25);
+  });
+
   test('b) GIF Export (QA-028): sequential videoBlob decode, bounded memory, multi-frame motion', async () => {
     const t0 = Date.now();
 

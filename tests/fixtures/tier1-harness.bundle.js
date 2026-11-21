@@ -2420,6 +2420,33 @@ var VIBE_PRESETS = {
     }
   }
 };
+function computeCoverFit(imgW, imgH, targetW, targetH) {
+  const safeImgW = Math.max(1, imgW);
+  const safeImgH = Math.max(1, imgH);
+  const targetAspect = targetW / targetH;
+  const imgAspect = safeImgW / safeImgH;
+  let sx = 0;
+  let sy = 0;
+  let sw = safeImgW;
+  let sh = safeImgH;
+  if (imgAspect > targetAspect) {
+    sw = Math.round(safeImgH * targetAspect);
+    sx = Math.round((safeImgW - sw) / 2);
+  } else {
+    sh = Math.round(safeImgW / targetAspect);
+    sy = Math.round((safeImgH - sh) / 2);
+  }
+  return {
+    sx,
+    sy,
+    sw,
+    sh,
+    dx: 0,
+    dy: 0,
+    dw: targetW,
+    dh: targetH
+  };
+}
 function getAspectDimensions(aspect, targetWidth = 1920) {
   switch (aspect) {
     case "16:9":
@@ -2430,6 +2457,8 @@ function getAspectDimensions(aspect, targetWidth = 1920) {
       return { width: targetWidth, height: targetWidth };
     case "4:3":
       return { width: targetWidth, height: Math.round(targetWidth * 3 / 4) };
+    case "4:5":
+      return { width: Math.round(targetWidth * 4 / 5), height: targetWidth };
     default:
       return { width: 1920, height: 1080 };
   }
@@ -2487,7 +2516,18 @@ class StudioRenderer {
       return;
     const canvasW = canvas.width;
     const canvasH = canvas.height;
-    this.drawBackdropMatrix(ctx, canvasW, canvasH, preset, currentTimeMs, backdropParams);
+    if (options.backgroundImage) {
+      const img = options.backgroundImage;
+      const imgW = img.naturalWidth || img.videoWidth || img.width || canvasW;
+      const imgH = img.naturalHeight || img.videoHeight || img.height || canvasH;
+      const fit = computeCoverFit(imgW, imgH, canvasW, canvasH);
+      ctx.drawImage(options.backgroundImage, fit.sx, fit.sy, fit.sw, fit.sh, fit.dx, fit.dy, fit.dw, fit.dh);
+    } else if (options.backgroundColor) {
+      ctx.fillStyle = options.backgroundColor;
+      ctx.fillRect(0, 0, canvasW, canvasH);
+    } else {
+      this.drawBackdropMatrix(ctx, canvasW, canvasH, preset, currentTimeMs, backdropParams);
+    }
     let introCardAlpha = 0;
     let introCardScale = 1;
     let windowIntroAlpha = 1;
@@ -2540,8 +2580,9 @@ class StudioRenderer {
     const windowScale = windowIntroScale * windowOutroScale;
     const windowTiltX = windowIntroTiltX + windowOutroTiltX;
     const windowTiltY = windowIntroTiltY + windowOutroTiltY;
-    const paddingX = canvasW * 0.08;
-    const paddingY = canvasH * 0.08;
+    const padFraction = typeof options.framePadding === "number" && Number.isFinite(options.framePadding) ? Math.max(0, Math.min(0.2, options.framePadding)) : 0.08;
+    const paddingX = canvasW * padFraction;
+    const paddingY = canvasH * padFraction;
     const availW = canvasW - paddingX * 2;
     const availH = canvasH - paddingY * 2;
     const sourceW = video.videoWidth || video.width || 1920;
@@ -3812,6 +3853,78 @@ async function readWebmAudioStartMs(blob, scanBytes = DEFAULT_SCAN_BYTES) {
   }
 }
 
+// src/engine/export-timeline.ts
+function clampTrimBounds(durationMs, trimStartMs, trimEndMs, minDurationMs = 500) {
+  const safeDur = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
+  if (safeDur <= 0) {
+    return { trimStartMs: 0, trimEndMs: 0 };
+  }
+  const effectiveMin = Math.min(minDurationMs, safeDur);
+  let start = Number.isFinite(trimStartMs) ? Math.max(0, Math.min(safeDur, trimStartMs)) : 0;
+  let end = Number.isFinite(trimEndMs) ? Math.max(0, Math.min(safeDur, trimEndMs)) : safeDur;
+  if (start > end) {
+    const tmp = start;
+    start = end;
+    end = tmp;
+  }
+  if (end - start < effectiveMin) {
+    if (start + effectiveMin <= safeDur) {
+      end = start + effectiveMin;
+    } else {
+      start = Math.max(0, end - effectiveMin);
+    }
+  }
+  return { trimStartMs: start, trimEndMs: end };
+}
+function composeTrimAndCuts(cuts, durationMs, trimStartMs = 0, trimEndMs) {
+  const safeDur = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
+  if (safeDur <= 0)
+    return [];
+  const { trimStartMs: effStart, trimEndMs: effEnd } = clampTrimBounds(safeDur, trimStartMs, trimEndMs ?? safeDur, 0);
+  if (effEnd <= effStart)
+    return [];
+  const normalized = [];
+  for (const c of cuts) {
+    if (!Number.isFinite(c?.startTime) || !Number.isFinite(c?.endTime))
+      continue;
+    const start = Math.max(effStart, Math.min(effEnd, c.startTime));
+    const end = Math.max(effStart, Math.min(effEnd, c.endTime));
+    if (end > start)
+      normalized.push({ start, end });
+  }
+  normalized.sort((a, b) => a.start - b.start);
+  const mergedCuts = [];
+  for (const c of normalized) {
+    const last2 = mergedCuts[mergedCuts.length - 1];
+    if (last2 && c.start <= last2.end) {
+      last2.end = Math.max(last2.end, c.end);
+    } else {
+      mergedCuts.push({ ...c });
+    }
+  }
+  const keep = [];
+  let cursor = effStart;
+  for (const c of mergedCuts) {
+    if (c.start > cursor) {
+      keep.push({ startTime: cursor, endTime: c.start });
+    }
+    cursor = Math.max(cursor, c.end);
+  }
+  if (cursor < effEnd) {
+    keep.push({ startTime: cursor, endTime: effEnd });
+  }
+  return keep;
+}
+function resolveExportTimelineMs(input) {
+  const wallClock = Number.isFinite(input.wallClockDurationMs) && input.wallClockDurationMs > 0 ? input.wallClockDurationMs : 0;
+  const container = Number.isFinite(input.containerDurationMs) && input.containerDurationMs > 0 ? input.containerDurationMs : 0;
+  const audioEnd = Number.isFinite(input.audioEndMs) && input.audioEndMs > 0 ? input.audioEndMs : 0;
+  const lastVideoPts = Number.isFinite(input.lastVideoPtsMs) && input.lastVideoPtsMs > 0 ? input.lastVideoPtsMs : 0;
+  const claimedVideoEnd = Math.max(wallClock, container);
+  const videoEnd = lastVideoPts > 0 ? Math.min(claimedVideoEnd || lastVideoPts, lastVideoPts) : claimedVideoEnd;
+  return Math.ceil(Math.max(videoEnd, audioEnd));
+}
+
 // src/engine/audio-track.ts
 var MAX_ALIGNMENT_MS = 60000;
 function alignPcmToTimeline(pcm, startTimeMs) {
@@ -3874,32 +3987,10 @@ function pcmDurationMs(pcm) {
   return len * 1000 / pcm.sampleRate;
 }
 var clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-function keepRangesFromCuts(cuts, durationMs) {
-  const duration = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
-  if (duration === 0)
-    return [];
-  const normalized = [];
-  for (const c of cuts) {
-    if (!Number.isFinite(c?.startTime) || !Number.isFinite(c?.endTime))
-      continue;
-    const start = clamp(c.startTime, 0, duration);
-    const end = clamp(c.endTime, 0, duration);
-    if (end > start)
-      normalized.push({ start, end });
-  }
-  normalized.sort((a, b) => a.start - b.start);
-  const keep = [];
-  let cursor = 0;
-  for (const c of normalized) {
-    if (c.start > cursor)
-      keep.push({ startTime: cursor, endTime: c.start });
-    cursor = Math.max(cursor, c.end);
-  }
-  if (cursor < duration)
-    keep.push({ startTime: cursor, endTime: duration });
-  return keep;
+function keepRangesFromCuts(cuts, durationMs, trimStartMs = 0, trimEndMs) {
+  return composeTrimAndCuts(cuts, durationMs, trimStartMs, trimEndMs);
 }
-function cutPcmToKeepRanges(pcm, keep) {
+function cutPcmToKeepRanges(pcm, keep, fadeMs = 15) {
   if (!pcm.channels.length) {
     throw new Error("The recording has no audio channels to cut.");
   }
@@ -3933,12 +4024,32 @@ function cutPcmToKeepRanges(pcm, keep) {
   if (outLen === 0) {
     throw new Error("The cut ranges removed the whole audio track: the export would have no audio.");
   }
+  const targetFadeSamples = Number.isFinite(fadeMs) && fadeMs > 0 ? Math.round(fadeMs / 1000 * pcm.sampleRate) : 0;
   const channels = pcm.channels.map((src) => {
     const out = new Float32Array(outLen);
     let w = 0;
-    for (const s of merged) {
+    for (let i = 0;i < merged.length; i++) {
+      const s = merged[i];
+      const spanLen = s.to - s.from;
       out.set(src.subarray(s.from, s.to), w);
-      w += s.to - s.from;
+      const fadeSamples = Math.min(targetFadeSamples, Math.floor(spanLen / 2));
+      if (fadeSamples > 0) {
+        const hasFadeIn = i > 0 || s.from > 0;
+        const hasFadeOut = i < merged.length - 1 || s.to < totalLen;
+        if (hasFadeIn) {
+          for (let k = 0;k < fadeSamples; k++) {
+            const factor = 0.5 * (1 - Math.cos(Math.PI * k / fadeSamples));
+            out[w + k] *= factor;
+          }
+        }
+        if (hasFadeOut) {
+          for (let k = 0;k < fadeSamples; k++) {
+            const factor = 0.5 * (1 + Math.cos(Math.PI * (k + 1) / fadeSamples));
+            out[w + spanLen - fadeSamples + k] *= factor;
+          }
+        }
+      }
+      w += spanLen;
     }
     return out;
   });
@@ -4876,17 +4987,6 @@ class SequentialVideoFrameSource {
   }
 }
 
-// src/engine/export-timeline.ts
-function resolveExportTimelineMs(input) {
-  const wallClock = Number.isFinite(input.wallClockDurationMs) && input.wallClockDurationMs > 0 ? input.wallClockDurationMs : 0;
-  const container = Number.isFinite(input.containerDurationMs) && input.containerDurationMs > 0 ? input.containerDurationMs : 0;
-  const audioEnd = Number.isFinite(input.audioEndMs) && input.audioEndMs > 0 ? input.audioEndMs : 0;
-  const lastVideoPts = Number.isFinite(input.lastVideoPtsMs) && input.lastVideoPtsMs > 0 ? input.lastVideoPtsMs : 0;
-  const claimedVideoEnd = Math.max(wallClock, container);
-  const videoEnd = lastVideoPts > 0 ? Math.min(claimedVideoEnd || lastVideoPts, lastVideoPts) : claimedVideoEnd;
-  return Math.ceil(Math.max(videoEnd, audioEnd));
-}
-
 // src/engine/mp4-exporter.ts
 function abortError3() {
   const err = new Error("The export was cancelled.");
@@ -4915,6 +5015,9 @@ class HardwareMp4Exporter {
       showSpotlight,
       showCursor,
       showHud,
+      framePadding,
+      backgroundColor,
+      backgroundImage,
       signal,
       onProgress
     } = options;
@@ -4972,7 +5075,6 @@ class HardwareMp4Exporter {
       }
       const fps = 60;
       const frameIntervalMs = 1000 / fps;
-      const activeCutSilences = cutSilences ? silences.filter((s) => s.markedForCut).map((s) => options.showOutroCard ? { ...s, endTime: Math.min(s.endTime, Math.max(s.startTime, durationMs - 1500)) } : s).filter((s) => s.endTime > s.startTime) : [];
       let decodedPcm = null;
       if (videoBlob && await webmHasAudioTrack(new Uint8Array(await videoBlob.slice(0, 4 * 1024 * 1024).arrayBuffer()))) {
         decodedPcm = await decodeRecordingPcm(videoBlob);
@@ -4987,9 +5089,11 @@ class HardwareMp4Exporter {
       if (timelineDurationMs <= 0) {
         throw new Error("The recording has no timeline: duration, container and audio are all empty.");
       }
-      const audioTrack = decodedPcm ? cutPcmToKeepRanges(decodedPcm, keepRangesFromCuts(activeCutSilences, timelineDurationMs)) : null;
+      const { trimStartMs: effTrimStart, trimEndMs: effTrimEnd } = clampTrimBounds(timelineDurationMs, options.trimStartMs, options.trimEndMs);
+      const activeCutSilences = cutSilences ? silences.filter((s) => s.markedForCut).map((s) => options.showOutroCard ? { ...s, endTime: Math.min(s.endTime, Math.max(s.startTime, effTrimEnd - 1500)) } : s).filter((s) => s.endTime > s.startTime) : [];
+      const audioTrack = decodedPcm ? cutPcmToKeepRanges(decodedPcm, keepRangesFromCuts(activeCutSilences, timelineDurationMs, effTrimStart, effTrimEnd)) : null;
       const timelineTimestamps = [];
-      for (let t = 0;t <= timelineDurationMs; t += frameIntervalMs) {
+      for (let t = effTrimStart;t <= effTrimEnd; t += frameIntervalMs) {
         const isCut = activeCutSilences.some((s) => t >= s.startTime && t <= s.endTime);
         if (!isCut) {
           timelineTimestamps.push(t);
@@ -5008,7 +5112,7 @@ class HardwareMp4Exporter {
           outW,
           outH,
           fps,
-          durationMs: timelineDurationMs,
+          durationMs: effTrimEnd,
           totalFrames,
           timelineTimestamps,
           pills,
@@ -5033,6 +5137,9 @@ class HardwareMp4Exporter {
           showOutroCard: options.showOutroCard,
           outroHeadline: options.outroHeadline,
           outroCtaText: options.outroCtaText,
+          framePadding,
+          backgroundColor,
+          backgroundImage,
           onProgress,
           audioTrack
         });
@@ -5044,7 +5151,7 @@ class HardwareMp4Exporter {
         video,
         onRenderCanvasFrame,
         exportCanvas,
-        durationMs,
+        durationMs: effTrimEnd,
         timelineTimestamps,
         pills,
         preset,
@@ -5067,6 +5174,9 @@ class HardwareMp4Exporter {
         showOutroCard: options.showOutroCard,
         outroHeadline: options.outroHeadline,
         outroCtaText: options.outroCtaText,
+        framePadding,
+        backgroundColor,
+        backgroundImage,
         onProgress
       });
     } finally {
@@ -5103,6 +5213,9 @@ class HardwareMp4Exporter {
       showSpotlight,
       showCursor,
       showHud,
+      framePadding,
+      backgroundColor,
+      backgroundImage,
       metadata,
       cursorTheme,
       cursorScale,
@@ -5271,7 +5384,10 @@ class HardwareMp4Exporter {
           introSubheadline,
           showOutroCard,
           outroHeadline,
-          outroCtaText
+          outroCtaText,
+          framePadding,
+          backgroundColor,
+          backgroundImage
         });
         const frameTimestampMicroseconds = Math.round(f / fps * 1e6);
         const frameDurationMicroseconds = Math.round(1 / fps * 1e6);
@@ -5366,6 +5482,9 @@ class HardwareMp4Exporter {
       showSpotlight,
       showCursor,
       showHud,
+      framePadding,
+      backgroundColor,
+      backgroundImage,
       metadata,
       cursorTheme,
       cursorScale,
@@ -5453,7 +5572,10 @@ class HardwareMp4Exporter {
           introSubheadline,
           showOutroCard,
           outroHeadline,
-          outroCtaText
+          outroCtaText,
+          framePadding,
+          backgroundColor,
+          backgroundImage
         });
         if (f % 10 === 0) {
           await new Promise((r) => setTimeout(r, 2));
@@ -5679,10 +5801,11 @@ class HardwareGifExporter {
     downscaleCanvas.width = outW;
     downscaleCanvas.height = outH;
     const downscaleCtx = downscaleCanvas.getContext("2d", { willReadFrequently: true });
+    const { trimStartMs: effTrimStart, trimEndMs: effTrimEnd } = clampTrimBounds(durationMs, options.trimStartMs, options.trimEndMs);
     const frameIntervalMs = 1000 / fps;
     const timestamps = [];
-    const cutIntervals = cutSilences ? silences.filter((s) => s.markedForCut).map((s) => showOutroCard ? { ...s, endTime: Math.min(s.endTime, Math.max(s.startTime, durationMs - 1500)) } : s).filter((s) => s.endTime > s.startTime) : [];
-    for (let t = 0;t < durationMs; t += frameIntervalMs) {
+    const cutIntervals = cutSilences ? silences.filter((s) => s.markedForCut).map((s) => showOutroCard ? { ...s, endTime: Math.min(s.endTime, Math.max(s.startTime, effTrimEnd - 1500)) } : s).filter((s) => s.endTime > s.startTime) : [];
+    for (let t = effTrimStart;t <= effTrimEnd; t += frameIntervalMs) {
       const inCut = cutIntervals.some((c) => t >= c.startTime && t <= c.endTime);
       if (!inCut) {
         timestamps.push(t);
@@ -5791,7 +5914,7 @@ class HardwareGifExporter {
           canvas: exportCanvas,
           video: renderVideo,
           currentTimeMs: currentMs,
-          durationMs,
+          durationMs: effTrimEnd,
           camera,
           activePill,
           cursorEngine,
@@ -5813,7 +5936,10 @@ class HardwareGifExporter {
           introSubheadline,
           showOutroCard,
           outroHeadline,
-          outroCtaText
+          outroCtaText,
+          framePadding: options.framePadding,
+          backgroundColor: options.backgroundColor,
+          backgroundImage: options.backgroundImage
         });
         downscaleCtx.clearRect(0, 0, outW, outH);
         downscaleCtx.drawImage(exportCanvas, 0, 0, outW, outH);
@@ -7150,6 +7276,8 @@ class HtmlWidgetExporter {
 }
 
 // src/engine/cursor-spline.ts
+var CURSOR_IDLE_TIMEOUT_MS = 1500;
+var CURSOR_IDLE_FADE_MS = 300;
 function catmullRom(p0, p1, p2, p3, t) {
   const v0 = (p2 - p0) * 0.5;
   const v1 = (p3 - p1) * 0.5;
@@ -7161,24 +7289,75 @@ function catmullRom(p0, p1, p2, p3, t) {
 class CursorSplineEngine {
   mousePoints = [];
   clicks = [];
+  activityTimestamps = [];
   constructor(mousePoints = [], clicks = []) {
     this.setData(mousePoints, clicks);
   }
   setData(mousePoints, clicks) {
     this.mousePoints = [...mousePoints].sort((a, b) => a.t - b.t);
     this.clicks = [...clicks].sort((a, b) => a.t - b.t);
+    const activities = [];
+    for (const c of this.clicks) {
+      if (Number.isFinite(c.t)) {
+        activities.push(c.t);
+      }
+    }
+    if (this.mousePoints.length > 0) {
+      activities.push(this.mousePoints[0].t);
+      for (let i = 1;i < this.mousePoints.length; i++) {
+        const prev = this.mousePoints[i - 1];
+        const curr = this.mousePoints[i];
+        if (curr.x !== prev.x || curr.y !== prev.y) {
+          activities.push(curr.t);
+        }
+      }
+    }
+    activities.sort((a, b) => a - b);
+    this.activityTimestamps = activities.filter((t, idx) => idx === 0 || t !== activities[idx - 1]);
+  }
+  getCursorOpacityAt(timeMs) {
+    if (this.activityTimestamps.length === 0) {
+      return 1;
+    }
+    let low = 0;
+    let high = this.activityTimestamps.length - 1;
+    let lastActivity = -1;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      if (this.activityTimestamps[mid] <= timeMs) {
+        lastActivity = this.activityTimestamps[mid];
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    let idleMs;
+    if (lastActivity === -1) {
+      idleMs = Math.max(0, timeMs);
+    } else {
+      idleMs = Math.max(0, timeMs - lastActivity);
+    }
+    if (idleMs <= CURSOR_IDLE_TIMEOUT_MS) {
+      return 1;
+    }
+    if (idleMs >= CURSOR_IDLE_TIMEOUT_MS + CURSOR_IDLE_FADE_MS) {
+      return 0;
+    }
+    const progress = (idleMs - CURSOR_IDLE_TIMEOUT_MS) / CURSOR_IDLE_FADE_MS;
+    return 0.5 * (1 + Math.cos(Math.PI * progress));
   }
   getCursorAt(timeMs) {
+    const opacity = this.getCursorOpacityAt(timeMs);
     if (this.mousePoints.length === 0) {
-      return { x: 0, y: 0, style: "default", vx: 0, vy: 0, speed: 0 };
+      return { x: 0, y: 0, style: "default", vx: 0, vy: 0, speed: 0, opacity };
     }
     if (timeMs <= this.mousePoints[0].t) {
       const p = this.mousePoints[0];
-      return { x: p.x, y: p.y, style: p.c, vx: 0, vy: 0, speed: 0 };
+      return { x: p.x, y: p.y, style: p.c, vx: 0, vy: 0, speed: 0, opacity };
     }
     const last2 = this.mousePoints[this.mousePoints.length - 1];
     if (timeMs >= last2.t) {
-      return { x: last2.x, y: last2.y, style: last2.c, vx: 0, vy: 0, speed: 0 };
+      return { x: last2.x, y: last2.y, style: last2.c, vx: 0, vy: 0, speed: 0, opacity };
     }
     let low = 0;
     let high = this.mousePoints.length - 1;
@@ -7222,7 +7401,8 @@ class CursorSplineEngine {
       style: p1.c || "default",
       vx,
       vy,
-      speed
+      speed,
+      opacity
     };
   }
   getClicks() {
@@ -7253,6 +7433,12 @@ class CursorSplineEngine {
         ctx.restore();
       }
     }
+    const cursorOpacity = typeof cursor.opacity === "number" ? cursor.opacity : 1;
+    if (cursorOpacity <= 0.001) {
+      ctx.restore();
+      return;
+    }
+    ctx.globalAlpha = Math.max(0, Math.min(1, ctx.globalAlpha * cursorOpacity));
     const effectiveSpeed = cursor.x <= 1 ? cursor.speed * 1920 : cursor.speed;
     if (effectiveSpeed > 350) {
       ctx.save();

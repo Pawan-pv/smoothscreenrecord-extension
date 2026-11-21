@@ -136,4 +136,75 @@ describe('Service Worker: Long-Lived Port & Background Message Processing', () =
       expect(keepalivePort.postMessage).toHaveBeenCalledWith('pong');
     });
   });
+
+  describe('4. Tab Messaging Safety Without "tabs" Permission', () => {
+    it('dispatches START_TELEMETRY to target tab even when tab.url is undefined', async () => {
+      (chrome.tabs as any)._tabs.length = 0;
+      (chrome.tabs as any)._tabs.push(
+        { id: 202, active: true, url: undefined },
+        { id: 303, active: false, url: 'chrome://extensions' }
+      );
+
+      const sendResponse = vi.fn();
+      (chrome.runtime.onMessage as any).dispatch(
+        {
+          type: 'START_RECORDING',
+          payload: { quality: '1080p' },
+          tabId: 202,
+          originEpoch: 123456789,
+          sessionId: 'test_ses'
+        },
+        { id: 'caller' },
+        sendResponse
+      );
+
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
+        202,
+        expect.objectContaining({ type: 'START_TELEMETRY', originEpoch: 123456789, sessionId: 'test_ses' }),
+        expect.any(Function)
+      );
+
+      expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(
+        303,
+        expect.anything(),
+        expect.any(Function)
+      );
+    });
+
+    it('forwards privacy options to tabs when tab.url is undefined but skips chrome:// URLs', async () => {
+      (chrome.tabs as any)._tabs.length = 0;
+      (chrome.tabs as any)._tabs.push(
+        { id: 404, active: true, url: undefined },
+        { id: 505, active: false, url: 'chrome://settings' }
+      );
+
+      (chrome.tabs.sendMessage as any).mockClear();
+
+      const sendResponse = vi.fn();
+      (chrome.runtime.onMessage as any).dispatch(
+        {
+          type: 'APPLY_PRIVACY_OPTIONS',
+          options: { blurEmails: true, blurRevenue: true, blurApiKeys: true }
+        },
+        { id: 'caller' },
+        sendResponse
+      );
+
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
+        404,
+        expect.objectContaining({ type: 'APPLY_PRIVACY_OPTIONS' }),
+        expect.any(Function)
+      );
+
+      expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(
+        505,
+        expect.anything(),
+        expect.any(Function)
+      );
+    });
+  });
 });

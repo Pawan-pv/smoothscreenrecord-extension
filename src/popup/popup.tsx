@@ -6,6 +6,16 @@ import '../index.css';
 
 ensureDevChromeMocks();
 
+const isLikelyWebTab = (t?: chrome.tabs.Tab): boolean => {
+  if (!t?.id) return false;
+  // If url is known, ensure it is http/https (skip chrome://, chrome-extension://, etc.)
+  // If url is undefined (due to omitted "tabs" permission), assume valid web tab
+  if (t.url) {
+    return t.url.startsWith('http://') || t.url.startsWith('https://');
+  }
+  return true;
+};
+
 export function PopupApp() {
   const [isRecording, setIsRecording] = useState(false);
   const [includeMic, setIncludeMic] = useState(true);
@@ -50,7 +60,7 @@ export function PopupApp() {
     if (typeof chrome !== 'undefined' && chrome.tabs) {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         const tab = tabs[0];
-        if (tab?.id && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
+        if (tab?.id && isLikelyWebTab(tab)) {
           chrome.tabs.sendMessage(tab.id, {
             type: 'APPLY_PRIVACY_OPTIONS',
             options
@@ -81,7 +91,7 @@ export function PopupApp() {
     if (typeof chrome !== 'undefined' && chrome.tabs) {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         const tab = tabs[0];
-        if (tab?.id && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
+        if (tab?.id && isLikelyWebTab(tab)) {
           chrome.tabs.sendMessage(tab.id, {
             type: msgType
           }, () => {
@@ -99,7 +109,7 @@ export function PopupApp() {
 
         const launchWithTarget = (targetTab?: chrome.tabs.Tab) => {
           const targetTabId = targetTab?.id;
-          if (targetTabId && targetTab?.url && (targetTab.url.startsWith('http://') || targetTab.url.startsWith('https://'))) {
+          if (targetTabId && isLikelyWebTab(targetTab)) {
             chrome.tabs.sendMessage(targetTabId, {
               type: 'APPLY_PRIVACY_OPTIONS',
               options: { blurEmails, blurRevenue, blurApiKeys }
@@ -113,12 +123,12 @@ export function PopupApp() {
           window.close();
         };
 
-        if (currentActive && currentActive.url && (currentActive.url.startsWith('http://') || currentActive.url.startsWith('https://'))) {
+        if (currentActive && isLikelyWebTab(currentActive)) {
           launchWithTarget(currentActive);
         } else {
           // If the active tab is not an HTTP/HTTPS page (e.g. popup opened as its own tab), find the target web tab
           chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }, (webTabs) => {
-            const chosen = webTabs.find((t) => t.active) || webTabs[webTabs.length - 1];
+            const chosen = webTabs?.find((t) => t.active) || webTabs?.[webTabs.length - 1] || currentActive;
             launchWithTarget(chosen);
           });
         }

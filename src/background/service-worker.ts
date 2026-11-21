@@ -335,8 +335,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         chrome.tabs.query({}, (tabs) => {
           for (const tab of tabs) {
             if (tab.id && (tab.id === targetRecordingTabId || tab.active)) {
-              // Guard: Content scripts only run on http/https web pages. Never dispatch to chrome:// or extension pages.
-              if (!tab.url || (!tab.url.startsWith('http://') && !tab.url.startsWith('https://'))) {
+              // Guard: Content scripts only run on web pages.
+              // If tab.url is defined, skip non-web pages (chrome://, chrome-extension://, etc.).
+              // If tab.url is undefined (due to omitted "tabs" permission), attempt messaging safely.
+              if (tab.url && !tab.url.startsWith('http://') && !tab.url.startsWith('https://')) {
                 continue;
               }
               chrome.tabs.sendMessage(tab.id, { type: 'START_TELEMETRY', originEpoch, sessionId }, () => {
@@ -360,8 +362,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       dispatchStart(recordingTabId);
     } else {
       chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }, (webTabs) => {
-        const chosen = webTabs.find((t) => t.active) || webTabs[0];
-        dispatchStart(chosen?.id || null);
+        const chosen = webTabs?.find((t) => t.active) || webTabs?.[0];
+        if (chosen?.id) {
+          dispatchStart(chosen.id);
+        } else {
+          // Fallback when URL query is restricted or empty: pick active tab
+          chrome.tabs.query({ active: true }, (activeTabs) => {
+            const fallback = activeTabs?.find((t) => t.id !== editorTabId) || activeTabs?.[0];
+            dispatchStart(fallback?.id || null);
+          });
+        }
       });
     }
     return true;
@@ -506,11 +516,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (['APPLY_PRIVACY_OPTIONS', 'START_PICKER', 'STOP_PICKER', 'RESET_PRIVACY'].includes(message.type)) {
     chrome.tabs.query({}, (tabs) => {
       for (const tab of tabs) {
-        if (tab.id && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
-          chrome.tabs.sendMessage(tab.id, message, () => {
-            void chrome.runtime?.lastError;
-          });
+        if (!tab.id) continue;
+        // If tab.url is defined, skip non-web pages (chrome://, chrome-extension://).
+        // If tab.url is undefined (due to omitted "tabs" permission), attempt forwarding safely.
+        if (tab.url && !tab.url.startsWith('http://') && !tab.url.startsWith('https://')) {
+          continue;
         }
+        chrome.tabs.sendMessage(tab.id, message, () => {
+          void chrome.runtime?.lastError;
+        });
       }
     });
     sendResponse({ status: 'forwarded' });

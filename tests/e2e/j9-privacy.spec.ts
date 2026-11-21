@@ -245,4 +245,48 @@ test.describe.serial('J9 privacy', () => {
       await site.close();
     }
   });
+
+  test('J9 editor path: starting capture from the editor arms the privacy shield on active tab (QA-006)', async () => {
+    const site = await serveFixtures();
+    const app = await launchApp({ capture: 'screen', raiseWindow: true });
+    try {
+      const target = await app.context.newPage();
+      await target.goto(`${site.base}/privacy.html`, { waitUntil: 'domcontentloaded' });
+      await target.waitForTimeout(800);
+
+      // Verify un-redacted initially
+      const emailBox = target.locator('#email-text');
+      expect(await emailBox.innerText()).toBe('dana.reeves@example-corp.com');
+      const initialFilter = await emailBox.evaluate((el) => getComputedStyle(el).filter);
+      expect(initialFilter).not.toContain('blur');
+
+      // Open editor directly with record prompt
+      const editor = await app.context.newPage();
+      await editor.goto(`chrome-extension://${app.extensionId}/editor.html?record=true`, { waitUntil: 'domcontentloaded' });
+      await editor.waitForTimeout(800);
+
+      const startBtn = editor.locator('#start-capture-prompt-btn, #record-new-screen-empty-btn').first();
+      await startBtn.waitFor({ state: 'visible', timeout: 5000 });
+      await startBtn.click();
+
+      // Verify that starting from editor successfully arms privacy shield on target page
+      await target.waitForFunction(() => {
+        const el = document.querySelector('#email-text');
+        return el && getComputedStyle(el).filter.includes('blur(8px)');
+      }, { timeout: 10000 });
+
+      const emailFilter = await emailBox.evaluate((el) => getComputedStyle(el).filter);
+      expect(emailFilter).toContain('blur(8px)');
+      expect(await emailBox.innerText(), 'text must remain intact').toBe('dana.reeves@example-corp.com');
+
+      // Clean up recording
+      await editor.evaluate(() => {
+        const stopBtn = document.querySelector('#stop-recording-btn') as HTMLElement;
+        if (stopBtn) stopBtn.click();
+      });
+    } finally {
+      await app.cleanup();
+      await site.close();
+    }
+  });
 });

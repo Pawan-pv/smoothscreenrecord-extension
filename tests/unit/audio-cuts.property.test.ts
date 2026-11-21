@@ -123,7 +123,7 @@ describe('cutPcmToKeepRanges: never malformed, never silent', () => {
     const out = cutPcmToKeepRanges(src, [
       { startTime: 0, endTime: 100 },
       { startTime: 500, endTime: 600 }
-    ]);
+    ], 0);
     expect(out.channels[0].length).toBe(200);
     expect(Array.from(out.channels[0].slice(0, 100))).toEqual(Array.from({ length: 100 }, (_, i) => i));
     expect(Array.from(out.channels[0].slice(100))).toEqual(

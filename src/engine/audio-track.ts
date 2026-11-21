@@ -134,7 +134,7 @@ export function keepRangesFromCuts(cuts: TimeRangeMs[], durationMs: number): Tim
  * Throws when the result has no samples: an MP4 with a declared but empty AAC
  * track is a broken export, not "silent audio" (C2: no substituted audio).
  */
-export function cutPcmToKeepRanges(pcm: PcmTrack, keep: TimeRangeMs[]): PcmTrack {
+export function cutPcmToKeepRanges(pcm: PcmTrack, keep: TimeRangeMs[], fadeMs: number = 15): PcmTrack {
   if (!pcm.channels.length) {
     throw new Error('The recording has no audio channels to cut.');
   }
@@ -169,12 +169,42 @@ export function cutPcmToKeepRanges(pcm: PcmTrack, keep: TimeRangeMs[]): PcmTrack
   if (outLen === 0) {
     throw new Error('The cut ranges removed the whole audio track: the export would have no audio.');
   }
+
+  const targetFadeSamples = Number.isFinite(fadeMs) && fadeMs > 0
+    ? Math.round((fadeMs / 1000) * pcm.sampleRate)
+    : 0;
+
   const channels = pcm.channels.map((src) => {
     const out = new Float32Array(outLen);
     let w = 0;
-    for (const s of merged) {
+    for (let i = 0; i < merged.length; i++) {
+      const s = merged[i];
+      const spanLen = s.to - s.from;
       out.set(src.subarray(s.from, s.to), w);
-      w += s.to - s.from;
+
+      const fadeSamples = Math.min(targetFadeSamples, Math.floor(spanLen / 2));
+      if (fadeSamples > 0) {
+        // Apply smooth cosine micro-fade at cut boundaries.
+        // Do not fade the very beginning of the recording or the very end unless trimmed.
+        const hasFadeIn = i > 0 || s.from > 0;
+        const hasFadeOut = i < merged.length - 1 || s.to < totalLen;
+
+        if (hasFadeIn) {
+          for (let k = 0; k < fadeSamples; k++) {
+            const factor = 0.5 * (1 - Math.cos((Math.PI * k) / fadeSamples));
+            out[w + k] *= factor;
+          }
+        }
+
+        if (hasFadeOut) {
+          for (let k = 0; k < fadeSamples; k++) {
+            const factor = 0.5 * (1 + Math.cos((Math.PI * (k + 1)) / fadeSamples));
+            out[w + spanLen - fadeSamples + k] *= factor;
+          }
+        }
+      }
+
+      w += spanLen;
     }
     return out;
   });

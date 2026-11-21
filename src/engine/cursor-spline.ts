@@ -7,7 +7,11 @@ export interface InterpolatedCursor {
   vx: number;
   vy: number;
   speed: number;
+  opacity: number;
 }
+
+export const CURSOR_IDLE_TIMEOUT_MS = 1500;
+export const CURSOR_IDLE_FADE_MS = 300;
 
 // Catmull-Rom spline interpolation between 4 points
 function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): number {
@@ -21,6 +25,7 @@ function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): 
 export class CursorSplineEngine {
   private mousePoints: MousePoint[] = [];
   private clicks: ClickEvent[] = [];
+  private activityTimestamps: number[] = [];
 
   constructor(mousePoints: MousePoint[] = [], clicks: ClickEvent[] = []) {
     this.setData(mousePoints, clicks);
@@ -29,21 +34,81 @@ export class CursorSplineEngine {
   public setData(mousePoints: MousePoint[], clicks: ClickEvent[]) {
     this.mousePoints = [...mousePoints].sort((a, b) => a.t - b.t);
     this.clicks = [...clicks].sort((a, b) => a.t - b.t);
+
+    const activities: number[] = [];
+    for (const c of this.clicks) {
+      if (Number.isFinite(c.t)) {
+        activities.push(c.t);
+      }
+    }
+
+    if (this.mousePoints.length > 0) {
+      activities.push(this.mousePoints[0].t);
+      for (let i = 1; i < this.mousePoints.length; i++) {
+        const prev = this.mousePoints[i - 1];
+        const curr = this.mousePoints[i];
+        if (curr.x !== prev.x || curr.y !== prev.y) {
+          activities.push(curr.t);
+        }
+      }
+    }
+
+    activities.sort((a, b) => a - b);
+    this.activityTimestamps = activities.filter((t, idx) => idx === 0 || t !== activities[idx - 1]);
+  }
+
+  public getCursorOpacityAt(timeMs: number): number {
+    if (this.activityTimestamps.length === 0) {
+      return 1.0;
+    }
+
+    let low = 0;
+    let high = this.activityTimestamps.length - 1;
+    let lastActivity = -1;
+
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      if (this.activityTimestamps[mid] <= timeMs) {
+        lastActivity = this.activityTimestamps[mid];
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+
+    let idleMs: number;
+    if (lastActivity === -1) {
+      idleMs = Math.max(0, timeMs);
+    } else {
+      idleMs = Math.max(0, timeMs - lastActivity);
+    }
+
+    if (idleMs <= CURSOR_IDLE_TIMEOUT_MS) {
+      return 1.0;
+    }
+    if (idleMs >= CURSOR_IDLE_TIMEOUT_MS + CURSOR_IDLE_FADE_MS) {
+      return 0.0;
+    }
+
+    const progress = (idleMs - CURSOR_IDLE_TIMEOUT_MS) / CURSOR_IDLE_FADE_MS;
+    return 0.5 * (1 + Math.cos(Math.PI * progress));
   }
 
   public getCursorAt(timeMs: number): InterpolatedCursor {
+    const opacity = this.getCursorOpacityAt(timeMs);
+
     if (this.mousePoints.length === 0) {
-      return { x: 0, y: 0, style: 'default', vx: 0, vy: 0, speed: 0 };
+      return { x: 0, y: 0, style: 'default', vx: 0, vy: 0, speed: 0, opacity };
     }
 
     if (timeMs <= this.mousePoints[0].t) {
       const p = this.mousePoints[0];
-      return { x: p.x, y: p.y, style: p.c, vx: 0, vy: 0, speed: 0 };
+      return { x: p.x, y: p.y, style: p.c, vx: 0, vy: 0, speed: 0, opacity };
     }
 
     const last = this.mousePoints[this.mousePoints.length - 1];
     if (timeMs >= last.t) {
-      return { x: last.x, y: last.y, style: last.c, vx: 0, vy: 0, speed: 0 };
+      return { x: last.x, y: last.y, style: last.c, vx: 0, vy: 0, speed: 0, opacity };
     }
 
     // Binary search for closest points surrounding timeMs
@@ -98,7 +163,8 @@ export class CursorSplineEngine {
       style: p1.c || 'default',
       vx,
       vy,
-      speed
+      speed,
+      opacity
     };
   }
 
@@ -149,6 +215,13 @@ export class CursorSplineEngine {
     }
 
     // 2. Motion trail / directional motion blur if moving fast
+    const cursorOpacity = typeof cursor.opacity === 'number' ? cursor.opacity : 1.0;
+    if (cursorOpacity <= 0.001) {
+      ctx.restore();
+      return;
+    }
+    ctx.globalAlpha = Math.max(0, Math.min(1, ctx.globalAlpha * cursorOpacity));
+
     // Handles normalized (0..1) speeds (scaled to ~1920px equivalent) as well as legacy pixel speeds
     const effectiveSpeed = cursor.x <= 1.0 ? cursor.speed * 1920 : cursor.speed;
     if (effectiveSpeed > 350) {

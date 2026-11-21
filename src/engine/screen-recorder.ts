@@ -185,24 +185,46 @@ export class ScreenCaptureEngine {
     const idealW = Math.round(screenW * dpr);
     const idealH = Math.round(screenH * dpr);
 
-    // Prompt user for display capture requesting highest capture resolution allowed
+    // Prompt user for display capture requesting highest capture resolution allowed.
+    // Suppress the OS cursor with cursor: "never" so only our smooth vector cursor is rendered.
     const displayMediaOptions: DisplayMediaStreamOptions = {
       video: {
         frameRate: options.frameRate || 60,
         width: { ideal: idealW },
-        height: { ideal: idealH }
-      },
+        height: { ideal: idealH },
+        cursor: 'never' as any
+      } as any,
       audio: false
     };
 
     try {
       this.mediaStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
-    } catch (err) {
-      // Nothing was recorded: the session is over before it started.
-      await finalizeVideo().catch(() => undefined);
-      this.releaseSessionLock?.();
-      this.releaseSessionLock = null;
-      throw err;
+    } catch (err: any) {
+      // Safe fallback retry without cursor: "never" if OverconstrainedError / TypeError is thrown
+      if (err && (err.name === 'OverconstrainedError' || err.name === 'TypeError')) {
+        try {
+          const fallbackOptions: DisplayMediaStreamOptions = {
+            video: {
+              frameRate: options.frameRate || 60,
+              width: { ideal: idealW },
+              height: { ideal: idealH }
+            },
+            audio: false
+          };
+          this.mediaStream = await navigator.mediaDevices.getDisplayMedia(fallbackOptions);
+        } catch (fallbackErr) {
+          await finalizeVideo().catch(() => undefined);
+          this.releaseSessionLock?.();
+          this.releaseSessionLock = null;
+          throw fallbackErr;
+        }
+      } else {
+        // Nothing was recorded: the session is over before it started.
+        await finalizeVideo().catch(() => undefined);
+        this.releaseSessionLock?.();
+        this.releaseSessionLock = null;
+        throw err;
+      }
     }
     const vTrack = this.mediaStream.getVideoTracks()[0];
     if (vTrack) {

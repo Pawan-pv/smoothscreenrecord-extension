@@ -107,23 +107,13 @@ export class AudioProcessor {
         return [];
       }
 
-      const arrayBuffer = await videoBlob.arrayBuffer();
-      if (!arrayBuffer || arrayBuffer.byteLength === 0) {
-        return [];
-      }
-
-      const ctx = this.getAudioContext();
-
-      let audioBuffer: AudioBuffer;
-      try {
-        audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
-      } catch {
-        console.log('[SmoothStudio Audio] No audio track detected or decode failed. Auto-cut disabled (0 cuts).');
-        return [];
-      }
-
+      // QA-011 / QA-034: Container may start audio track later than video.
+      // decodeAudioBuffer aligns the decoded samples to the media timeline using
+      // readWebmAudioStartMs + alignDecodedBuffer so silence spans match clicks,
+      // keystrokes, and video frames without presentation skew.
+      const audioBuffer = await this.decodeAudioBuffer(videoBlob);
       if (!audioBuffer || audioBuffer.numberOfChannels === 0 || audioBuffer.length === 0) {
-        console.log('[SmoothStudio Audio] AudioBuffer has 0 channels or empty audio. Auto-cut disabled (0 cuts).');
+        console.log('[SmoothStudio Audio] No audio track detected or decode failed. Auto-cut disabled (0 cuts).');
         return [];
       }
 

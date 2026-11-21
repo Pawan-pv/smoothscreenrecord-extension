@@ -102,3 +102,44 @@ describe('AAC encoder priming compensation (QA-011)', () => {
     expect(out[0].timestamp).toBe(0);
   });
 });
+
+describe('AudioProcessor.analyzeSilences timeline alignment', () => {
+  it('uses aligned decoded buffer so silence spans reflect track start offset', async () => {
+    const { AudioProcessor } = await import('../../src/engine/audio-processor');
+    const processor = new AudioProcessor();
+
+    // Create a mock AudioBuffer: 4 s total, silence from 0.5s to 2.5s (2000 ms silence)
+    const sampleRate = 48000;
+    const channels = 1;
+    const length = 4 * sampleRate;
+    const mockChannelData = new Float32Array(length);
+    // Fill 0.0s..0.5s with speech (-12 dBFS ~ 0.25)
+    for (let i = 0; i < 0.5 * sampleRate; i++) {
+      mockChannelData[i] = (i % 2 === 0 ? 1 : -1) * 0.25;
+    }
+    // 0.5s..2.5s is silence (0.0) -> 2000ms pause
+    // 2.5s..4.0s with speech (-12 dBFS ~ 0.25)
+    for (let i = Math.round(2.5 * sampleRate); i < length; i++) {
+      mockChannelData[i] = (i % 2 === 0 ? 1 : -1) * 0.25;
+    }
+
+    const mockBuffer = {
+      numberOfChannels: channels,
+      sampleRate,
+      length,
+      duration: 4.0,
+      getChannelData: () => mockChannelData,
+    } as unknown as AudioBuffer;
+
+    vi.spyOn(processor, 'decodeAudioBuffer').mockResolvedValue(mockBuffer);
+
+    const dummyBlob = new Blob([new Uint8Array([1, 2, 3])], { type: 'video/webm' });
+    const silences = await processor.analyzeSilences(dummyBlob);
+
+    expect(processor.decodeAudioBuffer).toHaveBeenCalledWith(dummyBlob);
+    expect(silences).toHaveLength(1);
+    // The silence should start around 500ms and end around 2500ms (accounting for 300ms core window guard)
+    expect(Math.abs(silences[0].startTime - 500)).toBeLessThan(350);
+    expect(Math.abs(silences[0].endTime - 2500)).toBeLessThan(350);
+  });
+});

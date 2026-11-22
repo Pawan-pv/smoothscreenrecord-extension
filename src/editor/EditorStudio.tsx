@@ -9,6 +9,7 @@ import {
   CaptionWord,
   CaptionStyle,
   CursorTheme,
+  CapturedNativeCursor,
   BackdropMatrixParams
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
@@ -26,7 +27,7 @@ import {
   recoverInterruptedSession, isSessionLockHeld
 } from '../engine/opfs-storage';
 import { patchWebmBlobDuration } from '../engine/webm-fixer';
-import { ScreenCaptureEngine } from '../engine/screen-recorder';
+import { ScreenCaptureEngine, shouldEnableCustomCursor } from '../engine/screen-recorder';
 import { diagnosticChannel, SystemDegradationEvent } from '../engine/diagnostic-channel';
 import { CanvasPreview } from './CanvasPreview';
 import { MagneticTimeline } from './MagneticTimeline';
@@ -55,7 +56,7 @@ import {
  * Tags telemetry with its recording session (M1-08). Without telemetry an
  * EMPTY record is returned: no click, key or mouse point is ever invented.
  */
-function withSession(tel: TelemetryData | null, sessionId: string, durationMs: number, displaySurface?: string): TelemetryData {
+function withSession(tel: TelemetryData | null, sessionId: string, durationMs: number, displaySurface?: string, capturedNativeCursor?: CapturedNativeCursor): TelemetryData {
   const now = Date.now();
   const base: TelemetryData = tel || {
     metadata: {
@@ -79,7 +80,8 @@ function withSession(tel: TelemetryData | null, sessionId: string, durationMs: n
       ...base.metadata,
       id: sessionId,
       sessionId,
-      ...(displaySurface ? { displaySurface } : {})
+      ...(displaySurface ? { displaySurface } : {}),
+      ...(capturedNativeCursor ? { capturedNativeCursor } : {})
     }
   };
 }
@@ -607,13 +609,12 @@ export function EditorStudio() {
     } catch (err) {
       console.warn('[SmoothStudio] Audio processor initiation error caught:', err);
     }
-    // Configure cursor visibility: in window or desktop capture, the OS compositor bakes the cursor into the stream
+    // Configure cursor visibility from the actual captured track setting, with a
+    // conservative window/monitor fallback when DOM telemetry is unavailable.
     const displaySurface = data.metadata?.displaySurface || captureEngineRef.current.getTrackSettings()?.displaySurface;
-    if (displaySurface === 'window' || displaySurface === 'monitor') {
-      setShowCursor(false);
-    } else {
-      setShowCursor(true);
-    }
+    const capturedNativeCursor = data.metadata?.capturedNativeCursor || captureEngineRef.current.getCapturedNativeCursor();
+    const hasDomCursorTelemetry = (data.mousePoints || []).some((point) => Boolean(point.c));
+    setShowCursor(shouldEnableCustomCursor(capturedNativeCursor, displaySurface, hasDomCursorTelemetry));
   };
 
   const handleUpdateTrim = useCallback((start: number, end: number) => {
@@ -1136,7 +1137,7 @@ export function EditorStudio() {
       const sid = sessionId || captureEngineRef.current.getSessionId() || newSessionId();
 
       // 3. Complete telemetry tagged with the session
-      const finalTelemetry = withSession(tel, sid, measuredDur, displaySurface);
+      const finalTelemetry = withSession(tel, sid, measuredDur, displaySurface, captureEngineRef.current.getCapturedNativeCursor());
       await saveTelemetry(finalTelemetry).catch((e) => console.warn('[SmoothStudio] Could not persist telemetry:', e));
 
       if (blob && blob.size > 0) {
@@ -1720,6 +1721,7 @@ export function EditorStudio() {
           onChangeCursorTheme={setCursorTheme}
           cursorScale={cursorScale}
           onChangeCursorScale={setCursorScale}
+           capturedNativeCursor={telemetry?.metadata?.capturedNativeCursor}
           showCaptions={showCaptions}
           onToggleCaptions={setShowCaptions}
           captionStyle={captionStyle}

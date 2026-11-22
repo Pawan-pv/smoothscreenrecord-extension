@@ -9,8 +9,12 @@ export interface MousePoint {
   t: number; // relative timestamp in ms from recording start
   x: number; // normalised or pixel x coordinate
   y: number; // normalised or pixel y coordinate
-  c: string; // cursor style: 'default' | 'pointer' | 'text' | 'grab' etc.
+  c: CursorStyle;
 }
+
+export type CursorStyle = 'default' | 'pointer' | 'text' | 'grab' | 'grabbing' | 'not-allowed' | 'crosshair';
+
+export type CapturedNativeCursor = 'never' | 'motion' | 'always' | 'unknown';
 
 export interface ClickEvent {
   t: number;
@@ -22,6 +26,14 @@ export interface ClickEvent {
   /** Human readable label of the interacted element (form field name, etc.) */
   targetLabel?: string;
   containerBounds?: BoundingBox;
+}
+
+export interface PressEvent {
+  t: number;
+  type: 'down' | 'up';
+  x: number;
+  y: number;
+  button: number;
 }
 
 export interface KeystrokeEvent {
@@ -69,6 +81,7 @@ export interface RecordingMetadata {
   title: string;
   url?: string;
   displaySurface?: 'browser' | 'window' | 'monitor' | string;
+  capturedNativeCursor?: CapturedNativeCursor;
   brandColors?: {
     primary: string;
     secondary: string;
@@ -99,6 +112,7 @@ export interface TelemetryData {
   metadata: RecordingMetadata;
   mousePoints: MousePoint[];
   clicks: ClickEvent[];
+  pressEvents?: PressEvent[];
   keystrokes: KeystrokeEvent[];
   inputEvents: InputFocusEvent[];
   typingSessions?: TypingSession[];

@@ -8,6 +8,18 @@ import {
   computeSnapshotSize,
   shouldCaptureSnapshot
 } from './snapshot-policy';
+import { CapturedNativeCursor } from '../types/telemetry';
+
+export function shouldEnableCustomCursor(
+  capturedNativeCursor: CapturedNativeCursor,
+  displaySurface: string | undefined,
+  hasDomCursorTelemetry: boolean
+): boolean {
+  if (capturedNativeCursor === 'always' || capturedNativeCursor === 'motion') return false;
+  if (capturedNativeCursor === 'never') return true;
+  if ((displaySurface === 'window' || displaySurface === 'monitor') && !hasDomCursorTelemetry) return false;
+  return true;
+}
 
 /**
  * Recording failure reasons surfaced to the user.
@@ -100,6 +112,7 @@ export class ScreenCaptureEngine {
   private stopPromise: Promise<Blob | null> | null = null;
   private pendingWrites: Promise<void>[] = [];
   private lastTrackSettings: MediaTrackSettings | null = null;
+  private capturedNativeCursor: CapturedNativeCursor = 'unknown';
 
   // --- Frame pump state -----------------------------------------------------
   private pumpCanvas: HTMLCanvasElement | null = null;
@@ -200,23 +213,34 @@ export class ScreenCaptureEngine {
     try {
       this.mediaStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
     } catch (err: any) {
-      // Safe fallback retry without cursor: "never" if OverconstrainedError / TypeError is thrown
+      // Preserve cursor:"never" for the first retry. Only drop it as a last resort
+      // when Chromium rejects the cursor constraint itself.
       if (err && (err.name === 'OverconstrainedError' || err.name === 'TypeError')) {
         try {
-          const fallbackOptions: DisplayMediaStreamOptions = {
-            video: {
-              frameRate: options.frameRate || 60,
-              width: { ideal: idealW },
-              height: { ideal: idealH }
-            },
-            audio: false
-          };
-          this.mediaStream = await navigator.mediaDevices.getDisplayMedia(fallbackOptions);
-        } catch (fallbackErr) {
-          await finalizeVideo().catch(() => undefined);
-          this.releaseSessionLock?.();
-          this.releaseSessionLock = null;
-          throw fallbackErr;
+          this.mediaStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
+        } catch (retryErr: any) {
+          if (retryErr?.name !== 'OverconstrainedError' && retryErr?.name !== 'TypeError') {
+            await finalizeVideo().catch(() => undefined);
+            this.releaseSessionLock?.();
+            this.releaseSessionLock = null;
+            throw retryErr;
+          }
+          try {
+            const fallbackOptions: DisplayMediaStreamOptions = {
+              video: {
+                frameRate: options.frameRate || 60,
+                width: { ideal: idealW },
+                height: { ideal: idealH }
+              },
+              audio: false
+            };
+            this.mediaStream = await navigator.mediaDevices.getDisplayMedia(fallbackOptions);
+          } catch (fallbackErr) {
+            await finalizeVideo().catch(() => undefined);
+            this.releaseSessionLock?.();
+            this.releaseSessionLock = null;
+            throw fallbackErr;
+          }
         }
       } else {
         // Nothing was recorded: the session is over before it started.
@@ -229,6 +253,10 @@ export class ScreenCaptureEngine {
     const vTrack = this.mediaStream.getVideoTracks()[0];
     if (vTrack) {
       this.lastTrackSettings = vTrack.getSettings ? vTrack.getSettings() : null;
+      const nativeCursor = (this.lastTrackSettings as any)?.cursor;
+      this.capturedNativeCursor = nativeCursor === 'never' || nativeCursor === 'motion' || nativeCursor === 'always'
+        ? nativeCursor
+        : 'unknown';
       console.log('[SmoothStudio CaptureEngine] Capture track settings:', JSON.stringify(this.lastTrackSettings));
     }
 
@@ -1227,6 +1255,10 @@ export class ScreenCaptureEngine {
 
   public getTrackSettings(): MediaTrackSettings | null {
     return this.lastTrackSettings;
+  }
+
+  public getCapturedNativeCursor(): CapturedNativeCursor {
+    return this.capturedNativeCursor;
   }
 
   public getDurationMs(): number {

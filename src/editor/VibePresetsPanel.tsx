@@ -5,6 +5,7 @@ import {
   VibePresetId,
   RecordingMetadata,
   CursorTheme,
+  CapturedNativeCursor,
   CaptionStyle,
   BackdropMatrixParams
 } from '../types/telemetry';
@@ -52,6 +53,7 @@ interface VibePresetsPanelProps {
   onChangeCursorTheme: (theme: CursorTheme) => void;
   cursorScale: number;
   onChangeCursorScale: (scale: number) => void;
+  capturedNativeCursor?: CapturedNativeCursor;
   showCaptions: boolean;
   onToggleCaptions: (val: boolean) => void;
   captionStyle: CaptionStyle;
@@ -103,6 +105,7 @@ export function VibePresetsPanel({
   onChangeCursorTheme,
   cursorScale,
   onChangeCursorScale,
+  capturedNativeCursor,
   showCaptions,
   onToggleCaptions,
   captionStyle,
@@ -191,6 +194,7 @@ export function VibePresetsPanel({
         <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider mb-2.5 block">
           Aspect Ratio
         </label>
+
         <div className="grid grid-cols-2 gap-1.5">
           <button
             onClick={() => onChangeAspectRatio('16:9')}
@@ -759,6 +763,12 @@ export function VibePresetsPanel({
             title={metadata?.displaySurface === 'window' || metadata?.displaySurface === 'monitor' ? 'Disabled in window/monitor capture (native cursor baked by OS)' : undefined}
           />
         </label>
+
+        {(capturedNativeCursor === 'always' || capturedNativeCursor === 'motion') && (
+          <p className="text-[11px] leading-relaxed text-amber-300/90">
+            Native cursor detected in this capture. The vector cursor starts off to prevent a double cursor; you can re-enable it manually.
+          </p>
+        )}
 
         {(metadata?.displaySurface === 'window' || metadata?.displaySurface === 'monitor') && (
           <div id="cursor-mode-hint" className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-[11px] text-indigo-200 flex items-start gap-2 leading-relaxed">

@@ -7,7 +7,8 @@ import {
   SilenceSegment,
   CaptionBlock,
   CaptionStyle,
-  CursorTheme
+  CursorTheme,
+  FramingMode
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
 import { computeCinematicCameraState } from './spring-physics';
@@ -60,6 +61,7 @@ export interface GifExportOptions {
   framePadding?: number;
   backgroundColor?: string | null;
   backgroundImage?: CanvasImageSource | null;
+  framingMode?: FramingMode;
   qualityPreset?: GifQualityPreset;
   fps?: number; // defaults to 12fps (Compact preset) for optimal GIF size (<5MB)
   maxDimension?: number; // defaults to 640px (Compact preset)
@@ -244,6 +246,7 @@ export class HardwareGifExporter {
       showOutroCard,
       outroHeadline,
       outroCtaText,
+      framingMode,
       qualityPreset = 'compact',
       fps: explicitFps,
       maxDimension: explicitMaxDimension,
@@ -464,7 +467,8 @@ export class HardwareGifExporter {
           outroCtaText,
           framePadding: options.framePadding,
           backgroundColor: options.backgroundColor,
-          backgroundImage: options.backgroundImage
+          backgroundImage: options.backgroundImage,
+          framingMode
         });
 
         // Downscale to target GIF resolution

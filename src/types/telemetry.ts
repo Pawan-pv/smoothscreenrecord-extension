@@ -108,6 +108,8 @@ export type CaptionStyle = 'tiktok-bold' | 'apple-keynote' | 'minimal-pill' | 'c
 
 export type CursorTheme = 'mac-obsidian' | 'neon-glow' | 'minimal-white';
 
+export type FramingMode = 'smart-fill' | 'fit';
+
 export interface TelemetryData {
   metadata: RecordingMetadata;
   mousePoints: MousePoint[];

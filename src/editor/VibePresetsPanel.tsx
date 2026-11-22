@@ -7,7 +7,8 @@ import {
   CursorTheme,
   CapturedNativeCursor,
   CaptionStyle,
-  BackdropMatrixParams
+  BackdropMatrixParams,
+  FramingMode
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
 import {
@@ -33,6 +34,8 @@ interface VibePresetsPanelProps {
   onSelectPreset: (preset: VibePreset) => void;
   aspectRatio: AspectRatioType;
   onChangeAspectRatio: (aspect: AspectRatioType) => void;
+  framingMode: FramingMode;
+  onChangeFramingMode: (mode: FramingMode) => void;
   metadata?: RecordingMetadata;
   backdropParams?: BackdropMatrixParams;
   onChangeBackdropParams?: (params: Partial<BackdropMatrixParams>) => void;
@@ -88,6 +91,8 @@ export function VibePresetsPanel({
   onSelectPreset,
   aspectRatio,
   onChangeAspectRatio,
+  framingMode,
+  onChangeFramingMode,
   metadata,
   backdropParams,
   onChangeBackdropParams,
@@ -257,6 +262,22 @@ export function VibePresetsPanel({
           >
             <Smartphone className="w-3.5 h-3.5" />
             4:5 (Instagram/LinkedIn)
+          </button>
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-1.5">
+          <button
+            type="button"
+            onClick={() => onChangeFramingMode('fit')}
+            className={`p-1.5 rounded-lg text-[11px] border ${framingMode === 'fit' ? 'bg-purple-600/30 border-purple-500 text-white' : 'bg-white/5 border-white/5 text-gray-400'}`}
+          >
+            Fit
+          </button>
+          <button
+            type="button"
+            onClick={() => onChangeFramingMode('smart-fill')}
+            className={`p-1.5 rounded-lg text-[11px] border ${framingMode === 'smart-fill' ? 'bg-purple-600/30 border-purple-500 text-white' : 'bg-white/5 border-white/5 text-gray-400'}`}
+          >
+            Smart Fill
           </button>
         </div>
       </div>

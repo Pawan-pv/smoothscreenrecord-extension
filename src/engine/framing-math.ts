@@ -1,6 +1,6 @@
-import { AspectRatioType } from '../types/telemetry';
+import { AspectRatioType, FramingMode } from '../types/telemetry';
 
-export type FramingMode = 'smart-fill' | 'fit';
+export type { FramingMode } from '../types/telemetry';
 
 export interface FrameRect {
   x: number;

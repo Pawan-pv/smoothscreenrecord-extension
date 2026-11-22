@@ -7,7 +7,8 @@ import {
   SilenceSegment,
   CaptionBlock,
   CaptionStyle,
-  CursorTheme
+  CursorTheme,
+  FramingMode
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
 import { computeCinematicCameraState } from './spring-physics';
@@ -65,6 +66,7 @@ export interface ExportOptions {
   framePadding?: number;
   backgroundColor?: string | null;
   backgroundImage?: CanvasImageSource | null;
+  framingMode?: FramingMode;
   targetWidth?: number;
   /** Cancels the export during a seek or between frames. */
   signal?: AbortSignal;
@@ -101,6 +103,7 @@ export class HardwareMp4Exporter {
       framePadding,
       backgroundColor,
       backgroundImage,
+      framingMode,
       signal,
       onProgress
     } = options;
@@ -278,6 +281,7 @@ export class HardwareMp4Exporter {
           framePadding,
           backgroundColor,
           backgroundImage,
+          framingMode,
           onProgress,
           audioTrack
         });
@@ -318,6 +322,7 @@ export class HardwareMp4Exporter {
         framePadding,
         backgroundColor,
         backgroundImage,
+        framingMode,
         onProgress
       });
     } finally {
@@ -369,6 +374,7 @@ export class HardwareMp4Exporter {
     framePadding?: number;
     backgroundColor?: string | null;
     backgroundImage?: CanvasImageSource | null;
+    framingMode?: FramingMode;
     /** Cancels the export during a seek or between frames. */
     signal?: AbortSignal;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
@@ -397,6 +403,7 @@ export class HardwareMp4Exporter {
       framePadding,
       backgroundColor,
       backgroundImage,
+      framingMode,
       metadata,
       cursorTheme,
       cursorScale,
@@ -587,7 +594,8 @@ export class HardwareMp4Exporter {
         outroCtaText,
         framePadding,
         backgroundColor,
-        backgroundImage
+        backgroundImage,
+        framingMode
       });
 
       // Encode frame
@@ -717,6 +725,7 @@ export class HardwareMp4Exporter {
     framePadding?: number;
     backgroundColor?: string | null;
     backgroundImage?: CanvasImageSource | null;
+    framingMode?: FramingMode;
     /** Cancels the export during a seek or between frames. */
     signal?: AbortSignal;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
@@ -738,6 +747,7 @@ export class HardwareMp4Exporter {
       framePadding,
       backgroundColor,
       backgroundImage,
+      framingMode,
       metadata,
       cursorTheme,
       cursorScale,
@@ -836,7 +846,8 @@ export class HardwareMp4Exporter {
         outroCtaText,
         framePadding,
         backgroundColor,
-        backgroundImage
+        backgroundImage,
+        framingMode
       });
 
       if (f % 10 === 0) {

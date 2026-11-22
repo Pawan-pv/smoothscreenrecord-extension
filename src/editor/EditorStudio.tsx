@@ -10,6 +10,7 @@ import {
   CaptionStyle,
   CursorTheme,
   CapturedNativeCursor,
+  FramingMode,
   BackdropMatrixParams
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
@@ -124,6 +125,7 @@ export function EditorStudio() {
 
   // Settings & Timeline state
   const [aspectRatio, setAspectRatio] = useState<AspectRatioType>('16:9');
+  const [framingMode, setFramingMode] = useState<FramingMode>('fit');
   const [preset, setPreset] = useState<VibePreset>(VIBE_PRESETS['keynote-pro'] || VIBE_PRESETS['linear-dark']);
   const [backdropParams, setBackdropParams] = useState<BackdropMatrixParams>(
     VIBE_PRESETS['keynote-pro']?.backdrop || {
@@ -853,6 +855,11 @@ export function EditorStudio() {
     }
   }, [clearBackgroundImage]);
 
+  const handleChangeAspectRatio = useCallback((aspect: AspectRatioType) => {
+    setAspectRatio(aspect);
+    setFramingMode(aspect === '9:16' || aspect === '4:5' ? 'smart-fill' : 'fit');
+  }, []);
+
   const handleUpdateBackdropParams = useCallback((updates: Partial<BackdropMatrixParams>) => {
     setBackdropParams((prev) => {
       const merged = { ...prev, ...updates };
@@ -1389,6 +1396,7 @@ export function EditorStudio() {
         framePadding,
         backgroundColor,
         backgroundImage,
+        framingMode,
         targetWidth: targetExportWidth,
         mediaDurationMs: mediaDurationRef.current ?? undefined,
         onProgress: (pct) => setExportProgress(pct)
@@ -1454,6 +1462,7 @@ export function EditorStudio() {
         framePadding,
         backgroundColor,
         backgroundImage,
+        framingMode,
         qualityPreset: gifPreset,
         fps: config.fps,
         maxDimension: config.maxDimension,
@@ -1743,7 +1752,9 @@ export function EditorStudio() {
           currentPreset={preset}
           onSelectPreset={handleSelectPreset}
           aspectRatio={aspectRatio}
-          onChangeAspectRatio={setAspectRatio}
+          onChangeAspectRatio={handleChangeAspectRatio}
+          framingMode={framingMode}
+          onChangeFramingMode={setFramingMode}
           metadata={telemetry?.metadata}
           backdropParams={backdropParams}
           onChangeBackdropParams={handleUpdateBackdropParams}
@@ -1809,6 +1820,7 @@ export function EditorStudio() {
           keystrokes={telemetry?.keystrokes || []}
           preset={preset}
           aspectRatio={aspectRatio}
+           framingMode={framingMode}
           backdropParams={backdropParams}
           showSpotlight={showSpotlight}
           showCursor={showCursor}

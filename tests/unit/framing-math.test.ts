@@ -52,4 +52,28 @@ describe('framing math', () => {
     expect(roundTrip.x).toBeCloseTo(source.x, 5);
     expect(roundTrip.y).toBeCloseTo(source.y, 5);
   });
+
+  it('fills portrait canvases in smart-fill while retaining a letterboxed fit mode', () => {
+    const smart = computeFrameLayout({
+      canvasW: 1080,
+      canvasH: 1920,
+      sourceW: 1920,
+      sourceH: 1080,
+      aspectRatio: '9:16',
+      framingMode: 'smart-fill',
+      framePadding: 0,
+    });
+    const fit = computeFrameLayout({
+      canvasW: 1080,
+      canvasH: 1920,
+      sourceW: 1920,
+      sourceH: 1080,
+      aspectRatio: '9:16',
+      framingMode: 'fit',
+      framePadding: 0,
+    });
+    expect(smart.window.width).toBe(1080);
+    expect(smart.window.height).toBe(1920);
+    expect(fit.window.height).toBeLessThan(smart.window.height);
+  });
 });

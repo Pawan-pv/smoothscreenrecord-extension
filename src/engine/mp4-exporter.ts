@@ -10,7 +10,7 @@ import {
   CursorTheme
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
-import { computeCinematicCameraState, SpringCameraSolver } from './spring-physics';
+import { computeCinematicCameraState } from './spring-physics';
 import { CursorSplineEngine } from './cursor-spline';
 import { diagnosticChannel } from './diagnostic-channel';
 import {
@@ -506,25 +506,12 @@ export class HardwareMp4Exporter {
       latencyMode: 'realtime'
     });
 
-    const springCamera = new SpringCameraSolver();
-    if (totalFrames > 0) {
-      const firstTarget = computeCinematicCameraState(
-        timelineTimestamps[0],
-        pills,
-        cursorEngine.getCursorAt(timelineTimestamps[0]),
-        metadata?.width || outW,
-        metadata?.height || outH,
-        true
-      );
-      springCamera.snapTo(firstTarget);
-    }
-
     try {
     for (let f = 0; f < totalFrames; f++) {
       const currentMs = timelineTimestamps[f];
 
       const cursor = cursorEngine.getCursorAt(currentMs);
-      const targetCamera = computeCinematicCameraState(
+      const camera = computeCinematicCameraState(
         currentMs,
         pills,
         cursor,
@@ -532,8 +519,6 @@ export class HardwareMp4Exporter {
         metadata?.height || outH,
         true
       );
-      springCamera.setTarget(targetCamera);
-      const camera = f === 0 ? targetCamera : springCamera.update(1 / fps);
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
 
       if (signal?.aborted) throw abortError();
@@ -789,21 +774,9 @@ export class HardwareMp4Exporter {
     mediaRecorder.start();
 
     const totalFrames = timelineTimestamps.length;
-    const springCameraFallback = new SpringCameraSolver();
     const fallbackSeeker = video instanceof HTMLVideoElement ? new VideoFrameSeeker(video) : null;
     if (fallbackSeeker) {
       await fallbackSeeker.waitUntilReady();
-    }
-    if (totalFrames > 0) {
-      const firstTarget = computeCinematicCameraState(
-        timelineTimestamps[0],
-        pills,
-        cursorEngine.getCursorAt(timelineTimestamps[0]),
-        metadata?.width || exportCanvas.width,
-        metadata?.height || exportCanvas.height,
-        true
-      );
-      springCameraFallback.snapTo(firstTarget);
     }
 
     try {
@@ -811,7 +784,7 @@ export class HardwareMp4Exporter {
       const currentMs = timelineTimestamps[f];
 
       const cursor = cursorEngine.getCursorAt(currentMs);
-      const targetCamera = computeCinematicCameraState(
+      const camera = computeCinematicCameraState(
         currentMs,
         pills,
         cursor,
@@ -819,8 +792,6 @@ export class HardwareMp4Exporter {
         metadata?.height || exportCanvas.height,
         true
       );
-      springCameraFallback.setTarget(targetCamera);
-      const camera = f === 0 ? targetCamera : springCameraFallback.update(1 / 60);
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
       if (video instanceof HTMLVideoElement && fallbackSeeker) {
         await fallbackSeeker.seekTo(currentMs / 1000);

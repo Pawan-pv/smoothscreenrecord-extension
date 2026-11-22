@@ -10,7 +10,7 @@ import {
   CursorTheme
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
-import { computeCinematicCameraState, SpringCameraSolver } from './spring-physics';
+import { computeCinematicCameraState } from './spring-physics';
 import { CursorSplineEngine } from './cursor-spline';
 import { SequentialVideoFrameSource } from './sequential-frame-source';
 import {
@@ -310,18 +310,6 @@ export class HardwareGifExporter {
     const gifWriter = new GifWriter(buffer, outW, outH, { loop: 0 });
 
     const delayHundredths = Math.max(2, Math.round(100 / fps));
-    const springCamera = new SpringCameraSolver();
-    if (totalFrames > 0) {
-      const firstTarget = computeCinematicCameraState(
-        timestamps[0],
-        pills,
-        cursorEngine.getCursorAt(timestamps[0]),
-        metadata?.width || fullW,
-        metadata?.height || fullH,
-        true
-      );
-      springCamera.snapTo(firstTarget);
-    }
 
     // Frame deduplication state machine:
     // When adjacent frames are visual duplicates, accumulate their delay instead of encoding redundant frames.
@@ -383,7 +371,7 @@ export class HardwareGifExporter {
         const currentMs = timestamps[f];
 
         const cursor = cursorEngine.getCursorAt(currentMs);
-        const targetCamera = computeCinematicCameraState(
+        const camera = computeCinematicCameraState(
           currentMs,
           pills,
           cursor,
@@ -391,8 +379,6 @@ export class HardwareGifExporter {
           metadata?.height || fullH,
           true
         );
-        springCamera.setTarget(targetCamera);
-        const camera = f === 0 ? targetCamera : springCamera.update(1 / fps);
         const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
 
         if (frameSource && stagingCanvas && stagingCtx) {

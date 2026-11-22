@@ -11,6 +11,12 @@ import {
 } from '../types/telemetry';
 import { CameraState } from './spring-physics';
 import { CursorSplineEngine, InterpolatedCursor } from './cursor-spline';
+import {
+  computeFrameLayout,
+  ensureEvenDimensions,
+  projectSourceToCanvas,
+  FramingMode
+} from './framing-math';
 
 // Ken Perlin's quintic smootherstep: zero 1st & 2nd derivatives at both ends
 function smootherstep(t: number): number {
@@ -218,6 +224,7 @@ export interface RenderFrameOptions {
   framePadding?: number; // 0..0.20 (0% to 20%, default 0.08)
   backgroundColor?: string | null;
   backgroundImage?: CanvasImageSource | null;
+  framingMode?: FramingMode;
 }
 
 export interface CoverFitResult {
@@ -269,20 +276,22 @@ export function computeCoverFit(
 }
 
 export function getAspectDimensions(aspect: AspectRatioType, targetWidth = 1920): { width: number; height: number } {
+  let raw: { width: number; height: number };
   switch (aspect) {
     case '16:9':
-      return { width: targetWidth, height: Math.round((targetWidth * 9) / 16) };
+      raw = { width: targetWidth, height: Math.round((targetWidth * 9) / 16) }; break;
     case '9:16':
-      return { width: Math.round((targetWidth * 9) / 16), height: targetWidth };
+      raw = { width: Math.round((targetWidth * 9) / 16), height: targetWidth }; break;
     case '1:1':
-      return { width: targetWidth, height: targetWidth };
+      raw = { width: targetWidth, height: targetWidth }; break;
     case '4:3':
-      return { width: targetWidth, height: Math.round((targetWidth * 3) / 4) };
+      raw = { width: targetWidth, height: Math.round((targetWidth * 3) / 4) }; break;
     case '4:5':
-      return { width: Math.round((targetWidth * 4) / 5), height: targetWidth };
+      raw = { width: Math.round((targetWidth * 4) / 5), height: targetWidth }; break;
     default:
-      return { width: 1920, height: 1080 };
+      raw = { width: 1920, height: 1080 }; break;
   }
+  return ensureEvenDimensions(raw.width, raw.height);
 }
 
 export class StudioRenderer {
@@ -434,15 +443,23 @@ export class StudioRenderer {
     const sourceH = (video as HTMLVideoElement).videoHeight || (video as HTMLCanvasElement).height || 1080;
     const videoAspect = sourceW / sourceH;
 
-    let windowW = availW;
-    let windowH = availW / videoAspect;
-    if (windowH > availH) {
-      windowH = availH;
-      windowW = availH * videoAspect;
-    }
-
-    const windowX = (canvasW - windowW) / 2;
-    const windowY = (canvasH - windowH) / 2;
+    const frameLayout = computeFrameLayout({
+      canvasW,
+      canvasH,
+      sourceW,
+      sourceH,
+      aspectRatio,
+      framingMode: options.framingMode,
+      framePadding: padFraction,
+      cameraX: camera.x,
+      cameraY: camera.y,
+      cameraScale: camera.scale,
+      introScale: 1
+    });
+    const windowX = frameLayout.window.x;
+    const windowY = frameLayout.window.y;
+    const windowW = frameLayout.window.width;
+    const windowH = frameLayout.window.height;
 
     // Ensure offscreen video canvas matches source video resolution
     if (this.offscreenVideoCanvas.width !== sourceW || this.offscreenVideoCanvas.height !== sourceH) {
@@ -533,11 +550,9 @@ export class StudioRenderer {
 
       // 5. Apply Camera Zoom & Pan Transformations
       // Clamped focal point ensures video fills window with zero blank margins
-      const S = Math.max(1.0, camera.scale);
-      const halfViewX = 0.5 / S;
-      const halfViewY = 0.5 / S;
-      const clampedCamX = Math.max(halfViewX, Math.min(1 - halfViewX, camera.x));
-      const clampedCamY = Math.max(halfViewY, Math.min(1 - halfViewY, camera.y));
+       const S = frameLayout.cameraScale;
+       const clampedCamX = frameLayout.clampedCameraX;
+       const clampedCamY = frameLayout.clampedCameraY;
 
       ctx.save();
       // Center camera onto target focal point
@@ -546,7 +561,17 @@ export class StudioRenderer {
       ctx.translate(-clampedCamX * windowW, -clampedCamY * windowH);
 
       // Draw the source video content inside the window
-      ctx.drawImage(this.offscreenVideoCanvas, 0, 0, windowW, windowH);
+      ctx.drawImage(
+        this.offscreenVideoCanvas,
+        frameLayout.sourceCrop.x,
+        frameLayout.sourceCrop.y,
+        frameLayout.sourceCrop.width,
+        frameLayout.sourceCrop.height,
+        0,
+        0,
+        windowW,
+        windowH
+      );
       ctx.restore();
 
       // 6. Render Dynamic Spotlight Mask if enabled (soft radial darkening around focal point)
@@ -571,10 +596,9 @@ export class StudioRenderer {
         const rawCursorY = cursor.y <= 1.0 ? cursor.y : (metaH > 0 ? cursor.y / metaH : cursor.y);
         const normCursorX = Math.max(0.01, Math.min(0.99, rawCursorX));
         const normCursorY = Math.max(0.01, Math.min(0.99, rawCursorY));
-
-        // Calculate cursor screen position mapped into window frame
-        const cursorScreenX = (windowW * 0.5) + (normCursorX - clampedCamX) * windowW * S;
-        const cursorScreenY = (windowH * 0.5) + (normCursorY - clampedCamY) * windowH * S;
+        const projectedCursor = projectSourceToCanvas(normCursorX, normCursorY, frameLayout);
+        const cursorScreenX = projectedCursor.x - windowX;
+        const cursorScreenY = projectedCursor.y - windowY;
 
         // Compute active click ripple positions in window screen coordinates (zero GC churn via scratch array)
         this.activeRipplesScratch.length = 0;
@@ -583,8 +607,9 @@ export class StudioRenderer {
           if (elapsed >= 0 && elapsed <= 500) {
             const clickNormX = click.x <= 1.0 ? click.x : (metaW > 0 ? click.x / metaW : click.x);
             const clickNormY = click.y <= 1.0 ? click.y : (metaH > 0 ? click.y / metaH : click.y);
-            const rx = (windowW * 0.5) + (clickNormX - clampedCamX) * windowW * S;
-            const ry = (windowH * 0.5) + (clickNormY - clampedCamY) * windowH * S;
+            const projectedClick = projectSourceToCanvas(clickNormX, clickNormY, frameLayout);
+            const rx = projectedClick.x - windowX;
+            const ry = projectedClick.y - windowY;
             this.activeRipplesScratch.push({ x: rx, y: ry, progress: elapsed / 500 });
           }
         }

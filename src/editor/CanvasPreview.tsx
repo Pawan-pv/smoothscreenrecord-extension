@@ -12,6 +12,7 @@ import {
 import { StudioRenderer, RenderFrameOptions, getAspectDimensions } from '../engine/renderer';
 import { computeCinematicCameraState, CameraState } from '../engine/spring-physics';
 import { CursorSplineEngine } from '../engine/cursor-spline';
+import { computeFrameLayout, projectSourceToCanvas, unprojectCanvasToSource, FrameLayout, FramingMode } from '../engine/framing-math';
 import { Play, Pause, RotateCcw } from 'lucide-react';
 
 function drawRoundedRect(
@@ -65,6 +66,7 @@ interface CanvasPreviewProps {
   framePadding?: number;
   backgroundColor?: string | null;
   backgroundImage?: CanvasImageSource | null;
+  framingMode?: FramingMode;
   onCanvasClickToAddZoom?: (normalizedX: number, normalizedY: number) => void;
 }
 
@@ -104,6 +106,7 @@ export function CanvasPreview({
   framePadding,
   backgroundColor,
   backgroundImage,
+  framingMode,
   onCanvasClickToAddZoom
 }: CanvasPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -111,13 +114,7 @@ export function CanvasPreview({
   const currentCameraRef = useRef<CameraState>({ x: 0.5, y: 0.5, scale: 1.0, tiltX: 0, tiltY: 0 });
   const isDraggingGizmoRef = useRef<boolean>(false);
   const dragTransformRef = useRef<{
-    S: number;
-    clampedCamX: number;
-    clampedCamY: number;
-    windowX: number;
-    windowY: number;
-    windowW: number;
-    windowH: number;
+    layout: FrameLayout;
     canvasW: number;
     rect: DOMRect;
   } | null>(null);
@@ -217,6 +214,7 @@ export function CanvasPreview({
     opts.framePadding = framePadding;
     opts.backgroundColor = backgroundColor;
     opts.backgroundImage = backgroundImage;
+    opts.framingMode = framingMode;
 
     rendererRef.current.renderFrame(opts);
 
@@ -225,38 +223,30 @@ export function CanvasPreview({
     if (selectedPill) {
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        const S = Math.max(1.0, camera.scale);
-        const halfViewX = 0.5 / S;
-        const halfViewY = 0.5 / S;
-        const clampedCamX = Math.max(halfViewX, Math.min(1 - halfViewX, camera.x));
-        const clampedCamY = Math.max(halfViewY, Math.min(1 - halfViewY, camera.y));
-
         const padFraction = typeof framePadding === 'number' && Number.isFinite(framePadding)
           ? Math.max(0, Math.min(0.2, framePadding))
           : 0.08;
-        const paddingX = targetWidth * padFraction;
-        const paddingY = targetHeight * padFraction;
-        const availW = targetWidth - paddingX * 2;
-        const availH = targetHeight - paddingY * 2;
         const sourceW = (video as HTMLVideoElement)?.videoWidth || (video as HTMLCanvasElement)?.width || 1920;
         const sourceH = (video as HTMLVideoElement)?.videoHeight || (video as HTMLCanvasElement)?.height || 1080;
-        const videoAspect = sourceW / sourceH;
-
-        let windowW = availW;
-        let windowH = availW / videoAspect;
-        if (windowH > availH) {
-          windowH = availH;
-          windowW = availH * videoAspect;
-        }
-        const windowX = (targetWidth - windowW) / 2;
-        const windowY = (targetHeight - windowH) / 2;
-
-        const gizmoCanvasX = windowX + (windowW * 0.5) + (selectedPill.targetX - clampedCamX) * windowW * S;
-        const gizmoCanvasY = windowY + (windowH * 0.5) + (selectedPill.targetY - clampedCamY) * windowH * S;
+        const layout = computeFrameLayout({
+          canvasW: targetWidth,
+          canvasH: targetHeight,
+          sourceW,
+          sourceH,
+          aspectRatio,
+          framingMode,
+          framePadding: padFraction,
+          cameraX: camera.x,
+          cameraY: camera.y,
+          cameraScale: camera.scale
+        });
+        const projected = projectSourceToCanvas(selectedPill.targetX, selectedPill.targetY, layout);
+        const gizmoCanvasX = projected.x;
+        const gizmoCanvasY = projected.y;
 
         ctx.save();
         ctx.beginPath();
-        drawRoundedRect(ctx, windowX, windowY, windowW, windowH, preset.borderRadius);
+        drawRoundedRect(ctx, layout.window.x, layout.window.y, layout.window.width, layout.window.height, preset.borderRadius);
         ctx.clip();
 
         // Outer reticle ring with glowing drop shadow
@@ -361,7 +351,8 @@ export function CanvasPreview({
     backdropParams,
     framePadding,
     backgroundColor,
-    backgroundImage
+    backgroundImage,
+    framingMode
   ]);
 
   // Support Escape to deselect active pill
@@ -387,17 +378,10 @@ export function CanvasPreview({
     const clickCanvasX = (clientX - drag.rect.left) / scaleOnScreen;
     const clickCanvasY = (clientY - drag.rect.top) / scaleOnScreen;
 
-    const clickWinX = clickCanvasX - drag.windowX;
-    const clickWinY = clickCanvasY - drag.windowY;
+    const source = unprojectCanvasToSource(clickCanvasX, clickCanvasY, drag.layout);
 
-    // Invert the camera transform captured once at pointerdown:
-    // clickWinX = windowW * 0.5 + (normX - clampedCamX) * windowW * S
-    // normX = clampedCamX + (clickWinX - windowW * 0.5) / (windowW * S)
-    const normX = drag.clampedCamX + (clickWinX - drag.windowW * 0.5) / (drag.windowW * drag.S);
-    const normY = drag.clampedCamY + (clickWinY - drag.windowH * 0.5) / (drag.windowH * drag.S);
-
-    const clampedX = Math.max(0.05, Math.min(0.95, normX));
-    const clampedY = Math.max(0.05, Math.min(0.95, normY));
+    const clampedX = Math.max(0.05, Math.min(0.95, source.x));
+    const clampedY = Math.max(0.05, Math.min(0.95, source.y));
 
     onUpdatePill({
       ...selectedPill,
@@ -417,38 +401,24 @@ export function CanvasPreview({
     const padFraction = typeof framePadding === 'number' && Number.isFinite(framePadding)
       ? Math.max(0, Math.min(0.2, framePadding))
       : 0.08;
-    const paddingX = canvasW * padFraction;
-    const paddingY = canvasH * padFraction;
-    const availW = canvasW - paddingX * 2;
-    const availH = canvasH - paddingY * 2;
     const sourceW = (video as HTMLVideoElement)?.videoWidth || (video as HTMLCanvasElement)?.width || 1920;
     const sourceH = (video as HTMLVideoElement)?.videoHeight || (video as HTMLCanvasElement)?.height || 1080;
-    const videoAspect = sourceW / sourceH;
-
-    let windowW = availW;
-    let windowH = availW / videoAspect;
-    if (windowH > availH) {
-      windowH = availH;
-      windowW = availH * videoAspect;
-    }
-    const windowX = (canvasW - windowW) / 2;
-    const windowY = (canvasH - windowH) / 2;
-
-    const S = Math.max(1.0, currentCameraRef.current.scale);
-    const halfViewX = 0.5 / S;
-    const halfViewY = 0.5 / S;
-    const clampedCamX = Math.max(halfViewX, Math.min(1 - halfViewX, currentCameraRef.current.x));
-    const clampedCamY = Math.max(halfViewY, Math.min(1 - halfViewY, currentCameraRef.current.y));
+    const layout = computeFrameLayout({
+      canvasW,
+      canvasH,
+      sourceW,
+      sourceH,
+      aspectRatio,
+      framingMode,
+      framePadding: padFraction,
+      cameraX: currentCameraRef.current.x,
+      cameraY: currentCameraRef.current.y,
+      cameraScale: currentCameraRef.current.scale
+    });
 
     // Capture the active camera transform ONCE at pointerdown to eliminate feedback-loop jitter
     dragTransformRef.current = {
-      S,
-      clampedCamX,
-      clampedCamY,
-      windowX,
-      windowY,
-      windowW,
-      windowH,
+      layout,
       canvasW,
       rect
     };
@@ -489,29 +459,28 @@ export function CanvasPreview({
     const padFraction = typeof framePadding === 'number' && Number.isFinite(framePadding)
       ? Math.max(0, Math.min(0.2, framePadding))
       : 0.08;
-    const paddingX = canvasW * padFraction;
-    const paddingY = canvasH * padFraction;
-    const availW = canvasW - paddingX * 2;
-    const availH = canvasH - paddingY * 2;
     const sourceW = (video as HTMLVideoElement).videoWidth || (video as HTMLCanvasElement).width || 1920;
     const sourceH = (video as HTMLVideoElement).videoHeight || (video as HTMLCanvasElement).height || 1080;
-    const videoAspect = sourceW / sourceH;
-
-    let windowW = availW;
-    let windowH = availW / videoAspect;
-    if (windowH > availH) {
-      windowH = availH;
-      windowW = availH * videoAspect;
-    }
-    const windowX = (canvasW - windowW) / 2;
-    const windowY = (canvasH - windowH) / 2;
+    const layout = computeFrameLayout({
+      canvasW,
+      canvasH,
+      sourceW,
+      sourceH,
+      aspectRatio,
+      framingMode,
+      framePadding: padFraction,
+      cameraX: currentCameraRef.current.x,
+      cameraY: currentCameraRef.current.y,
+      cameraScale: currentCameraRef.current.scale
+    });
 
     const scaleOnScreen = rect.width / canvasW;
     const clickCanvasX = clickX / scaleOnScreen;
     const clickCanvasY = clickY / scaleOnScreen;
 
-    const normX = Math.max(0.1, Math.min(0.9, (clickCanvasX - windowX) / windowW));
-    const normY = Math.max(0.1, Math.min(0.9, (clickCanvasY - windowY) / windowH));
+    const source = unprojectCanvasToSource(clickCanvasX, clickCanvasY, layout);
+    const normX = Math.max(0.1, Math.min(0.9, source.x));
+    const normY = Math.max(0.1, Math.min(0.9, source.y));
 
     onCanvasClickToAddZoom(normX, normY);
   };

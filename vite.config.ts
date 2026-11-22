@@ -23,7 +23,6 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       input: {
-        index: resolve(import.meta.dirname, 'index.html'),
         editor: resolve(import.meta.dirname, 'editor.html'),
         popup: resolve(import.meta.dirname, 'popup.html'),
         'background/service-worker': resolve(import.meta.dirname, 'src/background/service-worker.ts')

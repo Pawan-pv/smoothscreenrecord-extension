@@ -182,6 +182,7 @@ export class ScreenCaptureEngine {
     this.lastSnapshotAt = 0;
     this.snapshotErrorReported = false;
     this.lastBlob = null;
+    this.capturedNativeCursor = 'unknown';
     this.stopPromise = null;
     this.recordingDurationMs = 0;
     this.pumpFrameCount = 0;

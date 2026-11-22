@@ -215,6 +215,12 @@ export class HardwareMp4Exporter {
           .filter((s) => s.endTime > s.startTime)
       : [];
 
+    cursorEngine.setOptions({
+      cutRanges: activeCutSilences,
+      trimStartMs: effTrimStart,
+      trimEndMs: effTrimEnd
+    });
+
     const audioTrack = decodedPcm
       ? cutPcmToKeepRanges(decodedPcm, keepRangesFromCuts(activeCutSilences, timelineDurationMs, effTrimStart, effTrimEnd))
       : null;
@@ -564,6 +570,7 @@ export class HardwareMp4Exporter {
         aspectRatio,
         showSpotlight,
         showCursor,
+        outputFps: 60,
         showHud,
         metadata,
         cursorTheme,
@@ -812,6 +819,7 @@ export class HardwareMp4Exporter {
         aspectRatio,
         showSpotlight,
         showCursor,
+        outputFps: 60,
         showHud,
         metadata,
         cursorTheme,

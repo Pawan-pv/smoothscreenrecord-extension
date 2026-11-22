@@ -198,6 +198,7 @@ export interface RenderFrameOptions {
   aspectRatio: AspectRatioType;
   showSpotlight: boolean;
   showCursor: boolean;
+  outputFps?: number;
   showHud: boolean;
   metadata?: { width: number; height: number };
   cursorTheme?: CursorTheme;
@@ -598,7 +599,12 @@ export class StudioRenderer {
           this.activeRipplesScratch,
           cursorTheme || 'mac-obsidian',
           cursorScale || 1.0,
-          Math.max(0.75, Math.min(2, Math.max(canvasW, canvasH) / 1920))
+          Math.max(0.75, Math.min(2, Math.max(canvasW, canvasH) / 1920)),
+          cursorEngine.getTrailAt(currentTimeMs, 4, options.outputFps || 60).map((trailCursor) => ({
+            x: (windowW * 0.5) + (Math.max(0.01, Math.min(0.99, trailCursor.x)) - clampedCamX) * windowW * S,
+            y: (windowH * 0.5) + (Math.max(0.01, Math.min(0.99, trailCursor.y)) - clampedCamY) * windowH * S,
+            opacity: trailCursor.opacity
+          }))
         );
       }
 

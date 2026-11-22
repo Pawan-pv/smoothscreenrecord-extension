@@ -166,6 +166,7 @@ export function EditorStudio() {
   // Cursor & Auto-Captions State
   const [cursorTheme, setCursorTheme] = useState<CursorTheme>('mac-obsidian');
   const [cursorScale, setCursorScale] = useState<number>(1.2);
+  const [cursorSmoothing, setCursorSmoothing] = useState<number>(0.6);
   const [showCaptions, setShowCaptions] = useState<boolean>(true);
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>('tiktok-bold');
   const [captionBackdrop, setCaptionBackdrop] = useState<number>(70);
@@ -197,6 +198,14 @@ export function EditorStudio() {
   const audioProcessorRef = useRef<AudioProcessor>(new AudioProcessor());
   const sfxSynthesizerRef = useRef<SfxSynthesizer>(new SfxSynthesizer(true));
   const captureEngineRef = useRef<ScreenCaptureEngine>(new ScreenCaptureEngine());
+  useEffect(() => {
+    cursorEngineRef.current.setOptions({
+      smoothing: cursorSmoothing,
+      cutRanges: autoCutSilences ? silences.filter((silence) => silence.markedForCut) : [],
+      trimStartMs,
+      trimEndMs
+    });
+  }, [autoCutSilences, cursorSmoothing, silences, trimEndMs, trimStartMs]);
   useEffect(() => {
     // Test hooks exist only in the Vite dev server. The `if` is dead-code
     // eliminated in production builds, so none of these globals ship.
@@ -1721,6 +1730,8 @@ export function EditorStudio() {
           onChangeCursorTheme={setCursorTheme}
           cursorScale={cursorScale}
           onChangeCursorScale={setCursorScale}
+           cursorSmoothing={cursorSmoothing}
+           onChangeCursorSmoothing={setCursorSmoothing}
            capturedNativeCursor={telemetry?.metadata?.capturedNativeCursor}
           showCaptions={showCaptions}
           onToggleCaptions={setShowCaptions}

@@ -294,6 +294,12 @@ export class HardwareGifExporter {
           .filter((s) => s.endTime > s.startTime)
       : [];
 
+    cursorEngine.setOptions({
+      cutRanges: cutIntervals,
+      trimStartMs: effTrimStart,
+      trimEndMs: effTrimEnd
+    });
+
     for (let t = effTrimStart; t <= effTrimEnd; t += frameIntervalMs) {
       const inCut = cutIntervals.some((c) => t >= c.startTime && t <= c.endTime);
       if (!inCut) {
@@ -441,6 +447,7 @@ export class HardwareGifExporter {
           aspectRatio,
           showSpotlight,
           showCursor,
+          outputFps: fps,
           showHud,
           metadata,
           cursorTheme,

@@ -53,6 +53,8 @@ interface VibePresetsPanelProps {
   onChangeCursorTheme: (theme: CursorTheme) => void;
   cursorScale: number;
   onChangeCursorScale: (scale: number) => void;
+  cursorSmoothing: number;
+  onChangeCursorSmoothing: (value: number) => void;
   capturedNativeCursor?: CapturedNativeCursor;
   showCaptions: boolean;
   onToggleCaptions: (val: boolean) => void;
@@ -105,6 +107,8 @@ export function VibePresetsPanel({
   onChangeCursorTheme,
   cursorScale,
   onChangeCursorScale,
+  cursorSmoothing,
+  onChangeCursorSmoothing,
   capturedNativeCursor,
   showCaptions,
   onToggleCaptions,
@@ -652,6 +656,22 @@ export function VibePresetsPanel({
             className="w-full accent-purple-500"
           />
         </div>
+        <div className="space-y-1">
+          <div className="flex justify-between text-[11px] text-gray-400">
+            <span>Cursor Smoothing</span>
+            <span className="text-purple-300">{cursorSmoothing < 0.34 ? 'Crisp' : cursorSmoothing < 0.75 ? 'Smooth' : 'Cinematic'}</span>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={cursorSmoothing}
+            onChange={(e) => onChangeCursorSmoothing(parseFloat(e.target.value))}
+            className="w-full accent-purple-500"
+            aria-label="Cursor Smoothing"
+          />
+        </div>
       </div>
 
       {/* TikTok / Reels Auto-Captions */}
@@ -758,9 +778,8 @@ export function VibePresetsPanel({
             type="checkbox"
             checked={showCursor}
             onChange={(e) => onToggleCursor(e.target.checked)}
-            disabled={metadata?.displaySurface === 'window' || metadata?.displaySurface === 'monitor'}
-            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0 disabled:opacity-40"
-            title={metadata?.displaySurface === 'window' || metadata?.displaySurface === 'monitor' ? 'Disabled in window/monitor capture (native cursor baked by OS)' : undefined}
+            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+            title={capturedNativeCursor === 'always' || capturedNativeCursor === 'motion' ? 'Native cursor was detected; enabling this may show both cursors.' : undefined}
           />
         </label>
 

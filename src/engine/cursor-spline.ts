@@ -10,6 +10,13 @@ export interface InterpolatedCursor {
   opacity: number;
 }
 
+export interface CursorSplineOptions {
+  smoothing?: number;
+  cutRanges?: Array<{ startTime: number; endTime: number }>;
+  trimStartMs?: number;
+  trimEndMs?: number;
+}
+
 export const CURSOR_IDLE_TIMEOUT_MS = 1500;
 export const CURSOR_IDLE_FADE_MS = 300;
 
@@ -33,15 +40,18 @@ export class CursorSplineEngine {
   private clicks: ClickEvent[] = [];
   private pressEvents: PressEvent[] = [];
   private activityTimestamps: number[] = [];
+  private smoothing = 0.6;
+  private cutRanges: Array<{ startTime: number; endTime: number }> = [];
 
-  constructor(mousePoints: MousePoint[] = [], clicks: ClickEvent[] = [], pressEvents: PressEvent[] = []) {
-    this.setData(mousePoints, clicks, pressEvents);
+  constructor(mousePoints: MousePoint[] = [], clicks: ClickEvent[] = [], pressEvents: PressEvent[] = [], options: CursorSplineOptions = {}) {
+    this.setData(mousePoints, clicks, pressEvents, options);
   }
 
-  public setData(mousePoints: MousePoint[], clicks: ClickEvent[], pressEvents: PressEvent[] = []) {
+  public setData(mousePoints: MousePoint[], clicks: ClickEvent[], pressEvents: PressEvent[] = [], options: CursorSplineOptions = {}) {
     this.mousePoints = [...mousePoints].sort((a, b) => a.t - b.t);
     this.clicks = [...clicks].sort((a, b) => a.t - b.t);
     this.pressEvents = [...pressEvents].sort((a, b) => a.t - b.t);
+    this.setOptions(options);
 
     const activities: number[] = [];
     for (const c of this.clicks) {
@@ -63,6 +73,18 @@ export class CursorSplineEngine {
 
     activities.sort((a, b) => a - b);
     this.activityTimestamps = activities.filter((t, idx) => idx === 0 || t !== activities[idx - 1]);
+  }
+
+  public setOptions(options: CursorSplineOptions = {}): void {
+    if (typeof options.smoothing === 'number' && Number.isFinite(options.smoothing)) {
+      this.smoothing = Math.max(0, Math.min(1, options.smoothing));
+    }
+    if (options.cutRanges) {
+      this.cutRanges = options.cutRanges
+        .filter((range) => Number.isFinite(range.startTime) && Number.isFinite(range.endTime) && range.endTime > range.startTime)
+        .map((range) => ({ startTime: range.startTime, endTime: range.endTime }))
+        .sort((a, b) => a.startTime - b.startTime);
+    }
   }
 
   public getCursorOpacityAt(timeMs: number): number {
@@ -114,6 +136,21 @@ export class CursorSplineEngine {
       return { x: p.x, y: p.y, style: p.c, vx: 0, vy: 0, speed: 0, opacity };
     }
 
+    const seamCut = this.cutRanges.find((range) => timeMs >= range.startTime && timeMs <= range.endTime + 80);
+    if (seamCut) {
+      const postCut = this.mousePoints.find((point) => point.t >= seamCut.endTime) || this.mousePoints[this.mousePoints.length - 1];
+      const seamProgress = timeMs <= seamCut.endTime ? 0 : Math.min(1, (timeMs - seamCut.endTime) / 80);
+      return {
+        x: postCut.x,
+        y: postCut.y,
+        style: postCut.c,
+        vx: 0,
+        vy: 0,
+        speed: 0,
+        opacity: opacity * seamProgress
+      };
+    }
+
     const last = this.mousePoints[this.mousePoints.length - 1];
     if (timeMs >= last.t) {
       return { x: last.x, y: last.y, style: last.c, vx: 0, vy: 0, speed: 0, opacity };
@@ -144,6 +181,19 @@ export class CursorSplineEngine {
     const p2 = this.mousePoints[i2];
     const p3 = this.mousePoints[i3];
 
+    const crossesCut = this.cutRanges.some((range) => p1.t < range.startTime && p2.t > range.endTime);
+    if (crossesCut) {
+      return {
+        x: timeMs < (this.cutRanges.find((range) => p1.t < range.startTime && p2.t > range.endTime)?.startTime || timeMs) ? p1.x : p2.x,
+        y: timeMs < (this.cutRanges.find((range) => p1.t < range.startTime && p2.t > range.endTime)?.startTime || timeMs) ? p1.y : p2.y,
+        style: timeMs < (this.cutRanges.find((range) => p1.t < range.startTime && p2.t > range.endTime)?.startTime || timeMs) ? p1.c : p2.c,
+        vx: 0,
+        vy: 0,
+        speed: 0,
+        opacity
+      };
+    }
+
     const segmentDuration = p2.t - p1.t;
     const t = segmentDuration > 0 ? (timeMs - p1.t) / segmentDuration : 0;
     const clampedT = Math.max(0, Math.min(1, t));
@@ -151,12 +201,16 @@ export class CursorSplineEngine {
     // Use Catmull-Rom for rapid 120Hz micro-movements (< 120ms), linear blend for pauses to prevent spline overshooting
     let x: number;
     let y: number;
+    const linearX = p1.x + (p2.x - p1.x) * clampedT;
+    const linearY = p1.y + (p2.y - p1.y) * clampedT;
     if (segmentDuration > 120) {
-      x = p1.x + (p2.x - p1.x) * clampedT;
-      y = p1.y + (p2.y - p1.y) * clampedT;
+      x = linearX;
+      y = linearY;
     } else {
-      x = catmullRom(p0.x, p1.x, p2.x, p3.x, clampedT);
-      y = catmullRom(p0.y, p1.y, p2.y, p3.y, clampedT);
+      const splineX = catmullRom(p0.x, p1.x, p2.x, p3.x, clampedT);
+      const splineY = catmullRom(p0.y, p1.y, p2.y, p3.y, clampedT);
+      x = linearX + (splineX - linearX) * this.smoothing;
+      y = linearY + (splineY - linearY) * this.smoothing;
     }
 
     // Calculate instantaneous velocity in pixels/second
@@ -188,6 +242,21 @@ export class CursorSplineEngine {
     return latestClick ? getPressScale((timeMs - latestClick.t) / 140) : 1;
   }
 
+  public getTrailAt(timeMs: number, maxSamples = 4, outputFps = 60): InterpolatedCursor[] {
+    if (outputFps <= 20) return [];
+    const current = this.getCursorAt(timeMs);
+    if (current.speed * 1920 <= 350 || current.opacity <= 0.001) return [];
+    const trail: InterpolatedCursor[] = [];
+    const sampleMs = 1000 / Math.max(30, outputFps);
+    for (let i = 1; i <= maxSamples; i++) {
+      const sampleTime = timeMs - sampleMs * i;
+      if (this.cutRanges.some((range) => sampleTime <= range.endTime + 120 && timeMs >= range.startTime)) return [];
+      const sample = this.getCursorAt(sampleTime);
+      trail.push({ ...sample, opacity: current.opacity * (1 - i / (maxSamples + 1)) * 0.24 });
+    }
+    return trail;
+  }
+
   // Draw crisp 4K vector cursor and physics click ripple rings at specific screen coordinates
   public drawCursorAt(
     ctx: CanvasRenderingContext2D,
@@ -199,7 +268,8 @@ export class CursorSplineEngine {
     activeRipples?: { x: number; y: number; progress: number }[],
     theme: CursorTheme = 'mac-obsidian',
     cursorScale: number = 1.0,
-    canvasScale: number = 1.0
+    canvasScale: number = 1.0,
+    trailPoints: Array<{ x: number; y: number; opacity: number }> = []
   ): void {
     ctx.save();
 
@@ -240,6 +310,24 @@ export class CursorSplineEngine {
     ctx.globalAlpha = Math.max(0, Math.min(1, ctx.globalAlpha * cursorOpacity));
     const pressScale = this.getPressScaleAt(currentTimeMs);
     const outputScale = Math.max(0.75, Math.min(2, canvasScale));
+
+    if (trailPoints.length > 1) {
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 3 * cursorScale * outputScale;
+      for (let i = trailPoints.length - 1; i > 0; i--) {
+        const from = trailPoints[i];
+        const to = trailPoints[i - 1];
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(to.x, to.y);
+        ctx.strokeStyle = theme === 'neon-glow' ? 'rgba(168, 85, 247, 0.35)' : 'rgba(255, 255, 255, 0.20)';
+        ctx.globalAlpha = Math.max(0, Math.min(1, from.opacity));
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
 
     // Handles normalized (0..1) speeds (scaled to ~1920px equivalent) as well as legacy pixel speeds
     const effectiveSpeed = cursor.x <= 1.0 ? cursor.speed * 1920 : cursor.speed;

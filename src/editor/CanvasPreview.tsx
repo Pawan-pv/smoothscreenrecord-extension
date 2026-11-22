@@ -140,7 +140,8 @@ export function CanvasPreview({
     aspectRatio: '16:9',
     showSpotlight: true,
     showCursor: true,
-    showHud: true
+    showHud: true,
+    outputFps: 60
   });
 
   // Render preview frame whenever currentTimeMs, preset, or props change
@@ -196,6 +197,7 @@ export function CanvasPreview({
     opts.aspectRatio = aspectRatio;
     opts.showSpotlight = showSpotlight;
     opts.showCursor = showCursor;
+    opts.outputFps = 60;
     opts.showHud = showHud;
     opts.metadata = metadata;
     opts.cursorTheme = cursorTheme;

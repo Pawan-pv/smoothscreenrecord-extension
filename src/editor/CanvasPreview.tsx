@@ -10,9 +10,24 @@ import {
   BackdropMatrixParams
 } from '../types/telemetry';
 import { StudioRenderer, RenderFrameOptions, getAspectDimensions } from '../engine/renderer';
-import { computeCinematicCameraState, SpringCameraSolver } from '../engine/spring-physics';
+import { computeCinematicCameraState, CameraState } from '../engine/spring-physics';
 import { CursorSplineEngine } from '../engine/cursor-spline';
 import { Play, Pause, RotateCcw } from 'lucide-react';
+
+function drawRoundedRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number
+) {
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(x, y, w, h, r);
+  } else {
+    ctx.rect(x, y, w, h);
+  }
+}
 
 interface CanvasPreviewProps {
   video: HTMLVideoElement | HTMLCanvasElement | null;
@@ -22,6 +37,9 @@ interface CanvasPreviewProps {
   onTogglePlay: () => void;
   onRestart: () => void;
   pills: ZoomPill[];
+  selectedPillId?: string | null;
+  onSelectPill?: (id: string | null) => void;
+  onUpdatePill?: (pill: ZoomPill) => void;
   cursorEngine: CursorSplineEngine;
   keystrokes: KeystrokeEvent[];
   preset: VibePreset;
@@ -58,6 +76,9 @@ export function CanvasPreview({
   onTogglePlay,
   onRestart,
   pills,
+  selectedPillId,
+  onSelectPill,
+  onUpdatePill,
   cursorEngine,
   keystrokes,
   preset,
@@ -87,8 +108,19 @@ export function CanvasPreview({
 }: CanvasPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<StudioRenderer>(new StudioRenderer());
-  const springCameraRef = useRef<SpringCameraSolver>(new SpringCameraSolver());
-  const lastTimeMsRef = useRef<number>(currentTimeMs);
+  const currentCameraRef = useRef<CameraState>({ x: 0.5, y: 0.5, scale: 1.0, tiltX: 0, tiltY: 0 });
+  const isDraggingGizmoRef = useRef<boolean>(false);
+  const dragTransformRef = useRef<{
+    S: number;
+    clampedCamX: number;
+    clampedCamY: number;
+    windowX: number;
+    windowY: number;
+    windowW: number;
+    windowH: number;
+    canvasW: number;
+    rect: DOMRect;
+  } | null>(null);
 
   // Memoize aspect dimensions to eliminate GC allocations per render
   const { width: targetWidth, height: targetHeight } = useMemo(
@@ -136,9 +168,10 @@ export function CanvasPreview({
       return;
     }
 
-    // Compute continuous, buttery-smooth cinematic camera framing and cursor tracking
+    // Direct analytical cinematic camera evaluation: guarantees 100% identical camera
+    // framing across 60Hz/120Hz preview, 60fps MP4, and 15fps GIF with zero drift.
     const cursor = cursorEngine.getCursorAt(currentTimeMs);
-    const targetCamera = computeCinematicCameraState(
+    const camera = computeCinematicCameraState(
       currentTimeMs,
       pills,
       cursor,
@@ -146,21 +179,7 @@ export function CanvasPreview({
       metadata?.height || targetHeight,
       followCursor
     );
-
-    const solver = springCameraRef.current;
-    solver.setTarget(targetCamera);
-
-    const deltaMs = Math.abs(currentTimeMs - lastTimeMsRef.current);
-    if (!isPlaying) {
-      // Paused / scrubbing: snap instantly so the framing tracks the playhead exactly
-      solver.snapTo(targetCamera);
-    } else {
-      // Playing: always advance the physical spring with the clamped frame step.
-      const stepDt = Math.min(0.048, Math.max(0.016, deltaMs / 1000));
-      solver.update(stepDt);
-    }
-    lastTimeMsRef.current = currentTimeMs;
-    const camera = isPlaying ? solver.getState() : targetCamera;
+    currentCameraRef.current = camera;
 
     const activePill = pills.find((p) => currentTimeMs >= p.startTime && currentTimeMs <= p.endTime);
 
@@ -198,6 +217,116 @@ export function CanvasPreview({
     opts.backgroundImage = backgroundImage;
 
     rendererRef.current.renderFrame(opts);
+
+    // Render interactive focal target crosshair/ring when a pill is selected
+    const selectedPill = pills.find((p) => p.id === selectedPillId);
+    if (selectedPill) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const S = Math.max(1.0, camera.scale);
+        const halfViewX = 0.5 / S;
+        const halfViewY = 0.5 / S;
+        const clampedCamX = Math.max(halfViewX, Math.min(1 - halfViewX, camera.x));
+        const clampedCamY = Math.max(halfViewY, Math.min(1 - halfViewY, camera.y));
+
+        const padFraction = typeof framePadding === 'number' && Number.isFinite(framePadding)
+          ? Math.max(0, Math.min(0.2, framePadding))
+          : 0.08;
+        const paddingX = targetWidth * padFraction;
+        const paddingY = targetHeight * padFraction;
+        const availW = targetWidth - paddingX * 2;
+        const availH = targetHeight - paddingY * 2;
+        const sourceW = (video as HTMLVideoElement)?.videoWidth || (video as HTMLCanvasElement)?.width || 1920;
+        const sourceH = (video as HTMLVideoElement)?.videoHeight || (video as HTMLCanvasElement)?.height || 1080;
+        const videoAspect = sourceW / sourceH;
+
+        let windowW = availW;
+        let windowH = availW / videoAspect;
+        if (windowH > availH) {
+          windowH = availH;
+          windowW = availH * videoAspect;
+        }
+        const windowX = (targetWidth - windowW) / 2;
+        const windowY = (targetHeight - windowH) / 2;
+
+        const gizmoCanvasX = windowX + (windowW * 0.5) + (selectedPill.targetX - clampedCamX) * windowW * S;
+        const gizmoCanvasY = windowY + (windowH * 0.5) + (selectedPill.targetY - clampedCamY) * windowH * S;
+
+        ctx.save();
+        ctx.beginPath();
+        drawRoundedRect(ctx, windowX, windowY, windowW, windowH, preset.borderRadius);
+        ctx.clip();
+
+        // Outer reticle ring with glowing drop shadow
+        const ringRadius = 24;
+        ctx.beginPath();
+        ctx.arc(gizmoCanvasX, gizmoCanvasY, ringRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = '#A855F7';
+        ctx.lineWidth = 3;
+        ctx.shadowColor = 'rgba(168, 85, 247, 0.7)';
+        ctx.shadowBlur = 10;
+        ctx.stroke();
+
+        // Center dot
+        ctx.beginPath();
+        ctx.arc(gizmoCanvasX, gizmoCanvasY, 6, 0, Math.PI * 2);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.shadowColor = '#A855F7';
+        ctx.shadowBlur = 6;
+        ctx.fill();
+
+        // Crosshair ticks
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = '#C084FC';
+        ctx.lineWidth = 2;
+        const tickGap = 28;
+        const tickLen = 12;
+
+        ctx.beginPath();
+        ctx.moveTo(gizmoCanvasX, gizmoCanvasY - tickGap);
+        ctx.lineTo(gizmoCanvasX, gizmoCanvasY - tickGap - tickLen);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(gizmoCanvasX, gizmoCanvasY + tickGap);
+        ctx.lineTo(gizmoCanvasX, gizmoCanvasY + tickGap + tickLen);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(gizmoCanvasX - tickGap, gizmoCanvasY);
+        ctx.lineTo(gizmoCanvasX - tickGap - tickLen, gizmoCanvasY);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(gizmoCanvasX + tickGap, gizmoCanvasY);
+        ctx.lineTo(gizmoCanvasX + tickGap + tickLen, gizmoCanvasY);
+        ctx.stroke();
+
+        // Badge showing target coordinates
+        const badgeText = `Target: (${Math.round(selectedPill.targetX * 100)}%, ${Math.round(selectedPill.targetY * 100)}%)`;
+        ctx.font = '600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        const textMetrics = ctx.measureText(badgeText);
+        const badgeW = textMetrics.width + 16;
+        const badgeH = 22;
+        const badgeX = gizmoCanvasX - badgeW / 2;
+        const badgeY = gizmoCanvasY + ringRadius + 14;
+
+        ctx.fillStyle = 'rgba(15, 17, 26, 0.88)';
+        ctx.strokeStyle = 'rgba(168, 85, 247, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        drawRoundedRect(ctx, badgeX, badgeY, badgeW, badgeH, 6);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#E9D5FF';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badgeText, gizmoCanvasX, badgeY + badgeH / 2);
+
+        ctx.restore();
+      }
+    }
   }, [
     currentTimeMs,
     video,
@@ -206,6 +335,7 @@ export function CanvasPreview({
     targetWidth,
     targetHeight,
     pills,
+    selectedPillId,
     showSpotlight,
     showCursor,
     showHud,
@@ -232,7 +362,121 @@ export function CanvasPreview({
     backgroundImage
   ]);
 
+  // Support Escape to deselect active pill
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (selectedPillId && onSelectPill) {
+          onSelectPill(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedPillId, onSelectPill]);
+
+  const updateFocalTargetFromPointer = (clientX: number, clientY: number) => {
+    const drag = dragTransformRef.current;
+    if (!drag || !selectedPillId || !onUpdatePill) return;
+    const selectedPill = pills.find((p) => p.id === selectedPillId);
+    if (!selectedPill) return;
+
+    const scaleOnScreen = drag.rect.width / drag.canvasW;
+    const clickCanvasX = (clientX - drag.rect.left) / scaleOnScreen;
+    const clickCanvasY = (clientY - drag.rect.top) / scaleOnScreen;
+
+    const clickWinX = clickCanvasX - drag.windowX;
+    const clickWinY = clickCanvasY - drag.windowY;
+
+    // Invert the camera transform captured once at pointerdown:
+    // clickWinX = windowW * 0.5 + (normX - clampedCamX) * windowW * S
+    // normX = clampedCamX + (clickWinX - windowW * 0.5) / (windowW * S)
+    const normX = drag.clampedCamX + (clickWinX - drag.windowW * 0.5) / (drag.windowW * drag.S);
+    const normY = drag.clampedCamY + (clickWinY - drag.windowH * 0.5) / (drag.windowH * drag.S);
+
+    const clampedX = Math.max(0.05, Math.min(0.95, normX));
+    const clampedY = Math.max(0.05, Math.min(0.95, normY));
+
+    onUpdatePill({
+      ...selectedPill,
+      targetX: clampedX,
+      targetY: clampedY
+    });
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!canvasRef.current || !video) return;
+    const selectedPill = pills.find((p) => p.id === selectedPillId);
+    if (!selectedPill || !onUpdatePill) return;
+
+    const rect = canvasRef.current.getBoundingClientRect();
+    const canvasW = canvasRef.current.width;
+    const canvasH = canvasRef.current.height;
+    const padFraction = typeof framePadding === 'number' && Number.isFinite(framePadding)
+      ? Math.max(0, Math.min(0.2, framePadding))
+      : 0.08;
+    const paddingX = canvasW * padFraction;
+    const paddingY = canvasH * padFraction;
+    const availW = canvasW - paddingX * 2;
+    const availH = canvasH - paddingY * 2;
+    const sourceW = (video as HTMLVideoElement)?.videoWidth || (video as HTMLCanvasElement)?.width || 1920;
+    const sourceH = (video as HTMLVideoElement)?.videoHeight || (video as HTMLCanvasElement)?.height || 1080;
+    const videoAspect = sourceW / sourceH;
+
+    let windowW = availW;
+    let windowH = availW / videoAspect;
+    if (windowH > availH) {
+      windowH = availH;
+      windowW = availH * videoAspect;
+    }
+    const windowX = (canvasW - windowW) / 2;
+    const windowY = (canvasH - windowH) / 2;
+
+    const S = Math.max(1.0, currentCameraRef.current.scale);
+    const halfViewX = 0.5 / S;
+    const halfViewY = 0.5 / S;
+    const clampedCamX = Math.max(halfViewX, Math.min(1 - halfViewX, currentCameraRef.current.x));
+    const clampedCamY = Math.max(halfViewY, Math.min(1 - halfViewY, currentCameraRef.current.y));
+
+    // Capture the active camera transform ONCE at pointerdown to eliminate feedback-loop jitter
+    dragTransformRef.current = {
+      S,
+      clampedCamX,
+      clampedCamY,
+      windowX,
+      windowY,
+      windowW,
+      windowH,
+      canvasW,
+      rect
+    };
+    isDraggingGizmoRef.current = true;
+    try {
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {}
+
+    updateFocalTargetFromPointer(e.clientX, e.clientY);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isDraggingGizmoRef.current) return;
+    updateFocalTargetFromPointer(e.clientX, e.clientY);
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (isDraggingGizmoRef.current) {
+      isDraggingGizmoRef.current = false;
+      dragTransformRef.current = null;
+      try {
+        (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {}
+    }
+  };
+
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // When a pill is selected, pointerdown handles updating targetX/targetY;
+    // do not create a duplicate pill!
+    if (selectedPillId) return;
     if (!canvasRef.current || !onCanvasClickToAddZoom || !video) return;
     const rect = canvasRef.current.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
@@ -279,8 +523,15 @@ export function CanvasPreview({
           width={targetWidth}
           height={targetHeight}
           onClick={handleCanvasClick}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
           className="max-h-[68vh] max-w-full object-contain cursor-crosshair rounded-2xl"
-          title="Click anywhere on preview to create a custom Zoom Focus at that point"
+          title={
+            selectedPillId
+              ? 'Drag or click anywhere on preview to reposition the selected Zoom Focus focal target (Esc to deselect)'
+              : 'Click anywhere on preview to create a custom Zoom Focus at that point'
+          }
         />
 
         {/* Quick Playback Overlay Button */}

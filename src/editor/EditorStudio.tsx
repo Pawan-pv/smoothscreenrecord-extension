@@ -134,6 +134,7 @@ export function EditorStudio() {
     }
   );
   const [pills, setPills] = useState<ZoomPill[]>([]);
+  const [selectedPillId, setSelectedPillId] = useState<string | null>(null);
   const [silences, setSilences] = useState<SilenceSegment[]>([]);
   const [autoCutSilences, setAutoCutSilences] = useState<boolean>(false);
   const [showSpotlight, setShowSpotlight] = useState<boolean>(true);
@@ -573,7 +574,9 @@ export function EditorStudio() {
       data.inputEvents || [],
       safeDuration,
       data.metadata?.width || 1920,
-      data.metadata?.height || 1080
+      data.metadata?.height || 1080,
+      data.scrollEvents,
+      data.typingSessions
     );
     setPills(autoPills);
     if (import.meta.env.DEV) (window as any).__smoothstudio_pills = autoPills;
@@ -1178,6 +1181,26 @@ export function EditorStudio() {
 
   const handleDeletePill = (id: string) => {
     setPills((prev) => prev.filter((p) => p.id !== id));
+    if (selectedPillId === id) setSelectedPillId(null);
+  };
+
+  const handleRedetectZooms = () => {
+    if (!telemetry) return;
+    const safeDuration = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000;
+    const autoPills = generateAutoZoomPills(
+      telemetry.clicks || [],
+      telemetry.inputEvents || [],
+      safeDuration,
+      telemetry.metadata?.width || 1920,
+      telemetry.metadata?.height || 1080,
+      telemetry.scrollEvents,
+      telemetry.typingSessions
+    );
+    setPills(autoPills);
+    if (selectedPillId && !autoPills.some((p) => p.id === selectedPillId)) {
+      setSelectedPillId(null);
+    }
+    if (import.meta.env.DEV) (window as any).__smoothstudio_pills = autoPills;
   };
 
   // Timeline seek: reset SFX dedup so re-scrubbing can re-arm event triggers
@@ -1734,6 +1757,9 @@ export function EditorStudio() {
           onTogglePlay={handleTogglePlay}
           onRestart={handleRestart}
           pills={pills}
+          selectedPillId={selectedPillId}
+          onSelectPill={setSelectedPillId}
+          onUpdatePill={handleUpdatePill}
           cursorEngine={cursorEngineRef.current}
           keystrokes={telemetry?.keystrokes || []}
           preset={preset}
@@ -1820,6 +1846,9 @@ export function EditorStudio() {
         onUpdateTrim={handleUpdateTrim}
         onResetTrim={handleResetTrim}
         pills={pills}
+        selectedPillId={selectedPillId}
+        onSelectPill={setSelectedPillId}
+        onRedetectZooms={handleRedetectZooms}
         onUpdatePill={handleUpdatePill}
         onDeletePill={handleDeletePill}
         onAddPillAtPlayhead={() => handleAddPillAtPlayhead(0.5, 0.5)}

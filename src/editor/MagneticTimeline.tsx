@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { ZoomPill, SilenceSegment, KeystrokeEvent, CaptionBlock } from '../types/telemetry';
-import { Scissors, Plus, Trash2, Eye, Box, Sliders, Subtitles, RotateCcw } from 'lucide-react';
+import { Scissors, Plus, Trash2, Eye, Box, Sliders, Subtitles, RotateCcw, Sparkles } from 'lucide-react';
 
 interface MagneticTimelineProps {
   durationMs: number;
@@ -9,6 +9,9 @@ interface MagneticTimelineProps {
   onTogglePlay: () => void;
   onSeek: (timeMs: number) => void;
   pills: ZoomPill[];
+  selectedPillId?: string | null;
+  onSelectPill?: (id: string | null) => void;
+  onRedetectZooms?: () => void;
   onUpdatePill: (pill: ZoomPill) => void;
   onDeletePill: (id: string) => void;
   onAddPillAtPlayhead: () => void;
@@ -38,6 +41,9 @@ export function MagneticTimeline({
   onTogglePlay,
   onSeek,
   pills,
+  selectedPillId,
+  onSelectPill,
+  onRedetectZooms,
   onUpdatePill,
   onDeletePill,
   onAddPillAtPlayhead,
@@ -59,7 +65,12 @@ export function MagneticTimeline({
   onResetTrim
 }: MagneticTimelineProps) {
   const timelineRef = useRef<HTMLDivElement>(null);
-  const [selectedPillId, setSelectedPillId] = useState<string | null>(null);
+  const [internalSelectedPillId, setInternalSelectedPillId] = useState<string | null>(null);
+  const currentSelectedPillId = selectedPillId !== undefined ? selectedPillId : internalSelectedPillId;
+  const setSelectedPillId = (id: string | null) => {
+    setInternalSelectedPillId(id);
+    onSelectPill?.(id);
+  };
   const [selectedCaptionId, setSelectedCaptionId] = useState<string | null>(null);
   const [resizingPill, setResizingPill] = useState<{ id: string; edge: 'start' | 'end' } | null>(null);
   const [resizingCaption, setResizingCaption] = useState<{ id: string; edge: 'start' | 'end' } | null>(null);
@@ -165,7 +176,7 @@ export function MagneticTimeline({
     onSeek
   ]);
 
-  const selectedPill = pills.find((p) => p.id === selectedPillId);
+  const selectedPill = pills.find((p) => p.id === currentSelectedPillId);
   const selectedCaption = captions.find((c) => c.id === selectedCaptionId);
 
   const handleTimelineMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -211,6 +222,17 @@ export function MagneticTimeline({
             <Plus className="w-3.5 h-3.5" />
             Add Zoom Pill
           </button>
+
+          {onRedetectZooms && (
+            <button
+              onClick={onRedetectZooms}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10 transition-colors text-xs font-medium"
+              title="Re-run smart click clustering and typing auto-zoom detection"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+              Re-detect Zooms
+            </button>
+          )}
 
           {showCaptions && onAddCaptionAtPlayhead && (
             <button
@@ -505,7 +527,7 @@ export function MagneticTimeline({
           {pills.map((pill) => {
             const left = getPercent(pill.startTime);
             const width = Math.max(2, getPercent(pill.endTime) - left);
-            const isSelected = pill.id === selectedPillId;
+            const isSelected = pill.id === currentSelectedPillId;
 
             return (
               <div

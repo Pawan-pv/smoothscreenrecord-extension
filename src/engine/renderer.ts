@@ -597,7 +597,8 @@ export class StudioRenderer {
           preset.cursorRingColor,
           this.activeRipplesScratch,
           cursorTheme || 'mac-obsidian',
-          cursorScale || 1.0
+          cursorScale || 1.0,
+          Math.max(0.75, Math.min(2, Math.max(canvasW, canvasH) / 1920))
         );
       }
 

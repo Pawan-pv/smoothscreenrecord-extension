@@ -568,7 +568,7 @@ export function EditorStudio() {
       try { video.currentTime = 0.001; } catch {}
     }, 300);
 
-    cursorEngineRef.current.setData(data.mousePoints || [], data.clicks || []);
+    cursorEngineRef.current.setData(data.mousePoints || [], data.clicks || [], data.pressEvents || []);
 
     // Auto-generate smart zoom pills based on DOM bounding boxes & clicks
     const autoPills = generateAutoZoomPills(

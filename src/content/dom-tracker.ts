@@ -6,7 +6,9 @@ import {
   TelemetryData,
   TypingSession,
   BoundingBox,
-  ScrollEvent
+  ScrollEvent,
+  CursorStyle,
+  PressEvent
 } from '../types/telemetry';
 import {
   applyAutoRedaction,
@@ -25,13 +27,36 @@ let keystrokes: KeystrokeEvent[] = [];
 let inputEvents: InputFocusEvent[] = [];
 let typingSessions: TypingSession[] = [];
 let scrollEvents: ScrollEvent[] = [];
+let pressEvents: PressEvent[] = [];
 
 let lastMouseX = 0;
 let lastMouseY = 0;
-let lastCursor = 'default';
+let lastCursor: CursorStyle = 'default';
 let lastSampleTime = 0;
 let lastScrollTime = 0;
 const SAMPLE_INTERVAL_MS = 8.33; // ~120Hz sampling
+
+export function normalizeCursorStyle(raw: string): CursorStyle {
+  const value = (raw || '').trim().toLowerCase();
+  if (value.includes('pointer')) return 'pointer';
+  if (value === 'text' || value === 'vertical-text') return 'text';
+  if (value === 'grab') return 'grab';
+  if (value === 'grabbing') return 'grabbing';
+  if (value === 'not-allowed' || value === 'no-drop') return 'not-allowed';
+  if (value === 'crosshair') return 'crosshair';
+  return 'default';
+}
+
+function readCursorStyle(e: MouseEvent): CursorStyle {
+  try {
+    const doc = (e.target as Node)?.ownerDocument || document;
+    const target = doc.elementFromPoint(e.clientX, e.clientY);
+    if (target) return normalizeCursorStyle((doc.defaultView || window).getComputedStyle(target).cursor || 'default');
+  } catch {
+    // Fall back to the stable default cursor when a frame is unavailable.
+  }
+  return 'default';
+}
 
 /**
  * Shared timeline origin.
@@ -214,17 +239,7 @@ function handleMouseMove(e: MouseEvent) {
   if (now - lastSampleTime >= SAMPLE_INTERVAL_MS) {
     lastSampleTime = now;
 
-    // Detect computed cursor style
-    let cursorStyle = 'default';
-    try {
-      const doc = (e.target as Node)?.ownerDocument || document;
-      const target = doc.elementFromPoint(e.clientX, e.clientY);
-      if (target) {
-        cursorStyle = (doc.defaultView || window).getComputedStyle(target).cursor || 'default';
-      }
-    } catch {
-      cursorStyle = 'default';
-    }
+    const cursorStyle = readCursorStyle(e);
     lastCursor = cursorStyle;
 
     mousePoints.push({
@@ -234,6 +249,26 @@ function handleMouseMove(e: MouseEvent) {
       c: cursorStyle
     });
   }
+}
+
+function handlePress(e: MouseEvent, type: 'down' | 'up') {
+  if (!isRecording) return;
+  if ((e.target as HTMLElement)?.closest('#smoothstudio-floating-hud')) return;
+  const coords = normalizeCaptureCoordinates(e);
+  lastCursor = readCursorStyle(e);
+  mousePoints.push({ t: Math.round(getRelativeTime()), x: coords.x, y: coords.y, c: lastCursor });
+  pressEvents.push({ t: Math.round(getRelativeTime()), type, x: coords.x, y: coords.y, button: e.button });
+}
+
+function handlePointerDown(e: PointerEvent) { handlePress(e, 'down'); }
+function handlePointerUp(e: PointerEvent) { handlePress(e, 'up'); }
+function handleMouseDown(e: MouseEvent) {
+  if (typeof PointerEvent !== 'undefined') return;
+  handlePress(e, 'down');
+}
+function handleMouseUp(e: MouseEvent) {
+  if (typeof PointerEvent !== 'undefined') return;
+  handlePress(e, 'up');
 }
 
 // Track clicks with smart bounding box lock
@@ -601,6 +636,7 @@ function markRecordingLiveOnScreen(): void {
   inputEvents = [];
   typingSessions = [];
   scrollEvents = [];
+  pressEvents = [];
   lastSampleTime = 0;
   lastScrollTime = 0;
   activeTyping = null;
@@ -635,6 +671,7 @@ function applyTimelineOrigin(epoch: number, incomingSessionId?: string | null): 
   inputEvents = [];
   typingSessions = [];
   scrollEvents = [];
+  pressEvents = [];
   lastSampleTime = 0;
   lastScrollTime = 0;
   activeTyping = null;
@@ -726,6 +763,10 @@ export function startTracking(originEpochMs?: number, recordingSessionId?: strin
   injectRecordingHud();
 
   window.addEventListener('mousemove', handleMouseMove, { passive: true, capture: true });
+  window.addEventListener('pointerdown', handlePointerDown, { passive: true, capture: true });
+  window.addEventListener('pointerup', handlePointerUp, { passive: true, capture: true });
+  window.addEventListener('mousedown', handleMouseDown, { passive: true, capture: true });
+  window.addEventListener('mouseup', handleMouseUp, { passive: true, capture: true });
   window.addEventListener('click', handleClick, { passive: true, capture: true });
   window.addEventListener('keydown', handleKeyDown, { passive: true, capture: true });
   window.addEventListener('focusin', handleFocusIn, { passive: true, capture: true });
@@ -759,6 +800,10 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
   closeTypingSession();
 
   window.removeEventListener('mousemove', handleMouseMove, { capture: true });
+  window.removeEventListener('pointerdown', handlePointerDown, { capture: true });
+  window.removeEventListener('pointerup', handlePointerUp, { capture: true });
+  window.removeEventListener('mousedown', handleMouseDown, { capture: true });
+  window.removeEventListener('mouseup', handleMouseUp, { capture: true });
   window.removeEventListener('click', handleClick, { capture: true });
   window.removeEventListener('keydown', handleKeyDown, { capture: true });
   window.removeEventListener('focusin', handleFocusIn, { capture: true });
@@ -787,6 +832,7 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
     },
     mousePoints,
     clicks,
+    pressEvents,
     keystrokes,
     inputEvents,
     typingSessions,

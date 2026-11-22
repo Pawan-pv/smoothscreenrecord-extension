@@ -1,4 +1,4 @@
-import { MousePoint, ClickEvent, CursorTheme } from '../types/telemetry';
+import { MousePoint, ClickEvent, CursorTheme, PressEvent, CursorStyle } from '../types/telemetry';
 
 export interface InterpolatedCursor {
   x: number;
@@ -13,6 +13,12 @@ export interface InterpolatedCursor {
 export const CURSOR_IDLE_TIMEOUT_MS = 1500;
 export const CURSOR_IDLE_FADE_MS = 300;
 
+export function getPressScale(progress: number): number {
+  const t = Math.max(0, Math.min(1, progress));
+  const eased = t * t * (3 - 2 * t);
+  return 0.85 + 0.15 * eased;
+}
+
 // Catmull-Rom spline interpolation between 4 points
 function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): number {
   const v0 = (p2 - p0) * 0.5;
@@ -25,15 +31,17 @@ function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): 
 export class CursorSplineEngine {
   private mousePoints: MousePoint[] = [];
   private clicks: ClickEvent[] = [];
+  private pressEvents: PressEvent[] = [];
   private activityTimestamps: number[] = [];
 
-  constructor(mousePoints: MousePoint[] = [], clicks: ClickEvent[] = []) {
-    this.setData(mousePoints, clicks);
+  constructor(mousePoints: MousePoint[] = [], clicks: ClickEvent[] = [], pressEvents: PressEvent[] = []) {
+    this.setData(mousePoints, clicks, pressEvents);
   }
 
-  public setData(mousePoints: MousePoint[], clicks: ClickEvent[]) {
+  public setData(mousePoints: MousePoint[], clicks: ClickEvent[], pressEvents: PressEvent[] = []) {
     this.mousePoints = [...mousePoints].sort((a, b) => a.t - b.t);
     this.clicks = [...clicks].sort((a, b) => a.t - b.t);
+    this.pressEvents = [...pressEvents].sort((a, b) => a.t - b.t);
 
     const activities: number[] = [];
     for (const c of this.clicks) {
@@ -172,6 +180,14 @@ export class CursorSplineEngine {
     return this.clicks;
   }
 
+  public getPressScaleAt(timeMs: number): number {
+    const latestDown = [...this.pressEvents].reverse().find((event) => event.t <= timeMs && event.type === 'down');
+    const latestUp = [...this.pressEvents].reverse().find((event) => event.t <= timeMs && event.type === 'up');
+    if (latestDown && (!latestUp || latestDown.t > latestUp.t)) return 0.85;
+    const latestClick = [...this.clicks].reverse().find((click) => click.t <= timeMs && timeMs - click.t <= 140);
+    return latestClick ? getPressScale((timeMs - latestClick.t) / 140) : 1;
+  }
+
   // Draw crisp 4K vector cursor and physics click ripple rings at specific screen coordinates
   public drawCursorAt(
     ctx: CanvasRenderingContext2D,
@@ -182,7 +198,8 @@ export class CursorSplineEngine {
     ringColor: string = '#8B5CF6',
     activeRipples?: { x: number; y: number; progress: number }[],
     theme: CursorTheme = 'mac-obsidian',
-    cursorScale: number = 1.0
+    cursorScale: number = 1.0,
+    canvasScale: number = 1.0
   ): void {
     ctx.save();
 
@@ -221,12 +238,14 @@ export class CursorSplineEngine {
       return;
     }
     ctx.globalAlpha = Math.max(0, Math.min(1, ctx.globalAlpha * cursorOpacity));
+    const pressScale = this.getPressScaleAt(currentTimeMs);
+    const outputScale = Math.max(0.75, Math.min(2, canvasScale));
 
     // Handles normalized (0..1) speeds (scaled to ~1920px equivalent) as well as legacy pixel speeds
     const effectiveSpeed = cursor.x <= 1.0 ? cursor.speed * 1920 : cursor.speed;
     if (effectiveSpeed > 350) {
       ctx.save();
-      const blurLen = Math.min(24, effectiveSpeed * 0.02) * cursorScale;
+      const blurLen = Math.min(24, effectiveSpeed * 0.02) * cursorScale * outputScale;
       const angle = Math.atan2(cursor.vy, cursor.vx);
       ctx.beginPath();
       ctx.moveTo(screenX, screenY);
@@ -235,7 +254,7 @@ export class CursorSplineEngine {
         screenY - Math.sin(angle) * blurLen
       );
       ctx.strokeStyle = theme === 'neon-glow' ? 'rgba(168, 85, 247, 0.45)' : 'rgba(255, 255, 255, 0.25)';
-      ctx.lineWidth = 4 * cursorScale;
+      ctx.lineWidth = 4 * cursorScale * outputScale;
       ctx.lineCap = 'round';
       ctx.stroke();
       ctx.restore();
@@ -243,34 +262,58 @@ export class CursorSplineEngine {
 
     // 3. Render High-Resolution Vector Cursor
     ctx.translate(screenX, screenY);
-    if (cursorScale !== 1.0) {
-      ctx.scale(cursorScale, cursorScale);
+    if (pressScale < 0.999) {
+      ctx.beginPath();
+      ctx.arc(0, 0, 18 * cursorScale * outputScale, 0, Math.PI * 2);
+      ctx.strokeStyle = theme === 'neon-glow' ? 'rgba(192, 132, 252, 0.30)' : 'rgba(255, 255, 255, 0.18)';
+      ctx.lineWidth = 2 * outputScale;
+      ctx.globalAlpha *= 0.7;
+      ctx.stroke();
+      ctx.globalAlpha = Math.max(0, Math.min(1, cursorOpacity));
+    }
+    if (cursorScale * pressScale * outputScale !== 1.0) {
+      ctx.scale(cursorScale * pressScale * outputScale, cursorScale * pressScale * outputScale);
     }
 
     // Subtle drop shadow for vector cursor
     if (theme === 'neon-glow') {
       ctx.shadowColor = '#8B5CF6';
-      ctx.shadowBlur = 14;
+      ctx.shadowBlur = 14 * outputScale;
       ctx.shadowOffsetX = 0;
       ctx.shadowOffsetY = 2;
     } else {
       ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
-      ctx.shadowBlur = 8;
-      ctx.shadowOffsetX = 1;
-      ctx.shadowOffsetY = 2;
+      ctx.shadowBlur = 8 * outputScale;
+      ctx.shadowOffsetX = 1 * outputScale;
+      ctx.shadowOffsetY = 2 * outputScale;
     }
 
-    if (cursor.style.includes('pointer') || cursor.style.includes('hand')) {
+    if (cursor.style === 'pointer') {
       // Sleek pointing hand SVG vector
       this.drawHandCursor(ctx, theme);
-    } else if (cursor.style.includes('text')) {
+    } else if (cursor.style === 'text') {
       // macOS style I-beam cursor
       this.drawIBeamCursor(ctx, theme);
+    } else if (cursor.style === 'grab') {
+      this.drawGrabCursor(ctx, theme);
+    } else if (cursor.style === 'grabbing') {
+      this.drawGrabbingCursor(ctx, theme);
     } else {
       // Sleek modern Arrow Pointer
       this.drawArrowCursor(ctx, theme);
     }
 
+    ctx.restore();
+  }
+
+  private drawGrabCursor(ctx: CanvasRenderingContext2D, theme: CursorTheme = 'mac-obsidian') {
+    this.drawHandCursor(ctx, theme);
+  }
+
+  private drawGrabbingCursor(ctx: CanvasRenderingContext2D, theme: CursorTheme = 'mac-obsidian') {
+    ctx.save();
+    ctx.scale(0.9, 0.9);
+    this.drawHandCursor(ctx, theme);
     ctx.restore();
   }
 

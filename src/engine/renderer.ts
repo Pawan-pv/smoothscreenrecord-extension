@@ -7,12 +7,14 @@ import {
   CaptionBlock,
   CaptionStyle,
   CursorTheme,
-  BackdropMatrixParams
+  BackdropMatrixParams,
+  ShadowMode
 } from '../types/telemetry';
 import { CameraState } from './spring-physics';
 import { CursorSplineEngine, InterpolatedCursor } from './cursor-spline';
 import {
   computeFrameLayout,
+  computeFrameVisualStyle,
   ensureEvenDimensions,
   projectSourceToCanvas,
   FramingMode
@@ -225,6 +227,8 @@ export interface RenderFrameOptions {
   backgroundColor?: string | null;
   backgroundImage?: CanvasImageSource | null;
   framingMode?: FramingMode;
+  shadowMode?: ShadowMode;
+  backgroundTimeMs?: number;
 }
 
 export function resolveBackgroundLayer(
@@ -375,7 +379,7 @@ export class StudioRenderer {
       ctx.fillStyle = backgroundColor!;
       ctx.fillRect(0, 0, canvasW, canvasH);
     } else {
-      this.drawBackdropMatrix(ctx, canvasW, canvasH, preset, currentTimeMs, backdropParams);
+      this.drawBackdropMatrix(ctx, canvasW, canvasH, preset, options.backgroundTimeMs ?? currentTimeMs, backdropParams);
     }
 
     // Calculate Intro / Outro Transition Factors & 3D Spring Zoom
@@ -472,6 +476,14 @@ export class StudioRenderer {
     const windowY = frameLayout.window.y;
     const windowW = frameLayout.window.width;
     const windowH = frameLayout.window.height;
+    const frameStyle = computeFrameVisualStyle({
+      canvasW,
+      canvasH,
+      framePadding: padFraction,
+      borderRadius: preset.borderRadius,
+      shadowBlur: preset.shadowBlur,
+      shadowMode: options.shadowMode
+    });
 
     // Ensure offscreen video canvas matches source video resolution
     if (this.offscreenVideoCanvas.width !== sourceW || this.offscreenVideoCanvas.height !== sourceH) {
@@ -546,18 +558,18 @@ export class StudioRenderer {
 
       // Draw Diffused Drop Shadow
       ctx.save();
-      ctx.shadowColor = preset.shadowColor;
-      ctx.shadowBlur = canvasW > 2560 ? Math.min(30, preset.shadowBlur) : preset.shadowBlur;
+      ctx.shadowColor = frameStyle.shadowEnabled ? preset.shadowColor : 'transparent';
+      ctx.shadowBlur = frameStyle.shadowBlur;
       ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 24;
+      ctx.shadowOffsetY = frameStyle.shadowOffsetY;
       ctx.fillStyle = '#0F1117';
-      this.roundRect(ctx, 0, 0, windowW, windowH, preset.borderRadius);
+      this.roundRect(ctx, 0, 0, windowW, windowH, frameStyle.radius);
       ctx.fill();
       ctx.restore();
 
       // Clip to rounded window corners
       ctx.save();
-      this.roundRect(ctx, 0, 0, windowW, windowH, preset.borderRadius);
+      this.roundRect(ctx, 0, 0, windowW, windowH, frameStyle.radius);
       ctx.clip();
 
       // 5. Apply Camera Zoom & Pan Transformations
@@ -652,9 +664,16 @@ export class StudioRenderer {
 
       // Subtle window inner border for crisp Apple-like finish
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
-      ctx.lineWidth = 1.5;
-      this.roundRect(ctx, 0, 0, windowW, windowH, preset.borderRadius);
+      ctx.lineWidth = Math.max(0.75, frameStyle.canvasScale);
+      this.roundRect(ctx, 0, 0, windowW, windowH, frameStyle.radius);
       ctx.stroke();
+
+      if (frameStyle.outerBorderWidth > 0) {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
+        ctx.lineWidth = frameStyle.outerBorderWidth;
+        this.roundRect(ctx, 0, 0, windowW, windowH, frameStyle.radius);
+        ctx.stroke();
+      }
 
       ctx.restore(); // end clip
       ctx.restore(); // end 3D transform & intro alpha

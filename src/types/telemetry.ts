@@ -16,6 +16,8 @@ export type CursorStyle = 'default' | 'pointer' | 'text' | 'grab' | 'grabbing' |
 
 export type CapturedNativeCursor = 'never' | 'motion' | 'always' | 'unknown';
 
+export type ShadowMode = 'none' | 'subtle' | 'studio';
+
 export interface ClickEvent {
   t: number;
   x: number;

@@ -8,7 +8,8 @@ import {
   CapturedNativeCursor,
   CaptionStyle,
   BackdropMatrixParams,
-  FramingMode
+  FramingMode,
+  ShadowMode
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
 import {
@@ -36,6 +37,8 @@ interface VibePresetsPanelProps {
   onChangeAspectRatio: (aspect: AspectRatioType) => void;
   framingMode: FramingMode;
   onChangeFramingMode: (mode: FramingMode) => void;
+  shadowMode: ShadowMode;
+  onChangeShadowMode: (mode: ShadowMode) => void;
   metadata?: RecordingMetadata;
   backdropParams?: BackdropMatrixParams;
   onChangeBackdropParams?: (params: Partial<BackdropMatrixParams>) => void;
@@ -93,6 +96,8 @@ export function VibePresetsPanel({
   onChangeAspectRatio,
   framingMode,
   onChangeFramingMode,
+  shadowMode,
+  onChangeShadowMode,
   metadata,
   backdropParams,
   onChangeBackdropParams,
@@ -532,12 +537,31 @@ export function VibePresetsPanel({
         </div>
         <input
           type="range"
-          min="8"
-          max="32"
+          min="0"
+          max="36"
           value={currentPreset.borderRadius}
           onChange={(e) => onUpdatePresetBorderRadius(parseInt(e.target.value))}
           className="w-full accent-purple-500"
         />
+      </div>
+
+      <div className="mt-2">
+        <div className="flex items-center justify-between text-xs mb-1.5 text-gray-300">
+          <span>Frame Shadow</span>
+          <span className="font-mono text-purple-400 capitalize">{shadowMode}</span>
+        </div>
+        <div className="grid grid-cols-3 gap-1.5">
+          {(['none', 'subtle', 'studio'] as ShadowMode[]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => onChangeShadowMode(mode)}
+              className={`p-1.5 rounded-lg text-[11px] border capitalize ${shadowMode === mode ? 'bg-purple-600/30 border-purple-500 text-white' : 'bg-white/5 border-white/5 text-gray-400'}`}
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Frame Padding Slider (0% - 20%, default 8%) */}

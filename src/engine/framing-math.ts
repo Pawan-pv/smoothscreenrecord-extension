@@ -1,6 +1,40 @@
-import { AspectRatioType, FramingMode } from '../types/telemetry';
+import { AspectRatioType, FramingMode, ShadowMode } from '../types/telemetry';
 
 export type { FramingMode } from '../types/telemetry';
+
+export interface FrameVisualStyle {
+  canvasScale: number;
+  radius: number;
+  shadowBlur: number;
+  shadowOffsetY: number;
+  outerBorderWidth: number;
+  shadowEnabled: boolean;
+}
+
+export function computeFrameVisualStyle(options: {
+  canvasW: number;
+  canvasH: number;
+  framePadding: number;
+  borderRadius: number;
+  shadowBlur: number;
+  shadowMode?: ShadowMode;
+}): FrameVisualStyle {
+  const canvasScale = Math.max(0.5, Math.min(3, Math.min(options.canvasW, options.canvasH) / 1080));
+  const padding = Math.max(0, Math.min(0.2, options.framePadding));
+  const radius = padding === 0
+    ? 0
+    : Math.min(Math.max(0, options.borderRadius) * canvasScale, Math.min(options.canvasW, options.canvasH) * 0.5);
+  const shadowEnabled = padding > 0 && (options.shadowMode ?? 'studio') !== 'none';
+  const shadowFactor = (options.shadowMode ?? 'studio') === 'subtle' ? 0.45 : 1;
+  return {
+    canvasScale,
+    radius,
+    shadowBlur: shadowEnabled ? Math.max(0, options.shadowBlur) * canvasScale * shadowFactor : 0,
+    shadowOffsetY: shadowEnabled ? 24 * canvasScale * shadowFactor : 0,
+    outerBorderWidth: padding > 0 ? Math.max(0.75, canvasScale) : 0,
+    shadowEnabled
+  };
+}
 
 export interface FrameRect {
   x: number;

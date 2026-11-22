@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeFrameLayout,
+  computeFrameVisualStyle,
   ensureEvenDimensions,
   projectSourceToCanvas,
   unprojectCanvasToSource,
@@ -75,5 +76,25 @@ describe('framing math', () => {
     expect(smart.window.width).toBe(1080);
     expect(smart.window.height).toBe(1920);
     expect(fit.window.height).toBeLessThan(smart.window.height);
+  });
+
+  it('scales frame styling and suppresses frame chrome at zero padding', () => {
+    const hd = computeFrameVisualStyle({ canvasW: 1280, canvasH: 720, framePadding: 0.08, borderRadius: 24, shadowBlur: 48 });
+    const uhd = computeFrameVisualStyle({ canvasW: 3840, canvasH: 2160, framePadding: 0.08, borderRadius: 24, shadowBlur: 48 });
+    const edge = computeFrameVisualStyle({ canvasW: 1920, canvasH: 1080, framePadding: 0, borderRadius: 24, shadowBlur: 48 });
+    expect(uhd.radius).toBeCloseTo(hd.radius * 3);
+    expect(uhd.shadowBlur).toBeCloseTo(hd.shadowBlur * 3);
+    expect(edge.radius).toBe(0);
+    expect(edge.shadowBlur).toBe(0);
+    expect(edge.outerBorderWidth).toBe(0);
+    expect(edge.shadowEnabled).toBe(false);
+  });
+
+  it('supports an explicitly disabled or subtle shadow mode', () => {
+    const none = computeFrameVisualStyle({ canvasW: 1920, canvasH: 1080, framePadding: 0.08, borderRadius: 18, shadowBlur: 40, shadowMode: 'none' });
+    const subtle = computeFrameVisualStyle({ canvasW: 1920, canvasH: 1080, framePadding: 0.08, borderRadius: 18, shadowBlur: 40, shadowMode: 'subtle' });
+    expect(none.shadowEnabled).toBe(false);
+    expect(none.shadowBlur).toBe(0);
+    expect(subtle.shadowBlur).toBe(18);
   });
 });

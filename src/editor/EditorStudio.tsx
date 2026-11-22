@@ -11,6 +11,7 @@ import {
   CursorTheme,
   CapturedNativeCursor,
   FramingMode,
+  ShadowMode,
   BackdropMatrixParams
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
@@ -126,6 +127,7 @@ export function EditorStudio() {
   // Settings & Timeline state
   const [aspectRatio, setAspectRatio] = useState<AspectRatioType>('16:9');
   const [framingMode, setFramingMode] = useState<FramingMode>('fit');
+  const [shadowMode, setShadowMode] = useState<ShadowMode>('studio');
   const [preset, setPreset] = useState<VibePreset>(VIBE_PRESETS['keynote-pro'] || VIBE_PRESETS['linear-dark']);
   const [backdropParams, setBackdropParams] = useState<BackdropMatrixParams>(
     VIBE_PRESETS['keynote-pro']?.backdrop || {
@@ -1397,6 +1399,7 @@ export function EditorStudio() {
         backgroundColor,
         backgroundImage,
         framingMode,
+        shadowMode,
         targetWidth: targetExportWidth,
         mediaDurationMs: mediaDurationRef.current ?? undefined,
         onProgress: (pct) => setExportProgress(pct)
@@ -1463,6 +1466,7 @@ export function EditorStudio() {
         backgroundColor,
         backgroundImage,
         framingMode,
+        shadowMode,
         qualityPreset: gifPreset,
         fps: config.fps,
         maxDimension: config.maxDimension,
@@ -1755,6 +1759,8 @@ export function EditorStudio() {
           onChangeAspectRatio={handleChangeAspectRatio}
           framingMode={framingMode}
           onChangeFramingMode={setFramingMode}
+          shadowMode={shadowMode}
+          onChangeShadowMode={setShadowMode}
           metadata={telemetry?.metadata}
           backdropParams={backdropParams}
           onChangeBackdropParams={handleUpdateBackdropParams}
@@ -1821,6 +1827,7 @@ export function EditorStudio() {
           preset={preset}
           aspectRatio={aspectRatio}
            framingMode={framingMode}
+          shadowMode={shadowMode}
           backdropParams={backdropParams}
           showSpotlight={showSpotlight}
           showCursor={showCursor}

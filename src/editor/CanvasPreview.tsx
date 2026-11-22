@@ -7,7 +7,8 @@ import {
   CaptionBlock,
   CaptionStyle,
   CursorTheme,
-  BackdropMatrixParams
+  BackdropMatrixParams,
+  ShadowMode
 } from '../types/telemetry';
 import { StudioRenderer, RenderFrameOptions, getAspectDimensions } from '../engine/renderer';
 import { computeCinematicCameraState, CameraState } from '../engine/spring-physics';
@@ -67,6 +68,7 @@ interface CanvasPreviewProps {
   backgroundColor?: string | null;
   backgroundImage?: CanvasImageSource | null;
   framingMode?: FramingMode;
+  shadowMode?: ShadowMode;
   onCanvasClickToAddZoom?: (normalizedX: number, normalizedY: number) => void;
 }
 
@@ -107,6 +109,7 @@ export function CanvasPreview({
   backgroundColor,
   backgroundImage,
   framingMode,
+  shadowMode,
   onCanvasClickToAddZoom
 }: CanvasPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -215,6 +218,7 @@ export function CanvasPreview({
     opts.backgroundColor = backgroundColor;
     opts.backgroundImage = backgroundImage;
     opts.framingMode = framingMode;
+    opts.shadowMode = shadowMode;
 
     rendererRef.current.renderFrame(opts);
 
@@ -352,7 +356,8 @@ export function CanvasPreview({
     framePadding,
     backgroundColor,
     backgroundImage,
-    framingMode
+    framingMode,
+    shadowMode
   ]);
 
   // Support Escape to deselect active pill

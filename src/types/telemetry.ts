@@ -50,6 +50,12 @@ export interface InputFocusEvent {
   bounds: BoundingBox;
 }
 
+export interface ScrollEvent {
+  t: number;
+  scrollX: number;
+  scrollY: number;
+}
+
 export interface RecordingMetadata {
   id: string;
   /** Recording session id: shared by the video, the telemetry and the editor (M1-08). */
@@ -96,6 +102,7 @@ export interface TelemetryData {
   keystrokes: KeystrokeEvent[];
   inputEvents: InputFocusEvent[];
   typingSessions?: TypingSession[];
+  scrollEvents?: ScrollEvent[];
   captions?: CaptionBlock[];
 }
 

@@ -5,7 +5,8 @@ import {
   InputFocusEvent,
   TelemetryData,
   TypingSession,
-  BoundingBox
+  BoundingBox,
+  ScrollEvent
 } from '../types/telemetry';
 import {
   applyAutoRedaction,
@@ -23,11 +24,13 @@ let clicks: ClickEvent[] = [];
 let keystrokes: KeystrokeEvent[] = [];
 let inputEvents: InputFocusEvent[] = [];
 let typingSessions: TypingSession[] = [];
+let scrollEvents: ScrollEvent[] = [];
 
 let lastMouseX = 0;
 let lastMouseY = 0;
 let lastCursor = 'default';
 let lastSampleTime = 0;
+let lastScrollTime = 0;
 const SAMPLE_INTERVAL_MS = 8.33; // ~120Hz sampling
 
 /**
@@ -447,6 +450,20 @@ function handleInput(e: Event) {
   }
 }
 
+// Lightweight passive throttled (~100ms) scroll listener
+function handleScroll() {
+  if (!isRecording) return;
+  const now = performance.now();
+  if (now - lastScrollTime >= 100) {
+    lastScrollTime = now;
+    scrollEvents.push({
+      t: Math.round(getRelativeTime()),
+      scrollX: Math.round(window.scrollX || window.pageXOffset || 0),
+      scrollY: Math.round(window.scrollY || window.pageYOffset || 0)
+    });
+  }
+}
+
 let floatingHudEl: HTMLElement | null = null;
 let timerInterval: number | null = null;
 
@@ -583,7 +600,9 @@ function markRecordingLiveOnScreen(): void {
   keystrokes = [];
   inputEvents = [];
   typingSessions = [];
+  scrollEvents = [];
   lastSampleTime = 0;
+  lastScrollTime = 0;
   activeTyping = null;
   console.log('[SmoothStudio DOM-Tracker] HUD on screen: recording goes live. Origin epoch:', Math.round(originEpoch));
   try {
@@ -615,7 +634,9 @@ function applyTimelineOrigin(epoch: number, incomingSessionId?: string | null): 
   keystrokes = [];
   inputEvents = [];
   typingSessions = [];
+  scrollEvents = [];
   lastSampleTime = 0;
+  lastScrollTime = 0;
   activeTyping = null;
   renderHudTimer();
   console.log('[SmoothStudio DOM-Tracker] Timeline origin from the recorder:', epoch);
@@ -697,7 +718,9 @@ export function startTracking(originEpochMs?: number, recordingSessionId?: strin
   keystrokes = [];
   inputEvents = [];
   typingSessions = [];
+  scrollEvents = [];
   lastSampleTime = 0;
+  lastScrollTime = 0;
   activeTyping = null;
 
   injectRecordingHud();
@@ -708,6 +731,7 @@ export function startTracking(originEpochMs?: number, recordingSessionId?: strin
   window.addEventListener('focusin', handleFocusIn, { passive: true, capture: true });
   window.addEventListener('focusout', handleFocusOut, { passive: true, capture: true });
   window.addEventListener('input', handleInput, { passive: true, capture: true });
+  window.addEventListener('scroll', handleScroll, { passive: true, capture: true });
   attachSameOriginIframes();
 
   armHudLiveSignal();
@@ -740,6 +764,7 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
   window.removeEventListener('focusin', handleFocusIn, { capture: true });
   window.removeEventListener('focusout', handleFocusOut, { capture: true });
   window.removeEventListener('input', handleInput, { capture: true });
+  window.removeEventListener('scroll', handleScroll, { capture: true });
   detachSameOriginIframes();
 
   const durationMs = Math.round(getRelativeTime());
@@ -764,7 +789,8 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
     clicks,
     keystrokes,
     inputEvents,
-    typingSessions
+    typingSessions,
+    scrollEvents
   };
 
   console.log('[SmoothStudio DOM-Tracker] Telemetry captured:', telemetry);

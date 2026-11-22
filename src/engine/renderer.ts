@@ -227,6 +227,15 @@ export interface RenderFrameOptions {
   framingMode?: FramingMode;
 }
 
+export function resolveBackgroundLayer(
+  backgroundImage: CanvasImageSource | null | undefined,
+  backgroundColor: string | null | undefined
+): 'image' | 'solid' | 'mesh' {
+  if (backgroundImage) return 'image';
+  if (backgroundColor) return 'solid';
+  return 'mesh';
+}
+
 export interface CoverFitResult {
   sx: number;
   sy: number;
@@ -353,14 +362,17 @@ export class StudioRenderer {
     const canvasH = canvas.height;
 
     // 1. Draw Advanced Backdrop (Custom Cover Image, Solid Color, or Preset Matrix)
-    if (options.backgroundImage) {
-      const img = options.backgroundImage as any;
+    const backgroundImage = options.backgroundImage;
+    const backgroundColor = options.backgroundColor;
+    const backgroundLayer = resolveBackgroundLayer(backgroundImage, backgroundColor);
+    if (backgroundLayer === 'image') {
+      const img = backgroundImage as any;
       const imgW = img.naturalWidth || img.videoWidth || img.width || canvasW;
       const imgH = img.naturalHeight || img.videoHeight || img.height || canvasH;
       const fit = computeCoverFit(imgW, imgH, canvasW, canvasH);
-      ctx.drawImage(options.backgroundImage, fit.sx, fit.sy, fit.sw, fit.sh, fit.dx, fit.dy, fit.dw, fit.dh);
-    } else if (options.backgroundColor) {
-      ctx.fillStyle = options.backgroundColor;
+      ctx.drawImage(backgroundImage!, fit.sx, fit.sy, fit.sw, fit.sh, fit.dx, fit.dy, fit.dw, fit.dh);
+    } else if (backgroundLayer === 'solid') {
+      ctx.fillStyle = backgroundColor!;
       ctx.fillRect(0, 0, canvasW, canvasH);
     } else {
       this.drawBackdropMatrix(ctx, canvasW, canvasH, preset, currentTimeMs, backdropParams);

@@ -80,6 +80,7 @@ interface VibePresetsPanelProps {
   onSelectBackgroundColor?: (val: string | null) => void;
   backgroundImageUrl?: string | null;
   onSelectBackgroundImage?: (url: string | null, img: HTMLImageElement | null) => void;
+  onBackgroundImageError?: (url: string) => void;
 }
 
 export function VibePresetsPanel({
@@ -133,26 +134,24 @@ export function VibePresetsPanel({
   backgroundColor,
   onSelectBackgroundColor,
   backgroundImageUrl,
-  onSelectBackgroundImage
+  onSelectBackgroundImage,
+  onBackgroundImageError
 }: VibePresetsPanelProps) {
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (backgroundImageUrl && backgroundImageUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(backgroundImageUrl);
-    }
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
       onSelectBackgroundImage?.(url, img);
     };
+    img.onerror = () => {
+      onBackgroundImageError?.(url);
+    };
     img.src = url;
   };
 
   const handleResetBackground = () => {
-    if (backgroundImageUrl && backgroundImageUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(backgroundImageUrl);
-    }
     onSelectBackgroundImage?.(null, null);
     onSelectBackgroundColor?.(null);
   };

@@ -152,14 +152,47 @@ export function EditorStudio() {
   const [backgroundColor, setBackgroundColor] = useState<string | null>(null);
   const [backgroundImageUrl, setBackgroundImageUrl] = useState<string | null>(null);
   const [backgroundImage, setBackgroundImage] = useState<HTMLImageElement | null>(null);
+  const backgroundImageUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
     return () => {
-      if (backgroundImageUrl && backgroundImageUrl.startsWith('blob:')) {
-        URL.revokeObjectURL(backgroundImageUrl);
+      const url = backgroundImageUrlRef.current;
+      if (url && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
       }
     };
-  }, [backgroundImageUrl]);
+  }, []);
+
+  const clearBackgroundImage = useCallback(() => {
+    const currentUrl = backgroundImageUrlRef.current;
+    backgroundImageUrlRef.current = null;
+    setBackgroundImageUrl(null);
+    setBackgroundImage(null);
+    if (currentUrl?.startsWith('blob:')) URL.revokeObjectURL(currentUrl);
+  }, []);
+
+  const handleSelectBackgroundImage = useCallback((url: string | null, image: HTMLImageElement | null) => {
+    if (!url || !image) {
+      clearBackgroundImage();
+      return;
+    }
+    const previousUrl = backgroundImageUrlRef.current;
+    backgroundImageUrlRef.current = url;
+    setBackgroundImageUrl(url);
+    setBackgroundImage(image);
+    setBackgroundColor(null);
+    if (previousUrl && previousUrl !== url && previousUrl.startsWith('blob:')) URL.revokeObjectURL(previousUrl);
+  }, [clearBackgroundImage]);
+
+  const handleBackgroundImageError = useCallback((url: string) => {
+    if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+    showToast({ type: 'error', title: 'Background Image Failed', message: 'The image could not be loaded; the previous background was kept.' });
+  }, [showToast]);
+
+  const handleSelectBackgroundColor = useCallback((color: string | null) => {
+    if (color) clearBackgroundImage();
+    setBackgroundColor(color);
+  }, [clearBackgroundImage]);
   const [followCursor, setFollowCursor] = useState<boolean>(true);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
 
@@ -814,10 +847,11 @@ export function EditorStudio() {
 
   const handleSelectPreset = useCallback((newPreset: VibePreset) => {
     setPreset(newPreset);
+    clearBackgroundImage();
     if (newPreset.backdrop) {
       setBackdropParams(newPreset.backdrop);
     }
-  }, []);
+  }, [clearBackgroundImage]);
 
   const handleUpdateBackdropParams = useCallback((updates: Partial<BackdropMatrixParams>) => {
     setBackdropParams((prev) => {
@@ -1754,12 +1788,10 @@ export function EditorStudio() {
           framePadding={framePadding}
           onChangeFramePadding={setFramePadding}
           backgroundColor={backgroundColor}
-          onSelectBackgroundColor={setBackgroundColor}
+          onSelectBackgroundColor={handleSelectBackgroundColor}
           backgroundImageUrl={backgroundImageUrl}
-          onSelectBackgroundImage={(url, img) => {
-            setBackgroundImageUrl(url);
-            setBackgroundImage(img);
-          }}
+          onSelectBackgroundImage={handleSelectBackgroundImage}
+          onBackgroundImageError={handleBackgroundImageError}
         />
         {/* Center Canvas Preview Viewport */}
         <CanvasPreview

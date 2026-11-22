@@ -20,7 +20,8 @@ describe('Requirement R4: Cursor Accuracy & Auto-Zoom Polish', () => {
 
       const pills = generateAutoZoomPills(rapidClicks, [], 10000, VIEWPORT_W, VIEWPORT_H);
       expect(pills.length).toBe(1);
-      expect(pills[0].startTime).toBe(700);
+      // Anticipates click by 320ms (>= 90% zoom settled as click lands)
+      expect(pills[0].startTime).toBe(680);
       expect(pills[0].targetX).toBeCloseTo(0.305, 2);
     });
 

@@ -30,8 +30,36 @@ describe('Auto-Zoom Core Logic: Coordinate Bounds, Dynamic Scaling, & Indicators
       expect(pill.targetY).toBeCloseTo(0.5, 2);
     });
 
-    it('isolates container bounding box center when climbing parent DOM elements', () => {
-      // Click at top-left of a modal card, but card spans 600x400 centered around (800, 500)
+    it('isolates container bounding box center when climbing parent DOM elements with click near center', () => {
+      // Card spans 600x400 centered around (800, 500), click near center (750, 480) within 250px
+      const containerBounds: BoundingBox = {
+        x: 500,
+        y: 300,
+        width: 600,
+        height: 400
+      };
+
+      const click: ClickEvent = {
+        t: 1200,
+        x: 750,
+        y: 480,
+        button: 0,
+        targetTag: 'BUTTON',
+        containerBounds
+      };
+
+      const pills = generateAutoZoomPills([click], [], 10000, VIEWPORT_W, VIEWPORT_H);
+      expect(pills.length).toBe(1);
+
+      const pill = pills[0];
+      // Expected center: (500 + 300) = 800px -> 800 / 1920 = 0.4166
+      // (300 + 200) = 500px -> 500 / 1080 = 0.4629
+      expect(pill.targetX).toBeCloseTo(800 / VIEWPORT_W, 2);
+      expect(pill.targetY).toBeCloseTo(500 / VIEWPORT_H, 2);
+    });
+
+    it('blends 70% click + 30% container center when click is distant (> 250px) or container is wide', () => {
+      // Click at top-left of a modal card (520, 310), card spans 600x400 centered at (800, 500), dist = 338px > 250px
       const containerBounds: BoundingBox = {
         x: 500,
         y: 300,
@@ -52,10 +80,10 @@ describe('Auto-Zoom Core Logic: Coordinate Bounds, Dynamic Scaling, & Indicators
       expect(pills.length).toBe(1);
 
       const pill = pills[0];
-      // Expected center: (500 + 300) = 800px -> 800 / 1920 = 0.4166
-      // (300 + 200) = 500px -> 500 / 1080 = 0.4629
-      expect(pill.targetX).toBeCloseTo(800 / VIEWPORT_W, 2);
-      expect(pill.targetY).toBeCloseTo(500 / VIEWPORT_H, 2);
+      // Expected blend: 0.7 * 520 + 0.3 * 800 = 364 + 240 = 604px
+      // 0.7 * 310 + 0.3 * 500 = 217 + 150 = 367px
+      expect(pill.targetX).toBeCloseTo(604 / VIEWPORT_W, 2);
+      expect(pill.targetY).toBeCloseTo(367 / VIEWPORT_H, 2);
     });
 
     it('enforces safety margin clamping [0.12, 0.88] preventing viewport clipping off-screen', () => {
@@ -176,8 +204,8 @@ describe('Auto-Zoom Core Logic: Coordinate Bounds, Dynamic Scaling, & Indicators
 
       // Should coalesce into exactly 1 stable zoom pill rather than 3 jittery pills
       expect(pills.length).toBe(1);
-      // Anticipates click by 300ms for smooth cinematic pre-framing
-      expect(pills[0].startTime).toBe(700);
+      // Anticipates click by 320ms for smooth cinematic pre-framing (>= 90% settled at click)
+      expect(pills[0].startTime).toBe(680);
       // Holds across all three clicks plus comfortable margin
       expect(pills[0].endTime).toBeGreaterThanOrEqual(2600);
     });

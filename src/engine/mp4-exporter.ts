@@ -28,6 +28,7 @@ import {
 import { VideoFrameSeeker } from './video-seeker';
 import { SequentialVideoFrameSource } from './sequential-frame-source';
 import { resolveExportTimelineMs, clampTrimBounds } from './export-timeline';
+import { negotiateVideoEncoderConfig, NegotiatedVideoEncoderConfig } from './video-codec-negotiation';
 
 function abortError(): Error {
   const err = new Error('The export was cancelled.');
@@ -118,7 +119,15 @@ export class HardwareMp4Exporter {
 
     const sourceW = (options.metadata?.width && options.metadata.width > 0) ? options.metadata.width : 1920;
     const targetBaseW = options.targetWidth || sourceW;
-    const { width: outW, height: outH } = getAspectDimensions(aspectRatio, targetBaseW);
+    let { width: outW, height: outH } = getAspectDimensions(aspectRatio, targetBaseW);
+    const hasWebCodecs = typeof VideoEncoder !== 'undefined';
+    let encoderConfig: NegotiatedVideoEncoderConfig | null = null;
+    if (hasWebCodecs) {
+      encoderConfig = await negotiateVideoEncoderConfig(outW, outH);
+      outW = encoderConfig.width;
+      outH = encoderConfig.height;
+    }
+    const fps = encoderConfig?.framerate ?? 60;
 
     // Create offscreen export canvas
     const exportCanvas = document.createElement('canvas');
@@ -174,7 +183,6 @@ export class HardwareMp4Exporter {
       }
     }
 
-    const fps = 60;
     const frameIntervalMs = 1000 / fps;
 
     // C2: audio. If the recording has an audio track it MUST be decoded and
@@ -241,12 +249,9 @@ export class HardwareMp4Exporter {
     }
 
     const totalFrames = timelineTimestamps.length;
-    console.log(`[SmoothStudio MP4 Exporter] Starting hardware export: ${totalFrames} frames at 60fps (${outW}x${outH})`);
+    console.log(`[SmoothStudio MP4 Exporter] Starting hardware export: ${totalFrames} frames at ${fps}fps (${outW}x${outH})`);
 
-    // Check if WebCodecs VideoEncoder is available
-    const hasWebCodecs = typeof VideoEncoder !== 'undefined';
-
-      if (hasWebCodecs) {
+      if (hasWebCodecs && encoderConfig) {
         return await this.exportWithWebCodecs({
           video,
           frameSource,
@@ -256,6 +261,7 @@ export class HardwareMp4Exporter {
           outW,
           outH,
           fps,
+          encoderConfig,
           durationMs: effTrimEnd,
           totalFrames,
           timelineTimestamps,
@@ -352,6 +358,7 @@ export class HardwareMp4Exporter {
     outW: number;
     outH: number;
     fps: number;
+    encoderConfig: NegotiatedVideoEncoderConfig;
     durationMs: number;
     totalFrames: number;
     timelineTimestamps: number[];
@@ -395,6 +402,7 @@ export class HardwareMp4Exporter {
       outW,
       outH,
       fps,
+      encoderConfig,
       durationMs,
       totalFrames,
       timelineTimestamps,
@@ -488,43 +496,9 @@ export class HardwareMp4Exporter {
       }
     });
 
-    const is4K = outW >= 3840 || outH >= 2160;
-    let targetBitrate = 14_000_000;
-    if (is4K) {
-      targetBitrate = 38_000_000; // 4K60 ~38 Mbps (35-40 Mbps)
-    } else if (outW >= 2560 || outH >= 1440) {
-      targetBitrate = 22_000_000; // 1440p ~22 Mbps
-    } else if (outW >= 1920 || outH >= 1080) {
-      targetBitrate = 14_000_000; // 1080p ~14 Mbps
-    } else {
-      targetBitrate = 6_000_000;  // 720p ~6 Mbps
-    }
-    let chosenCodec = is4K ? 'avc1.640033' : 'avc1.640028';
-    try {
-      const support = await VideoEncoder.isConfigSupported({
-        codec: chosenCodec,
-        width: outW,
-        height: outH,
-        bitrate: targetBitrate,
-        framerate: fps
-      });
-      if (!support.supported) {
-        chosenCodec = is4K ? 'avc1.4d0033' : 'avc1.4D002A';
-      }
-    } catch {
-      chosenCodec = is4K ? 'avc1.4d0033' : 'avc1.4D002A';
-    }
-
-    // Configure H.264 profile
-    videoEncoder.configure({
-      codec: chosenCodec,
-      width: outW,
-      height: outH,
-      bitrate: targetBitrate,
-      framerate: fps,
-      hardwareAcceleration: 'prefer-hardware',
-      latencyMode: 'realtime'
-    });
+    // The configuration was fully tested before the timeline and canvas were
+    // created. Never configure an untested codec/resolution combination.
+    videoEncoder.configure(encoderConfig);
 
     try {
     for (let f = 0; f < totalFrames; f++) {
@@ -584,7 +558,7 @@ export class HardwareMp4Exporter {
         aspectRatio,
         showSpotlight,
         showCursor,
-        outputFps: 60,
+        outputFps: fps,
         showHud,
         metadata,
         cursorTheme,

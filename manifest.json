@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SmoothStudio - Cinematic Screen Recorder & SOP Studio",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "DOM-aware smart auto-zoom, 3D Keynote camera tilts, hardware 60fps MP4 exports, and instant SOP documentation.",
   "permissions": [
     "storage",

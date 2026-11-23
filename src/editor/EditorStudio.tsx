@@ -616,16 +616,21 @@ export function EditorStudio() {
 
     cursorEngineRef.current.setData(data.mousePoints || [], data.clicks || [], data.pressEvents || []);
 
-    // Auto-generate smart zoom pills based on DOM bounding boxes & clicks
-    const autoPills = generateAutoZoomPills(
-      data.clicks || [],
-      data.inputEvents || [],
-      safeDuration,
-      data.metadata?.width || 1920,
-      data.metadata?.height || 1080,
-      data.scrollEvents,
-      data.typingSessions
-    );
+    const displaySurface = data.metadata?.displaySurface || captureEngineRef.current.getTrackSettings()?.displaySurface;
+    const isPageCapture = displaySurface !== 'window' && displaySurface !== 'monitor';
+
+    // DOM coordinates are meaningful only for a browser-tab capture. A
+    // window/monitor frame has a different coordinate space, so only manual
+    // canvas zooms are offered for that recording.
+    const autoPills = isPageCapture ? generateAutoZoomPills(
+        data.clicks || [],
+        data.inputEvents || [],
+        safeDuration,
+        data.metadata?.width || 1920,
+        data.metadata?.height || 1080,
+        data.scrollEvents,
+        data.typingSessions
+      ) : [];
     setPills(autoPills);
     if (import.meta.env.DEV) (window as any).__smoothstudio_pills = autoPills;
 
@@ -657,7 +662,6 @@ export function EditorStudio() {
     }
     // Configure cursor visibility from the actual captured track setting, with a
     // conservative window/monitor fallback when DOM telemetry is unavailable.
-    const displaySurface = data.metadata?.displaySurface || captureEngineRef.current.getTrackSettings()?.displaySurface;
     const capturedNativeCursor = data.metadata?.capturedNativeCursor || captureEngineRef.current.getCapturedNativeCursor();
     const hasDomCursorTelemetry = (data.mousePoints || []).some((point) => Boolean(point.c));
     setShowCursor(shouldEnableCustomCursor(capturedNativeCursor, displaySurface, hasDomCursorTelemetry));
@@ -1239,6 +1243,17 @@ export function EditorStudio() {
 
   const handleRedetectZooms = () => {
     if (!telemetry) return;
+    const displaySurface = telemetry.metadata?.displaySurface;
+    if (displaySurface === 'window' || displaySurface === 'monitor') {
+      setPills([]);
+      setSelectedPillId(null);
+      showToast({
+        type: 'info',
+        title: 'Manual zoom only',
+        message: 'Auto Zoom uses browser-tab coordinates. Add zooms manually for this window or monitor capture.'
+      });
+      return;
+    }
     const safeDuration = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000;
     const autoPills = generateAutoZoomPills(
       telemetry.clicks || [],

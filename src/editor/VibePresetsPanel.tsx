@@ -837,7 +837,7 @@ export function VibePresetsPanel({
           <div id="cursor-mode-hint" className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-[11px] text-indigo-200 flex items-start gap-2 leading-relaxed">
             <Info className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
             <span>
-              For the smooth cinematic cursor, share a browser tab.
+              Window/monitor capture keeps the native cursor and disables DOM Auto Zoom. Add zooms manually, or share a browser tab for cinematic cursor tracking.
             </span>
           </div>
         )}

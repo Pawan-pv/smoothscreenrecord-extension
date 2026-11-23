@@ -16,4 +16,9 @@ describe('native cursor capture policy', () => {
     expect(shouldEnableCustomCursor('unknown', 'monitor', false)).toBe(false);
     expect(shouldEnableCustomCursor('unknown', 'browser', false)).toBe(true);
   });
+
+  it('never enables the vector cursor for a window or monitor capture', () => {
+    expect(shouldEnableCustomCursor('never', 'window', true)).toBe(false);
+    expect(shouldEnableCustomCursor('always', 'monitor', true)).toBe(false);
+  });
 });

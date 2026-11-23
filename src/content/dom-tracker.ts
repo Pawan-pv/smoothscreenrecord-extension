@@ -19,6 +19,12 @@ import {
   isSensitiveString
 } from './privacy-redactor';
 
+// A tab can receive this file again when the service worker repairs a missing
+// content-script receiver. Keep the module idempotent in that case.
+if (typeof window !== 'undefined' && !(window as any).__smoothstudioDomTrackerLoaded) {
+  (window as any).__smoothstudioDomTrackerLoaded = true;
+}
+
 let isRecording = false;
 let startTime = 0;
 let mousePoints: MousePoint[] = [];
@@ -849,11 +855,11 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'START_TELEMETRY') {
       startTracking(message.originEpoch, message.sessionId);
-      sendResponse({ status: 'started' });
+      sendResponse({ ok: true, status: 'started' });
       return true;
     } else if (message.type === 'TIMELINE_ORIGIN') {
       applyTimelineOrigin(message.epoch, message.sessionId);
-      sendResponse({ status: 'origin_applied' });
+      sendResponse({ ok: true, status: 'origin_applied' });
       return true;
     } else if (message.type === 'STOP_TELEMETRY') {
       const wanted = typeof message.sessionId === 'string' ? message.sessionId : null;

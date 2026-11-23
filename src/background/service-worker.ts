@@ -249,6 +249,66 @@ function notifyEditorCapture(tabId: number | null | undefined, payload: any): vo
   });
 }
 
+type TabDispatchResult = {
+  tabId: number;
+  ok: boolean;
+  reason?: string;
+  response?: any;
+};
+
+function isWebTab(tab: chrome.tabs.Tab): boolean {
+  return !tab.url || tab.url.startsWith('http://') || tab.url.startsWith('https://');
+}
+
+function isMissingReceiver(reason: string | undefined): boolean {
+  return /receiving end does not exist|could not establish connection/i.test(reason || '');
+}
+
+function sendTabMessageWithAck(tabId: number, message: any): Promise<{ ok: boolean; response?: any; reason?: string }> {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.sendMessage(tabId, message, (response) => {
+        const error = chrome.runtime?.lastError;
+        if (error) {
+          resolve({ ok: false, reason: error.message });
+          return;
+        }
+        if (response?.ok === true) {
+          resolve({ ok: true, response });
+          return;
+        }
+        resolve({ ok: false, response, reason: 'missing_ack' });
+      });
+    } catch (error) {
+      resolve({ ok: false, reason: error instanceof Error ? error.message : String(error) });
+    }
+  });
+}
+
+async function dispatchToTab(tab: chrome.tabs.Tab, message: any): Promise<TabDispatchResult> {
+  const tabId = tab.id;
+  if (typeof tabId !== 'number') return { tabId: -1, ok: false, reason: 'missing_tab_id' };
+  if (!isWebTab(tab)) return { tabId, ok: false, reason: 'restricted_page' };
+
+  const first = await sendTabMessageWithAck(tabId, message);
+  if (first.ok) return { tabId, ok: true, response: first.response };
+  if (!isMissingReceiver(first.reason)) return { tabId, ok: false, reason: first.reason };
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content/privacy-redactor.js', 'content/dom-tracker.js']
+    });
+  } catch (error) {
+    return { tabId, ok: false, reason: 'injection_failed' };
+  }
+
+  const retry = await sendTabMessageWithAck(tabId, message);
+  return retry.ok
+    ? { tabId, ok: true, response: retry.response }
+    : { tabId, ok: false, reason: retry.reason };
+}
+
 // The editor (which owns the recorder) was closed while recording: the
 // capture died with it. End the session so the HUD leaves the page and the
 // telemetry is kept for the recovered recording.
@@ -328,25 +388,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         quality,
         activeSessionId: sessionId
       }).then(() => {
-        // Broadcast START_TELEMETRY to target tab and active web page tabs (http/https only).
+        // Broadcast START_TELEMETRY to target tab and active web page tabs.
         // `originEpoch` is the wall-clock timestamp of the first captured video
         // frame: sharing it makes telemetry time and video time use ONE clock.
         const originEpoch = message.originEpoch;
         chrome.tabs.query({}, (tabs) => {
-          for (const tab of tabs) {
-            if (tab.id && (tab.id === targetRecordingTabId || tab.active)) {
-              // Guard: Content scripts only run on web pages.
-              // If tab.url is defined, skip non-web pages (chrome://, chrome-extension://, etc.).
-              // If tab.url is undefined (due to omitted "tabs" permission), attempt messaging safely.
-              if (tab.url && !tab.url.startsWith('http://') && !tab.url.startsWith('https://')) {
-                continue;
+          const targets = tabs.filter((tab) => tab.id && (tab.id === targetRecordingTabId || tab.active));
+          Promise.all(targets.map((tab) => dispatchToTab(tab, { type: 'START_TELEMETRY', originEpoch, sessionId })))
+            .then((results) => {
+              for (const result of results) {
+                if (!result.ok) console.warn('[SmoothStudio SW] START_TELEMETRY failed for tab', result.tabId, result.reason);
               }
-              chrome.tabs.sendMessage(tab.id, { type: 'START_TELEMETRY', originEpoch, sessionId }, () => {
-                const err = chrome.runtime?.lastError;
-                if (err) console.warn('[SmoothStudio SW] START_TELEMETRY failed for tab', tab.id, err.message);
-              });
-            }
-          }
+              sendResponse({ status: 'recording_started', activeRecordingTabId: targetRecordingTabId, quality, sessionId, telemetry: results });
+            });
         });
 
         // Focus target tab if requested
@@ -354,7 +408,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           chrome.tabs.update(targetRecordingTabId, { active: true }).catch(() => {});
         }
 
-        sendResponse({ status: 'recording_started', activeRecordingTabId: targetRecordingTabId, quality, sessionId });
       });
     };
 
@@ -515,19 +568,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 6. Forward Privacy & Redaction Messages to Tabs
   if (['APPLY_PRIVACY_OPTIONS', 'START_PICKER', 'STOP_PICKER', 'RESET_PRIVACY'].includes(message.type)) {
     chrome.tabs.query({}, (tabs) => {
-      for (const tab of tabs) {
-        if (!tab.id) continue;
-        // If tab.url is defined, skip non-web pages (chrome://, chrome-extension://).
-        // If tab.url is undefined (due to omitted "tabs" permission), attempt forwarding safely.
-        if (tab.url && !tab.url.startsWith('http://') && !tab.url.startsWith('https://')) {
-          continue;
-        }
-        chrome.tabs.sendMessage(tab.id, message, () => {
-          void chrome.runtime?.lastError;
-        });
-      }
+      Promise.all(tabs.filter((tab) => typeof tab.id === 'number').map((tab) => dispatchToTab(tab, message)))
+        .then((results) => sendResponse({ status: 'forwarded', results }));
     });
-    sendResponse({ status: 'forwarded' });
     return true;
   }
 

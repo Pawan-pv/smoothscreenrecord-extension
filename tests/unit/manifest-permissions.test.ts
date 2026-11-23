@@ -11,7 +11,6 @@ describe('Chrome Web Store Permission Cleanliness', () => {
     const manifest = JSON.parse(raw);
 
     // Confirm unused high-privilege permissions are stripped
-    expect(manifest.permissions).not.toContain('scripting');
     expect(manifest.permissions).not.toContain('offscreen');
     expect(manifest.permissions).not.toContain('downloads');
     expect(manifest.permissions).not.toContain('tabCapture');
@@ -19,14 +18,14 @@ describe('Chrome Web Store Permission Cleanliness', () => {
     // Confirm required permissions remain
     expect(manifest.permissions).toContain('storage');
     expect(manifest.permissions).toContain('activeTab');
-    expect(manifest.permissions).toEqual(['storage', 'activeTab']);
+    expect(manifest.permissions).toEqual(['storage', 'activeTab', 'scripting']);
   });
 
   it('keeps public/manifest.json in sync with root manifest.json', () => {
     if (fs.existsSync(publicManifestPath)) {
       const raw = fs.readFileSync(publicManifestPath, 'utf8');
       const manifest = JSON.parse(raw);
-      expect(manifest.permissions).toEqual(['storage', 'activeTab']);
+      expect(manifest.permissions).toEqual(['storage', 'activeTab', 'scripting']);
     }
   });
 

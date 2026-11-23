@@ -165,7 +165,7 @@ export function createMockChrome() {
         return Promise.resolve(matched);
       }),
       sendMessage: vi.fn((tabId: number, message: any, callback?: (response: any) => void) => {
-        const res = { success: true, tabId, message };
+        const res = { ok: true, success: true, tabId, message };
         if (callback) callback(res);
         return Promise.resolve(res);
       }),
@@ -201,6 +201,9 @@ export function createMockChrome() {
         if (callback) callback();
         return Promise.resolve();
       })
+    },
+    scripting: {
+      executeScript: vi.fn(() => Promise.resolve([]))
     }
   };
 

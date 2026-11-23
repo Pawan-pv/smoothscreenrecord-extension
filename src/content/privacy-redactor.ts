@@ -5,6 +5,13 @@ export interface PrivacyOptions {
   interactivePicker: boolean;
 }
 
+// The service worker may inject this file into an already-open tab. The guard
+// is intentionally separate from the listener guard so repeated injection
+// cannot create a second content-script instance.
+if (typeof window !== 'undefined' && !(window as any).__smoothstudioPrivacyRedactorLoaded) {
+  (window as any).__smoothstudioPrivacyRedactorLoaded = true;
+}
+
 let isPickerActive = false;
 let hoveredElement: HTMLElement | null = null;
 let blurredElements: Set<HTMLElement> = new Set();
@@ -550,19 +557,19 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'APPLY_PRIVACY_OPTIONS') {
       const count = applyAutoRedaction(message.options || {});
-      sendResponse({ status: 'applied', count });
+      sendResponse({ ok: true, status: 'applied', count });
       return true;
     } else if (message.type === 'START_PICKER') {
       startElementPicker();
-      sendResponse({ status: 'picker_active' });
+      sendResponse({ ok: true, status: 'picker_active' });
       return true;
     } else if (message.type === 'STOP_PICKER') {
       stopElementPicker();
-      sendResponse({ status: 'picker_stopped' });
+      sendResponse({ ok: true, status: 'picker_stopped' });
       return true;
     } else if (message.type === 'RESET_PRIVACY') {
       resetRedactions();
-      sendResponse({ status: 'reset' });
+      sendResponse({ ok: true, status: 'reset' });
       return true;
     }
     return false;

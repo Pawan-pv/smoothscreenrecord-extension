@@ -92,6 +92,36 @@ describe('Cursor Smoother: Inertial Gliding, Spline Paths, & Click Snapping', ()
       expect(cursorAtClick.style).toBe('pointer');
     });
 
+    it.each([
+      ['Smooth', 0.6],
+      ['Cinematic', 0.9]
+    ])('removes at least 65%% of diagonal jitter in %s while pinning a click', (_preset, smoothing) => {
+      const points: MousePoint[] = [];
+      for (let i = 0; i <= 120; i++) {
+        const t = i * (1000 / 60);
+        const x = 200 + i * 4;
+        const lateralJitter = i % 2 === 0 ? -8 : 8;
+        points.push({ x, y: x + lateralJitter, t, c: i === 30 ? 'pointer' : 'default' });
+      }
+      const click = points[30];
+      const engine = new CursorSplineEngine(points, [
+        { t: click.t, x: click.x, y: click.y, button: 0, targetTag: 'BUTTON' }
+      ], [], { smoothing });
+
+      const errors: number[] = [];
+      for (let i = 3; i < points.length - 3; i++) {
+        const point = points[i];
+        const cursor = engine.getCursorAt(point.t);
+        errors.push((cursor.y - cursor.x) / Math.sqrt(2));
+      }
+      const rms = Math.sqrt(errors.reduce((sum, error) => sum + error * error, 0) / errors.length);
+      const rawRms = 8 / Math.sqrt(2);
+      expect(1 - rms / rawRms).toBeGreaterThanOrEqual(0.65);
+
+      const atClick = engine.getCursorAt(click.t);
+      expect(Math.hypot(atClick.x - click.x, atClick.y - click.y)).toBeLessThanOrEqual(1);
+    });
+
     it('robustly sorts chronological telemetry entries arriving out-of-order', () => {
       // Unsorted telemetry arrays
       const unsortedPoints: MousePoint[] = [

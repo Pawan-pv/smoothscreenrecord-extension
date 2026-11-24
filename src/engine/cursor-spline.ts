@@ -43,6 +43,12 @@ export class CursorSplineEngine {
   private activityTimestamps: number[] = [];
   private smoothing = 0.6;
   private cutRanges: Array<{ startTime: number; endTime: number }> = [];
+  /**
+   * The filtered trajectory depends ONLY on the raw points and the smoothing
+   * strength. Trim handles, silence cuts and every other option leave it alone,
+   * so it is rebuilt only when one of those two changed.
+   */
+  private filterDirty = true;
 
   constructor(mousePoints: MousePoint[] = [], clicks: ClickEvent[] = [], pressEvents: PressEvent[] = [], options: CursorSplineOptions = {}) {
     this.setData(mousePoints, clicks, pressEvents, options);
@@ -50,6 +56,7 @@ export class CursorSplineEngine {
 
   public setData(mousePoints: MousePoint[], clicks: ClickEvent[], pressEvents: PressEvent[] = [], options: CursorSplineOptions = {}) {
     this.mousePoints = [...mousePoints].sort((a, b) => a.t - b.t);
+    this.filterDirty = true;
     this.clicks = [...clicks].sort((a, b) => a.t - b.t);
     this.pressEvents = [...pressEvents].sort((a, b) => a.t - b.t);
     this.setOptions(options);
@@ -78,7 +85,9 @@ export class CursorSplineEngine {
 
   public setOptions(options: CursorSplineOptions = {}): void {
     if (typeof options.smoothing === 'number' && Number.isFinite(options.smoothing)) {
-      this.smoothing = Math.max(0, Math.min(1, options.smoothing));
+      const next = Math.max(0, Math.min(1, options.smoothing));
+      if (next !== this.smoothing) this.filterDirty = true;
+      this.smoothing = next;
     }
     if (options.cutRanges) {
       this.cutRanges = options.cutRanges
@@ -86,7 +95,10 @@ export class CursorSplineEngine {
         .map((range) => ({ startTime: range.startTime, endTime: range.endTime }))
         .sort((a, b) => a.startTime - b.startTime);
     }
-    this.rebuildFilteredMousePoints();
+    if (this.filterDirty) {
+      this.rebuildFilteredMousePoints();
+      this.filterDirty = false;
+    }
   }
 
   /** Build a centred, zero-phase trajectory before Catmull-Rom interpolation. */
@@ -102,16 +114,32 @@ export class CursorSplineEngine {
     const sigmaMs = 18 + this.smoothing * 55;
     const radiusMs = sigmaMs * 3;
     const filtered: MousePoint[] = [];
+    const points = this.mousePoints;
 
-    for (let i = 0; i < this.mousePoints.length; i++) {
-      const point = this.mousePoints[i];
+    // Telemetry timestamps are whole milliseconds, so the Gaussian weight of a
+    // candidate is a lookup by its integer distance. (A fractional distance
+    // falls back to the exact formula, so the result never differs.)
+    const weightAt = new Float64Array(Math.floor(radiusMs) + 1);
+    for (let d = 0; d < weightAt.length; d++) weightAt[d] = Math.exp(-0.5 * (d / sigmaMs) ** 2);
+
+    // The points are sorted by time, so the window [t - radius, t + radius] only
+    // ever slides forward: each point looks at the ~2*radius/dt samples around
+    // it (about 55 at 120 Hz), never at the whole recording. O(N).
+    let windowStart = 0;
+    for (let i = 0; i < points.length; i++) {
+      const point = points[i];
+      while (windowStart < i && point.t - points[windowStart].t > radiusMs) windowStart++;
       let weightSum = 0;
       let x = 0;
       let y = 0;
-      for (const candidate of this.mousePoints) {
+      for (let j = windowStart; j < points.length; j++) {
+        const candidate = points[j];
         const distance = Math.abs(candidate.t - point.t);
-        if (distance > radiusMs) continue;
-        const weight = Math.exp(-0.5 * (distance / sigmaMs) ** 2);
+        if (distance > radiusMs) {
+          if (candidate.t > point.t) break;
+          continue;
+        }
+        const weight = Number.isInteger(distance) ? weightAt[distance] : Math.exp(-0.5 * (distance / sigmaMs) ** 2);
         weightSum += weight;
         x += candidate.x * weight;
         y += candidate.y * weight;

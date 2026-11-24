@@ -7,6 +7,7 @@ import type {
   InputFocusEvent,
   TypingSession,
   ScrollEvent,
+  VisibilityEvent,
   RecordingMetadata
 } from '../types/telemetry';
 
@@ -25,6 +26,7 @@ export interface TelemetryBatch {
   inputEvents: InputFocusEvent[];
   typingSessions: TypingSession[];
   scrollEvents: ScrollEvent[];
+  visibilityEvents?: VisibilityEvent[];
 }
 
 export interface SegmentPageInfo {
@@ -56,14 +58,15 @@ export function emptyBatch(): TelemetryBatch {
     keystrokes: [],
     inputEvents: [],
     typingSessions: [],
-    scrollEvents: []
+    scrollEvents: [],
+    visibilityEvents: []
   };
 }
 
 export function batchIsEmpty(b: TelemetryBatch): boolean {
   return b.mousePoints.length === 0 && b.clicks.length === 0 && b.pressEvents.length === 0 &&
     b.keystrokes.length === 0 && b.inputEvents.length === 0 && b.typingSessions.length === 0 &&
-    b.scrollEvents.length === 0;
+    b.scrollEvents.length === 0 && (b.visibilityEvents?.length ?? 0) === 0;
 }
 
 export function segmentKey(s: Pick<TelemetrySegment, 'sessionId' | 'loadId' | 'seq'>): string {
@@ -131,6 +134,7 @@ export function mergeTelemetrySegments(input: MergeInput): TelemetryData | null 
     out.inputEvents.push(...shifted(batch.inputEvents || [], delta));
     out.typingSessions.push(...shiftedTyping(batch.typingSessions || [], delta));
     out.scrollEvents.push(...shifted(batch.scrollEvents || [], delta));
+    out.visibilityEvents!.push(...shifted(batch.visibilityEvents || [], delta));
   };
 
   for (const s of unique) add(s.batch, s.originEpoch);
@@ -145,12 +149,13 @@ export function mergeTelemetrySegments(input: MergeInput): TelemetryData | null 
   out.inputEvents.sort(byTime);
   out.typingSessions.sort(byTime);
   out.scrollEvents.sort(byTime);
+  out.visibilityEvents!.sort(byTime);
 
   // Metadata: the recording starts on the FIRST page (its url/title identify
   // the guide), while the viewport and brand colours come from the freshest page.
   // Order the page loads by when their first captured event happened.
   const startsAt = (x: TelemetrySegment) => {
-    const ts = [x.batch.mousePoints, x.batch.clicks, x.batch.pressEvents, x.batch.keystrokes, x.batch.inputEvents, x.batch.scrollEvents]
+    const ts = [x.batch.mousePoints, x.batch.clicks, x.batch.pressEvents, x.batch.keystrokes, x.batch.inputEvents, x.batch.scrollEvents, x.batch.visibilityEvents || []]
       .flat().map((i) => i.t);
     return x.originEpoch + (ts.length ? Math.min(...ts) : 0);
   };

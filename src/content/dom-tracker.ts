@@ -7,6 +7,7 @@ import {
   TypingSession,
   BoundingBox,
   ScrollEvent,
+  VisibilityEvent,
   CursorStyle,
   PressEvent
 } from '../types/telemetry';
@@ -33,6 +34,7 @@ let keystrokes: KeystrokeEvent[] = [];
 let inputEvents: InputFocusEvent[] = [];
 let typingSessions: TypingSession[] = [];
 let scrollEvents: ScrollEvent[] = [];
+let visibilityEvents: VisibilityEvent[] = [];
 let pressEvents: PressEvent[] = [];
 
 let lastMouseX = 0;
@@ -232,6 +234,24 @@ function findParentContainer(target: Element | null, offsetX = 0, offsetY = 0): 
   };
 }
 
+/**
+ * True when the clicked element is something a user operates. Plain page content
+ * (a heading, an empty area) is NOT interactive. Used downstream to tell a real UI
+ * click from a stray one; when in doubt the answer is true.
+ */
+export function isInteractiveTarget(target: Element | null, cursor: CursorStyle): boolean {
+  if (!target) return true;
+  if (cursor === 'pointer') return true;
+  try {
+    const hit = target.closest?.('button, a, input, textarea, select, summary, label, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="checkbox"], [role="switch"], [contenteditable]:not([contenteditable="false"])');
+    if (hit) return true;
+    if ((target as HTMLElement).isContentEditable) return true;
+  } catch {
+    return true;
+  }
+  return false;
+}
+
 // Track mouse position and cursor style at up to 120Hz
 function handleMouseMove(e: MouseEvent) {
   if (!isRecording) return;
@@ -315,7 +335,9 @@ function handleClick(e: MouseEvent) {
     targetTag: tag,
     targetText: text,
     targetLabel: sensitive ? '[hidden input]' : describeElement(target as HTMLElement | null),
-    containerBounds
+    containerBounds,
+    clickCount: Math.max(1, Math.round(e.detail || 1)),
+    interactive: isInteractiveTarget(target, lastCursor)
   });
 
   // Ensure an immediate mouse point is also captured on click
@@ -520,7 +542,7 @@ let flushTimer: ReturnType<typeof setInterval> | null = null;
 let unackedSegments: TelemetrySegment[] = [];
 
 function takeBatch(): TelemetryBatch {
-  const batch: TelemetryBatch = { mousePoints, clicks, pressEvents, keystrokes, inputEvents, typingSessions, scrollEvents };
+  const batch: TelemetryBatch = { mousePoints, clicks, pressEvents, keystrokes, inputEvents, typingSessions, scrollEvents, visibilityEvents };
   mousePoints = [];
   clicks = [];
   pressEvents = [];
@@ -528,6 +550,7 @@ function takeBatch(): TelemetryBatch {
   inputEvents = [];
   typingSessions = [];
   scrollEvents = [];
+  visibilityEvents = [];
   return batch;
 }
 
@@ -573,6 +596,13 @@ export function flushTelemetry(reason: 'interval' | 'pagehide' = 'interval'): vo
 
 function handlePageHide(): void {
   flushTelemetry('pagehide');
+}
+
+/** The user left (or came back to) the recorded tab: a zoom must not stay held on a page nobody sees. */
+function handleVisibilityChange() {
+  if (!isRecording || !hudLiveSent) return;
+  const state = document.visibilityState === 'hidden' ? 'hidden' : 'visible';
+  visibilityEvents.push({ t: Math.round(getRelativeTime()), state });
 }
 
 let floatingHudEl: HTMLElement | null = null;
@@ -722,6 +752,7 @@ function markRecordingLiveOnScreen(): void {
   inputEvents = [];
   typingSessions = [];
   scrollEvents = [];
+  visibilityEvents = [];
   pressEvents = [];
   lastSampleTime = 0;
   lastScrollTime = 0;
@@ -757,6 +788,7 @@ function applyTimelineOrigin(epoch: number, incomingSessionId?: string | null): 
   inputEvents = [];
   typingSessions = [];
   scrollEvents = [];
+  visibilityEvents = [];
   pressEvents = [];
   lastSampleTime = 0;
   lastScrollTime = 0;
@@ -847,6 +879,7 @@ export function startTracking(
   inputEvents = [];
   typingSessions = [];
   scrollEvents = [];
+  visibilityEvents = [];
   lastSampleTime = 0;
   lastScrollTime = 0;
   activeTyping = null;
@@ -871,6 +904,7 @@ export function startTracking(
   window.addEventListener('scroll', handleScroll, { passive: true, capture: true });
   window.addEventListener('pagehide', handlePageHide, { capture: true });
   window.addEventListener('beforeunload', handlePageHide, { capture: true });
+  document.addEventListener('visibilitychange', handleVisibilityChange);
   attachSameOriginIframes();
   if (flushTimer !== null) clearInterval(flushTimer);
   flushTimer = setInterval(() => flushTelemetry('interval'), FLUSH_INTERVAL_MS);
@@ -916,6 +950,7 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
   window.removeEventListener('scroll', handleScroll, { capture: true });
   window.removeEventListener('pagehide', handlePageHide, { capture: true });
   window.removeEventListener('beforeunload', handlePageHide, { capture: true });
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
   if (flushTimer !== null) {
     clearInterval(flushTimer);
     flushTimer = null;
@@ -946,7 +981,8 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
     keystrokes,
     inputEvents,
     typingSessions,
-    scrollEvents
+    scrollEvents,
+    visibilityEvents
   };
 
   console.log('[SmoothStudio DOM-Tracker] Telemetry captured:', telemetry);

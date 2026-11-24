@@ -1990,6 +1990,8 @@ export function EditorStudio() {
           onChangeFramePadding={setFramePadding}
           background={backgroundSpec}
           onChangeBackground={handleChangeBackground}
+          backgroundEffects={backgroundEffects}
+          onChangeBackgroundEffects={(change) => setBackgroundEffects((prev) => ({ ...prev, ...change }))}
           backgroundColor={backgroundColor}
           onSelectBackgroundColor={handleSelectBackgroundColor}
           backgroundImageUrl={backgroundImageUrl}

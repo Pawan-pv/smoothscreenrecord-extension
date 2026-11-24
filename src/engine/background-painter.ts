@@ -115,8 +115,55 @@ export function paintGradient(
   ctx.fillRect(0, 0, w, h);
 }
 
-/** Paints a static background into ctx (w x h). */
+/** Blur radius in px for a 0..100 setting, relative to the canvas (same look at 1080p and 4K). */
+export function backgroundBlurPx(blur: number, w: number, h: number): number {
+  const v = Math.max(0, Math.min(100, Number.isFinite(blur) ? blur : 0));
+  return (v / 100) * 40 * (Math.min(w, h) / 1080);
+}
+
+/** Opacity of the black dim overlay for a 0..100 setting. */
+export function backgroundDimAlpha(dim: number): number {
+  const v = Math.max(0, Math.min(100, Number.isFinite(dim) ? dim : 0));
+  return (v / 100) * 0.7;
+}
+
+/** Wallpapers and images take blur / dim; colors and gradients are already plain. */
+export function backgroundTakesEffects(layer: BackgroundLayer): boolean {
+  return layer.spec.kind === 'wallpaper' || layer.spec.kind === 'image';
+}
+
+/** Paints a static background into ctx (w x h), with its blur and dim. */
 export function paintBackground(ctx: CanvasRenderingContext2D, w: number, h: number, layer: BackgroundLayer): void {
+  const effects = backgroundTakesEffects(layer) ? layer.effects : null;
+  const blurPx = effects ? backgroundBlurPx(effects.blur, w, h) : 0;
+  if (blurPx >= 0.5) {
+    // Paint sharp first, then copy it blurred. The copy is drawn a little larger than the
+    // canvas: a blur fades towards the transparent outside, and that fade must stay off-canvas.
+    const sharp = document.createElement('canvas');
+    sharp.width = w;
+    sharp.height = h;
+    const sctx = sharp.getContext('2d');
+    if (sctx) {
+      paintSharp(sctx, w, h, layer);
+      const margin = blurPx * 3;
+      ctx.save();
+      ctx.filter = `blur(${blurPx}px)`;
+      ctx.drawImage(sharp, -margin, -margin, w + margin * 2, h + margin * 2);
+      ctx.restore();
+    }
+  } else {
+    paintSharp(ctx, w, h, layer);
+  }
+  const dimAlpha = effects ? backgroundDimAlpha(effects.dim) : 0;
+  if (dimAlpha > 0) {
+    ctx.save();
+    ctx.fillStyle = `rgba(0, 0, 0, ${dimAlpha})`;
+    ctx.fillRect(0, 0, w, h);
+    ctx.restore();
+  }
+}
+
+function paintSharp(ctx: CanvasRenderingContext2D, w: number, h: number, layer: BackgroundLayer): void {
   const spec = layer.spec;
   ctx.save();
   if (spec.kind === 'solid') {

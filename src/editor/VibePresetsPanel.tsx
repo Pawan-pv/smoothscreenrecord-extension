@@ -10,7 +10,8 @@ import {
   BackdropMatrixParams,
   FramingMode,
   ShadowMode,
-  BackgroundSpec
+  BackgroundSpec,
+  BackgroundEffects
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
 import type { CursorMotionSettings } from '../engine/cursor-spline';
@@ -100,6 +101,8 @@ interface VibePresetsPanelProps {
   onChangeFramePadding?: (val: number) => void;
   background?: BackgroundSpec;
   onChangeBackground?: (spec: BackgroundSpec) => void;
+  backgroundEffects?: BackgroundEffects;
+  onChangeBackgroundEffects?: (change: Partial<BackgroundEffects>) => void;
   backgroundColor?: string | null;
   onSelectBackgroundColor?: (val: string | null) => void;
   backgroundImageUrl?: string | null;
@@ -163,6 +166,8 @@ export function VibePresetsPanel({
   onChangeFramePadding,
   background = { kind: 'backdrop' },
   onChangeBackground,
+  backgroundEffects = { blur: 0, dim: 0 },
+  onChangeBackgroundEffects,
   backgroundColor,
   onSelectBackgroundColor,
   backgroundImageUrl,
@@ -809,6 +814,43 @@ export function VibePresetsPanel({
               <span>{backgroundImageUrl ? 'Replace Custom Image' : 'Upload Background Image'}</span>
               <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
             </label>
+          </div>
+        )}
+
+        {(background.kind === 'wallpaper' || background.kind === 'image') && (
+          <div className="grid grid-cols-2 gap-3 pt-1">
+            <div className="space-y-1">
+              <div className="flex justify-between text-[11px] text-gray-400">
+                <span>Blur</span>
+                <span className="font-mono text-pink-300">{Math.round(backgroundEffects.blur)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value={backgroundEffects.blur}
+                onChange={(e) => onChangeBackgroundEffects?.({ blur: parseInt(e.target.value, 10) })}
+                className="w-full accent-pink-500"
+                aria-label="Background blur"
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="flex justify-between text-[11px] text-gray-400">
+                <span>Dim</span>
+                <span className="font-mono text-pink-300">{Math.round(backgroundEffects.dim)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value={backgroundEffects.dim}
+                onChange={(e) => onChangeBackgroundEffects?.({ dim: parseInt(e.target.value, 10) })}
+                className="w-full accent-pink-500"
+                aria-label="Background dim"
+              />
+            </div>
           </div>
         )}
       </div>

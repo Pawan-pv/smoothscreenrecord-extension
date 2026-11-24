@@ -9,10 +9,21 @@ import {
   CaptionStyle,
   BackdropMatrixParams,
   FramingMode,
-  ShadowMode
+  ShadowMode,
+  BackgroundSpec
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
 import type { CursorMotionSettings } from '../engine/cursor-spline';
+import { GRADIENT_PRESETS, gradientCss } from '../engine/background-painter';
+
+type BackgroundTab = 'gradient' | 'color' | 'image';
+const BACKGROUND_TABS: ReadonlyArray<readonly [BackgroundTab, string]> = [
+  ['gradient', 'Gradient'],
+  ['color', 'Color'],
+  ['image', 'Image']
+];
+const tabOf = (spec: BackgroundSpec): BackgroundTab =>
+  spec.kind === 'solid' ? 'color' : spec.kind === 'image' ? 'image' : 'gradient';
 import {
   Palette,
   Volume2,
@@ -85,6 +96,8 @@ interface VibePresetsPanelProps {
   onChangeOutroCtaText?: (val: string) => void;
   framePadding?: number;
   onChangeFramePadding?: (val: number) => void;
+  background?: BackgroundSpec;
+  onChangeBackground?: (spec: BackgroundSpec) => void;
   backgroundColor?: string | null;
   onSelectBackgroundColor?: (val: string | null) => void;
   backgroundImageUrl?: string | null;
@@ -146,6 +159,8 @@ export function VibePresetsPanel({
   onChangeOutroCtaText,
   framePadding,
   onChangeFramePadding,
+  background = { kind: 'backdrop' },
+  onChangeBackground,
   backgroundColor,
   onSelectBackgroundColor,
   backgroundImageUrl,
@@ -168,7 +183,23 @@ export function VibePresetsPanel({
 
   const handleResetBackground = () => {
     onSelectBackgroundImage?.(null, null);
-    onSelectBackgroundColor?.(null);
+    onChangeBackground?.({ kind: 'backdrop' });
+  };
+
+  const [backgroundTab, setBackgroundTab] = React.useState<BackgroundTab>(tabOf(background));
+  const hasCustomBackground = background.kind !== 'backdrop';
+  const gradient = background.kind === 'gradient' ? background : null;
+  const gradientColors = gradient?.colors ?? GRADIENT_PRESETS[0].colors;
+  const gradientAngle = gradient?.angle ?? GRADIENT_PRESETS[0].angle;
+  const gradientShape = gradient?.shape ?? GRADIENT_PRESETS[0].shape;
+  /** Edits the current gradient (or starts one from the first preset). */
+  const editGradient = (change: Partial<{ colors: string[]; angle: number; shape: 'linear' | 'radial' }>) => {
+    onChangeBackground?.({
+      kind: 'gradient',
+      colors: change.colors ?? [...gradientColors],
+      angle: change.angle ?? gradientAngle,
+      shape: change.shape ?? gradientShape
+    });
   };
 
   const handleMatchBrand = () => {
@@ -597,19 +628,19 @@ export function VibePresetsPanel({
         />
       </div>
 
-      {/* Custom Background: Solid Colors & Image Upload */}
+      {/* Custom Background: gradients, solid colors and images */}
       <div className="pt-2 border-t border-white/10 space-y-2">
         <div className="flex items-center justify-between text-xs font-semibold text-gray-300 uppercase tracking-wider">
           <span className="flex items-center gap-1.5">
             <Palette className="w-3.5 h-3.5 text-pink-400" />
-            Custom Background
+            Background
           </span>
-          {(backgroundColor || backgroundImageUrl) && (
+          {hasCustomBackground && (
             <button
               type="button"
               onClick={handleResetBackground}
               className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1 transition-colors"
-              title="Reset custom background to preset backdrop"
+              title="Back to the preset's animated backdrop"
             >
               <RotateCcw className="w-2.5 h-2.5" />
               Reset
@@ -617,42 +648,144 @@ export function VibePresetsPanel({
           )}
         </div>
 
-        {/* Solid Color Swatches */}
-        <div className="flex items-center gap-1.5">
-          {['#000000', '#0F172A', '#1E1B4B', '#18181B', '#3B0764', '#064E3B'].map((color) => (
+        {/* Tabs */}
+        <div className="grid grid-cols-3 gap-1 text-[11px]" role="tablist">
+          {BACKGROUND_TABS.map(([id, label]) => (
             <button
-              key={color}
+              key={id}
               type="button"
-              onClick={() => onSelectBackgroundColor?.(color)}
-              className={`w-5 h-5 rounded-full border transition-all ${
-                backgroundColor === color ? 'border-white scale-110 shadow-sm shadow-white/50' : 'border-white/20 hover:scale-105'
+              role="tab"
+              aria-selected={backgroundTab === id}
+              onClick={() => setBackgroundTab(id)}
+              className={`p-1.5 rounded-lg border text-center transition-colors ${
+                backgroundTab === id ? 'bg-pink-600/20 border-pink-500 text-white font-medium' : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
               }`}
-              style={{ backgroundColor: color }}
-              title={color}
-            />
+            >
+              {label}
+            </button>
           ))}
-          <input
-            type="color"
-            value={backgroundColor || '#000000'}
-            onChange={(e) => onSelectBackgroundColor?.(e.target.value)}
-            className="w-5 h-5 rounded-full border border-white/20 p-0 cursor-pointer bg-transparent"
-            title="Custom solid color"
-          />
         </div>
 
-        {/* Custom Background Image Upload */}
-        <div className="pt-1">
-          <label className="w-full py-1.5 px-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs text-gray-300 cursor-pointer flex items-center justify-center gap-2 transition-colors">
-            <Upload className="w-3.5 h-3.5 text-indigo-400" />
-            <span>{backgroundImageUrl ? 'Replace Custom Image' : 'Upload Background Image'}</span>
+        {backgroundTab === 'gradient' && (
+          <div className="space-y-2">
+            <div className="grid grid-cols-4 gap-1.5">
+              {GRADIENT_PRESETS.map((g) => {
+                const selected = Boolean(gradient && gradient.angle === g.angle && gradient.shape === g.shape && gradient.colors.join() === g.colors.join());
+                return (
+                  <button
+                    key={g.name}
+                    type="button"
+                    onClick={() => onChangeBackground?.({ kind: 'gradient', colors: [...g.colors], angle: g.angle, shape: g.shape })}
+                    className={`h-9 rounded-lg border transition-all ${selected ? 'border-white ring-1 ring-white/60' : 'border-white/10 hover:border-white/40'}`}
+                    style={{ background: gradientCss(g.colors, g.angle, g.shape) }}
+                    title={g.name}
+                    aria-label={`${g.name} gradient`}
+                  />
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-1.5">
+              {gradientColors.map((color, i) => (
+                <input
+                  key={i}
+                  type="color"
+                  value={color}
+                  onChange={(e) => {
+                    const next = [...gradientColors];
+                    next[i] = e.target.value;
+                    editGradient({ colors: next });
+                  }}
+                  className="w-6 h-6 rounded-full border border-white/20 p-0 cursor-pointer bg-transparent"
+                  title={`Color ${i + 1}`}
+                  aria-label={`Gradient color ${i + 1}`}
+                />
+              ))}
+              {gradientColors.length < 3 && (
+                <button
+                  type="button"
+                  onClick={() => editGradient({ colors: [...gradientColors, gradientColors[gradientColors.length - 1]] })}
+                  className="w-6 h-6 rounded-full border border-white/20 text-gray-300 text-xs hover:bg-white/10"
+                  title="Add a color"
+                >
+                  +
+                </button>
+              )}
+              {gradientColors.length > 2 && (
+                <button
+                  type="button"
+                  onClick={() => editGradient({ colors: gradientColors.slice(0, -1) })}
+                  className="w-6 h-6 rounded-full border border-white/20 text-gray-300 text-xs hover:bg-white/10"
+                  title="Remove the last color"
+                >
+                  −
+                </button>
+              )}
+              <div className="ml-auto flex rounded-lg border border-white/10 overflow-hidden text-[10px]">
+                {(['linear', 'radial'] as const).map((shape) => (
+                  <button
+                    key={shape}
+                    type="button"
+                    onClick={() => editGradient({ shape })}
+                    className={`px-2 py-1 ${gradientShape === shape ? 'bg-white/15 text-white' : 'text-gray-400 hover:text-white'}`}
+                  >
+                    {shape === 'linear' ? 'Linear' : 'Radial'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-1">
+              <div className="flex justify-between text-[11px] text-gray-400">
+                <span>Angle</span>
+                <span className="font-mono text-pink-300">{Math.round(gradientAngle)}°</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="360"
+                step="5"
+                value={gradientAngle}
+                disabled={gradientShape === 'radial'}
+                onChange={(e) => editGradient({ angle: parseInt(e.target.value, 10) })}
+                className="w-full accent-pink-500 disabled:opacity-40"
+                aria-label="Gradient angle"
+              />
+            </div>
+          </div>
+        )}
+
+        {backgroundTab === 'color' && (
+          <div className="flex items-center gap-1.5">
+            {['#000000', '#0F172A', '#1E1B4B', '#18181B', '#3B0764', '#064E3B', '#F8FAFC', '#FDE68A'].map((color) => (
+              <button
+                key={color}
+                type="button"
+                onClick={() => onSelectBackgroundColor?.(color)}
+                className={`w-5 h-5 rounded-full border transition-all ${
+                  backgroundColor === color ? 'border-white scale-110 shadow-sm shadow-white/50' : 'border-white/20 hover:scale-105'
+                }`}
+                style={{ backgroundColor: color }}
+                title={color}
+              />
+            ))}
             <input
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={handleImageUpload}
+              type="color"
+              value={backgroundColor || '#000000'}
+              onChange={(e) => onSelectBackgroundColor?.(e.target.value)}
+              className="w-5 h-5 rounded-full border border-white/20 p-0 cursor-pointer bg-transparent"
+              title="Custom solid color"
             />
-          </label>
-        </div>
+          </div>
+        )}
+
+        {backgroundTab === 'image' && (
+          <div className="pt-1">
+            <label className="w-full py-1.5 px-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs text-gray-300 cursor-pointer flex items-center justify-center gap-2 transition-colors">
+              <Upload className="w-3.5 h-3.5 text-indigo-400" />
+              <span>{backgroundImageUrl ? 'Replace Custom Image' : 'Upload Background Image'}</span>
+              <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+            </label>
+          </div>
+        )}
       </div>
 
       {/* Cursor Theme & Scale Customizer */}

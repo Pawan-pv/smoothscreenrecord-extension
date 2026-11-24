@@ -1988,6 +1988,8 @@ export function EditorStudio() {
           onChangeOutroCtaText={setOutroCtaText}
           framePadding={framePadding}
           onChangeFramePadding={setFramePadding}
+          background={backgroundSpec}
+          onChangeBackground={handleChangeBackground}
           backgroundColor={backgroundColor}
           onSelectBackgroundColor={handleSelectBackgroundColor}
           backgroundImageUrl={backgroundImageUrl}

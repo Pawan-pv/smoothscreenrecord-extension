@@ -253,8 +253,11 @@ export function generateAutoZoomPills(
   options: AutoZoomOptions = {}
 ): ZoomPill[] {
   const pills: ZoomPill[] = [];
-  const CLUSTER_DISTANCE_PX = 320;
-  const CLUSTER_TIME_WINDOW_MS = 3800;
+  // "Same general area" is relative to the screen: 20% of its width, at most 320 px. A fixed 320 px
+  // is a third of a small window, which merged clicks on neighbouring buttons into one zoom.
+  const CLUSTER_DISTANCE_PX = Math.min(320, 0.2 * (Number.isFinite(viewportWidth) ? viewportWidth : 1920));
+  // Clicks more than 2.5 s apart are separate actions: each gets its own zoom.
+  const CLUSTER_TIME_WINDOW_MS = 2500;
   const scaleCap = autoZoomScaleCap(options.sourcePixelWidth);
 
   // A pill is a seek target in the exporter: it must live inside the

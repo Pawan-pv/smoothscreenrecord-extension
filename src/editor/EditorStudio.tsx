@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useReducer } from 'react';
 import {
   TelemetryData,
   ZoomPill,
@@ -18,6 +18,7 @@ import { VIBE_PRESETS } from '../engine/renderer';
 import { generateAutoZoomPills, resolveSourcePixelWidth, AUTO_ZOOM_DEFAULT_DEPTH } from '../engine/spring-physics';
 import { DEFAULT_TRANSITION_MS } from '../engine/camera-path';
 import { toCaptureSpace } from '../engine/capture-space';
+import { prepareVideo, studioLoadReducer, LoadStep, LOAD_STEPS } from './studio-load';
 import { CursorSplineEngine } from '../engine/cursor-spline';
 import { AudioProcessor } from '../engine/audio-processor';
 import { SfxSynthesizer } from '../engine/sfx-synthesizer';
@@ -148,6 +149,11 @@ export function EditorStudio() {
   const activeSessionIdRef = useRef<string | null>(null);
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | HTMLCanvasElement | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
+  /** Loading state machine (studio-load.ts): the studio is usable only when `ready`. */
+  const [load, dispatchLoad] = useReducer(studioLoadReducer, { phase: 'empty' });
+  /** Id of the newest load: events of older loads are ignored. */
+  const loadIdRef = useRef(0);
+  const isStudioReady = load.phase === 'ready';
   const [autoZoomSettings, setAutoZoomSettingsState] = useState<AutoZoomSettings>(loadAutoZoomSettings);
   /** Read by setupLoadedRecording, which can run from an older render. */
   const autoZoomSettingsRef = useRef<AutoZoomSettings>(autoZoomSettings);
@@ -544,155 +550,131 @@ export function EditorStudio() {
     loadInitial();
   }, []);
 
-  const setupLoadedRecording = (blob: Blob, loadedData: TelemetryData, measuredDurationMs?: number, sessionId?: string | null) => {
-    // A window / entire-screen recording shows the page somewhere inside the picture:
-    // move the page's clicks and cursor onto the recorded frame so auto-zoom lands on them.
-    const loadedTrack = captureEngineRef.current.getTrackSettings();
-    const data = toCaptureSpace(
-      loadedData,
-      loadedData.metadata?.displaySurface || loadedTrack?.displaySurface,
-      loadedTrack?.width,
-      loadedTrack?.height
-    ) ?? loadedData;
-    firedSfxRef.current.clear();
-    setVideoBlob(blob);
-    setTelemetry(data);
+  /**
+   * Loads a recording into the studio (state machine: studio-load.ts). The video,
+   * its real length, the telemetry and the zooms are put on screen together, once
+   * all of them are ready; until then the studio shows the loading screen.
+   */
+  const setupLoadedRecording = async (blob: Blob, loadedData: TelemetryData, measuredDurationMs?: number, sessionId?: string | null): Promise<boolean> => {
+    const loadId = ++loadIdRef.current;
+    const isCurrent = () => loadId === loadIdRef.current;
+    const step = (s: LoadStep) => { if (isCurrent()) dispatchLoad({ type: 'step', loadId, step: s }); };
+    dispatchLoad({ type: 'begin', loadId, step: 'opening' });
 
-    // Compute safe, finite duration fallback
-    const safeDuration = (measuredDurationMs && measuredDurationMs > 0)
-      ? measuredDurationMs
-      : (data.metadata?.durationMs && data.metadata.durationMs > 0 ? data.metadata.durationMs : 10000);
-    setDurationMs(safeDuration);
-    setTrimStartMs(0);
-    setTrimEndMs(safeDuration);
-
-    // Revoke previous object URL if any, preserving the currently active one
-    const newObjectUrl = URL.createObjectURL(blob);
-    if (prevBlobUrlRef.current && prevBlobUrlRef.current !== newObjectUrl) {
-      URL.revokeObjectURL(prevBlobUrlRef.current);
+    // Nothing of the previous recording may play or draw while this one loads.
+    setIsPlaying(false);
+    setVideoElement(null);
+    const previousVideo = document.getElementById('smoothstudio-source-video') as HTMLVideoElement | null;
+    if (previousVideo) {
+      try { previousVideo.pause(); } catch { /* already gone */ }
+      previousVideo.remove();
     }
-    prevBlobUrlRef.current = currentBlobUrlRef.current;
-    currentBlobUrlRef.current = newObjectUrl;
+    firedSfxRef.current.clear();
 
+    const newObjectUrl = URL.createObjectURL(blob);
     const video = document.createElement('video');
     video.src = newObjectUrl;
     video.muted = true;
     video.playsInline = true;
     video.preload = 'auto';
-
-    // Mount video element in DOM so standard element queries (e.g. document.querySelector('video')) and browser decoders resolve it
-    const existingVideo = document.getElementById('smoothstudio-source-video');
-    if (existingVideo) existingVideo.remove();
     video.id = 'smoothstudio-source-video';
-    const loadedSid = sessionId || data.metadata?.sessionId || null;
+    const loadedSid = sessionId || loadedData.metadata?.sessionId || null;
     if (loadedSid) video.setAttribute('data-session-id', loadedSid);
+    // Mounted so the browser decodes it; invisible (the canvas shows it).
     video.style.cssText = 'position: fixed; bottom: 0; right: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; z-index: -1;';
     document.body.appendChild(video);
+    video.addEventListener('play', () => { if (isCurrent()) setIsPlaying(true); });
+    video.addEventListener('pause', () => { if (isCurrent()) setIsPlaying(false); });
+    try { video.load(); } catch { /* reported by prepareVideo */ }
 
-    video.addEventListener('play', () => setIsPlaying(true));
-    video.addEventListener('pause', () => setIsPlaying(false));
-    const markReady = () => {
+    const dropThisVideo = () => {
+      video.remove();
+      URL.revokeObjectURL(newObjectUrl);
+    };
+
+    try {
+      const media = await prepareVideo(video, step);
+      if (!isCurrent()) { dropThisVideo(); return false; }
       video.setAttribute('data-ready', 'true');
-    };
-    video.addEventListener('loadeddata', markReady);
-    video.addEventListener('canplay', markReady);
 
-    video.onloadedmetadata = () => {
-      // Read the REAL container duration before anything overrides it. The
-      // container's duration is the authoritative media length: it includes the
-      // audio tail when the audio track outlives the last video frame (QA-002).
-      const realDurMs = Number.isFinite(video.duration) && video.duration > 0
-        ? Math.round(video.duration * 1000)
-        : null;
-      mediaDurationRef.current = realDurMs;
-
-      let resolvedDur = safeDuration;
-      // Guard against Chrome MediaRecorder WebM bug where video.duration === Infinity or NaN
-      if (realDurMs !== null) {
-        resolvedDur = Math.max(realDurMs, safeDuration);
-      } else {
-        // Chrome WebM duration bug workaround: seek near end and reset to 0 to force duration calculation
-        try {
-          video.currentTime = 1e101;
-          video.ontimeupdate = () => {
-            video.ontimeupdate = null;
-            video.currentTime = 0;
-          };
-        } catch {}
-      }
-      // The UI timeline and the exporter must agree on the media length. Keep a
-      // finite duration for the many `video.duration` readers in the editor.
+      // ---- syncing: one clock (the video's) and one frame (the video's picture) ----
+      step('syncing');
+      const telemetryMs = (measuredDurationMs && measuredDurationMs > 0)
+        ? measuredDurationMs
+        : (loadedData.metadata?.durationMs && loadedData.metadata.durationMs > 0 ? loadedData.metadata.durationMs : null);
+      // The video is the timeline: its own length wins over the recorder's estimate.
+      const resolvedDur = media.durationMs ?? telemetryMs ?? 10000;
+      mediaDurationRef.current = media.durationMs;
+      // Many readers (timeline, exporters) use video.duration: keep it finite and equal to the timeline.
       try {
-        Object.defineProperty(video, 'duration', {
-          get: () => resolvedDur / 1000,
-          configurable: true
-        });
-      } catch {}
-      console.log('[SmoothStudio] Video element metadata loaded. Duration:', resolvedDur, 'container:', realDurMs, 'Dimensions:', video.videoWidth, 'x', video.videoHeight);
+        Object.defineProperty(video, 'duration', { get: () => resolvedDur / 1000, configurable: true });
+      } catch { /* read-only in this browser */ }
+
+      // A window / entire-screen recording shows the page somewhere inside the picture:
+      // the clicks and the cursor are moved onto the recorded frame (its real size is known now).
+      const data = toCaptureSpace(
+        loadedData,
+        loadedData.metadata?.displaySurface || captureEngineRef.current.getTrackSettings()?.displaySurface,
+        media.width,
+        media.height
+      ) ?? loadedData;
+      cursorEngineRef.current.setData(data.mousePoints || [], data.clicks || [], data.pressEvents || []);
+
+      // ---- zooms: built against the real length ----
+      step('zooms');
+      const autoPills = buildAutoZoomPills(data, resolvedDur, autoZoomSettingsRef.current);
+      const displaySurface = data.metadata?.displaySurface || captureEngineRef.current.getTrackSettings()?.displaySurface;
+      const capturedNativeCursor = data.metadata?.capturedNativeCursor || captureEngineRef.current.getCapturedNativeCursor();
+      const hasDomCursorTelemetry = (data.mousePoints || []).some((point) => Boolean(point.c));
+
+      // ---- ready: everything goes on screen in the same render ----
+      if (!isCurrent()) { dropThisVideo(); return false; }
+      if (prevBlobUrlRef.current && prevBlobUrlRef.current !== newObjectUrl) URL.revokeObjectURL(prevBlobUrlRef.current);
+      prevBlobUrlRef.current = currentBlobUrlRef.current;
+      currentBlobUrlRef.current = newObjectUrl;
+      setVideoBlob(blob);
+      setTelemetry(data);
       setDurationMs(resolvedDur);
-      setTrimEndMs((prev) => (prev === 0 || prev > resolvedDur ? resolvedDur : prev));
+      setTrimStartMs(0);
+      setTrimEndMs(resolvedDur);
+      currentTimeRef.current = 0;
+      setCurrentTimeMs(0);
+      setPills(autoPills);
+      setSelectedPillId(null);
+      // Captions are only ever sourced from a REAL transcription supplied with the recording.
+      setCaptions(data.captions && data.captions.length > 0 ? data.captions : []);
+      setShowCursor(shouldEnableCustomCursor(capturedNativeCursor, displaySurface, hasDomCursorTelemetry));
+      setSilences([]);
+      setWaveformPeaks([]);
       setVideoElement(video);
-      // Nudge Chromium video decoder to decode the first frame so readyState advances to HAVE_CURRENT_DATA (2) / HAVE_ENOUGH_DATA (4)
-      try {
-        video.currentTime = 0.001;
-      } catch {}
-    };
+      dispatchLoad({ type: 'ready', loadId });
+      console.log('[SmoothStudio] Recording ready:', resolvedDur, 'ms,', media.width, 'x', media.height, ',', (data.clicks || []).length, 'clicks,', autoPills.length, 'auto zooms');
 
-    video.onerror = (err) => {
-      console.error('[SmoothStudio] Video element failed to load recording blob URL:', newObjectUrl, err);
+      // Audio analysis does not move anything on the timeline: it fills in afterwards.
+      audioProcessorRef.current
+        .buildWaveformPeaks(blob, 160)
+        .then((peaks) => { if (isCurrent()) setWaveformPeaks(peaks); })
+        .catch((err) => {
+          console.warn('[SmoothStudio] Waveform extraction failed:', err);
+          if (isCurrent()) setWaveformPeaks([]);
+        });
+      audioProcessorRef.current
+        .analyzeSilences(blob, data.clicks || [], data.keystrokes || [], -42, 1200, resolvedDur)
+        .then((detected) => { if (isCurrent()) setSilences(detected); })
+        .catch((err) => console.warn('[SmoothStudio] Silence analysis failed:', err));
+      return true;
+    } catch (err: any) {
+      dropThisVideo();
+      if (!isCurrent()) return false;
+      console.error('[SmoothStudio] The recording could not be loaded:', err);
+      dispatchLoad({ type: 'fail', loadId, message: err?.message || 'The recording could not be loaded.' });
       showToast({
         type: 'error',
         title: 'Video Stream Error',
-        message: 'Could not decode recorded WebM video stream in browser.'
+        message: err?.message || 'Could not decode the recorded video in the browser.'
       });
-    };
-
-    // Initiate frame decoding
-    try { video.load(); } catch {}
-
-    // Fallback: if onloadedmetadata hasn't fired after 250ms, ensure videoElement is set
-    setTimeout(() => {
-      setVideoElement((curr) => curr || video);
-      try { video.currentTime = 0.001; } catch {}
-    }, 300);
-
-    cursorEngineRef.current.setData(data.mousePoints || [], data.clicks || [], data.pressEvents || []);
-
-    const displaySurface = data.metadata?.displaySurface || captureEngineRef.current.getTrackSettings()?.displaySurface;
-    const autoPills = buildAutoZoomPills(data, safeDuration, autoZoomSettingsRef.current);
-    setPills(autoPills);
-
-    // Captions are only ever sourced from a REAL transcription supplied with the
-    // recording. Nothing is invented: without transcription there are no
-    // captions at all.
-    setCaptions(data.captions && data.captions.length > 0 ? data.captions : []);
-
-    // Build the timeline waveform from the REAL audio track of the recording.
-    // Without an audio track the timeline renders "NO AUDIO" instead of bars.
-    audioProcessorRef.current
-      .buildWaveformPeaks(blob, 160)
-      .then((peaks) => setWaveformPeaks(peaks))
-      .catch((err) => {
-        console.warn('[SmoothStudio] Waveform extraction failed:', err);
-        setWaveformPeaks([]);
-      });
-
-    // Analyze silences safely wrapped in try/catch
-    try {
-      audioProcessorRef.current
-        .analyzeSilences(blob, data.clicks || [], data.keystrokes || [], -42, 1200, safeDuration)
-        .then((detected) => setSilences(detected))
-        .catch((err) => {
-          console.warn('[SmoothStudio] Silence analysis error caught in setupLoadedRecording:', err);
-        });
-    } catch (err) {
-      console.warn('[SmoothStudio] Audio processor initiation error caught:', err);
+      return false;
     }
-    // Configure cursor visibility from the actual captured track setting, with a
-    // conservative window/monitor fallback when DOM telemetry is unavailable.
-    const capturedNativeCursor = data.metadata?.capturedNativeCursor || captureEngineRef.current.getCapturedNativeCursor();
-    const hasDomCursorTelemetry = (data.mousePoints || []).some((point) => Boolean(point.c));
-    setShowCursor(shouldEnableCustomCursor(capturedNativeCursor, displaySurface, hasDomCursorTelemetry));
   };
 
   const handleUpdateTrim = useCallback((start: number, end: number) => {
@@ -714,24 +696,32 @@ export function EditorStudio() {
     setTrimEndMs(durationMs);
   }, [durationMs]);
 
+  /** Moves the playhead and the video together: the only way the playhead jumps. */
+  const seekPlayhead = useCallback((timeMs: number) => {
+    firedSfxRef.current.clear();
+    currentTimeRef.current = timeMs;
+    setCurrentTimeMs(timeMs);
+    if (videoElement instanceof HTMLVideoElement) {
+      try { videoElement.currentTime = timeMs / 1000; } catch { /* not seekable yet */ }
+    }
+  }, [videoElement]);
+
+  /** Play / pause. Nothing plays until the recording is fully loaded and in sync. */
   const handleTogglePlay = useCallback(() => {
-    setIsPlaying((prev) => {
-      const nextPlaying = !prev;
-      if (nextPlaying) {
-        const safeDur = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000;
-        const safeTrimStart = Math.max(0, Math.min(safeDur, trimStartMs));
-        const safeTrimEnd = Math.max(safeTrimStart, Math.min(safeDur, trimEndMs > 0 ? trimEndMs : safeDur));
-        if (currentTimeRef.current >= safeTrimEnd || currentTimeRef.current < safeTrimStart) {
-          currentTimeRef.current = safeTrimStart;
-          setCurrentTimeMs(safeTrimStart);
-          if (videoElement instanceof HTMLVideoElement) {
-            videoElement.currentTime = safeTrimStart / 1000;
-          }
-        }
-      }
-      return nextPlaying;
-    });
-  }, [durationMs, trimStartMs, trimEndMs, videoElement]);
+    if (!isStudioReady) return;
+    if (isPlaying) {
+      setIsPlaying(false);
+      return;
+    }
+    const safeDur = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000;
+    const safeTrimStart = Math.max(0, Math.min(safeDur, trimStartMs));
+    const safeTrimEnd = Math.max(safeTrimStart, Math.min(safeDur, trimEndMs > 0 ? trimEndMs : safeDur));
+    // At (or within a frame of) the end, or before the start: play from the start.
+    if (currentTimeRef.current >= safeTrimEnd - 50 || currentTimeRef.current < safeTrimStart) {
+      seekPlayhead(safeTrimStart);
+    }
+    setIsPlaying(true);
+  }, [isStudioReady, isPlaying, durationMs, trimStartMs, trimEndMs, seekPlayhead]);
 
   const handleRestart = useCallback(() => {
     firedSfxRef.current.clear();
@@ -765,8 +755,15 @@ export function EditorStudio() {
         next = videoElement.currentTime * 1000;
       }
 
+      const jumpVideoTo = (ms: number) => {
+        if (videoElement instanceof HTMLVideoElement) {
+          try { videoElement.currentTime = ms / 1000; } catch { /* not seekable yet */ }
+        }
+      };
+
       if (next < safeTrimStart) {
         next = safeTrimStart;
+        jumpVideoTo(next);
       }
 
       if (autoCutSilences) {
@@ -781,6 +778,7 @@ export function EditorStudio() {
             : activeSilence.endTime;
           if (clampEnd > next) {
             next = clampEnd;
+            jumpVideoTo(next);
           }
         }
       }
@@ -846,7 +844,7 @@ export function EditorStudio() {
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isPlaying, durationMs, trimStartMs, trimEndMs, soundEnabled, telemetry, pills, silences, autoCutSilences, showOutroCard]);
+  }, [isPlaying, videoElement, durationMs, trimStartMs, trimEndMs, soundEnabled, telemetry, pills, silences, autoCutSilences, showOutroCard]);
 
   // Timeline Interactions
   /** A zoom at the playhead: on the given point, else on the cursor at that moment (like an auto zoom). */
@@ -963,34 +961,34 @@ export function EditorStudio() {
         setSelectedPillId(null);
       } else if (shortcut === 'seek-back') {
         e.preventDefault();
-        firedSfxRef.current.clear();
         const safeTrimStart = Math.max(0, Math.min(durationMs, trimStartMs));
-        setCurrentTimeMs((t) => Math.max(safeTrimStart, t - 1000));
+        seekPlayhead(Math.max(safeTrimStart, currentTimeRef.current - 1000));
       } else if (shortcut === 'seek-forward') {
         e.preventDefault();
-        firedSfxRef.current.clear();
         const safeTrimEnd = Math.max(0, Math.min(durationMs, trimEndMs > 0 ? trimEndMs : durationMs));
-        setCurrentTimeMs((t) => Math.min(safeTrimEnd, t + 1000));
+        seekPlayhead(Math.min(safeTrimEnd, currentTimeRef.current + 1000));
       } else if (shortcut === 'add-zoom') {
         handleAddPillAtPlayhead();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [durationMs, trimStartMs, trimEndMs, currentTimeMs, selectedPillId, handleAddPillAtPlayhead, handleTogglePlay]);
+  }, [durationMs, trimStartMs, trimEndMs, currentTimeMs, selectedPillId, handleAddPillAtPlayhead, handleTogglePlay, seekPlayhead]);
 
   useEffect(() => { currentTimeRef.current = currentTimeMs; }, [currentTimeMs]);
   useEffect(() => { sfxSynthesizerRef.current.setEnabled(soundEnabled); }, [soundEnabled]);
 
   // Synchronize HTML5 video element currentTime if source is a real video
+  // Paused: the video shows the playhead's frame. Playing: the video is the clock and
+  // the playhead follows it, so it is never pulled back to a playhead a render behind.
   useEffect(() => {
-    if (isExporting || isExportingGif) return;
+    if (isExporting || isExportingGif || isPlaying) return;
     if (videoElement instanceof HTMLVideoElement) {
-      if (Math.abs(videoElement.currentTime - currentTimeMs / 1000) > 0.08) {
+      if (Math.abs(videoElement.currentTime - currentTimeMs / 1000) > 0.03) {
         videoElement.currentTime = currentTimeMs / 1000;
       }
     }
-  }, [currentTimeMs, videoElement, isExporting, isExportingGif]);
+  }, [currentTimeMs, videoElement, isExporting, isExportingGif, isPlaying]);
 
   // Synchronize HTML5 video play/pause state
   useEffect(() => {
@@ -1180,6 +1178,9 @@ export function EditorStudio() {
       hudLiveWatchdogRef.current = null;
     }
     setIsRecordingLive(false);
+    setIsPlaying(false);
+    const stopLoadId = ++loadIdRef.current;
+    dispatchLoad({ type: 'begin', loadId: stopLoadId, step: 'finishing' });
 
     // Ask the SW to end the session on the recorded tab (HUD, telemetry) in
     // parallel with stopping the recorder, unless the SW already did.
@@ -1211,6 +1212,7 @@ export function EditorStudio() {
             title: 'Recording Failed',
             message: stopErr?.message || 'Recording failed: no video was captured.'
           });
+          dispatchLoad({ type: 'fail', loadId: stopLoadId, message: stopErr?.message || 'Recording failed: no video was captured.' });
           hasFinalizedRef.current = false;
           return;
         }
@@ -1231,12 +1233,14 @@ export function EditorStudio() {
 
       if (blob && blob.size > 0) {
         console.log('[SmoothStudio] Recording stopped successfully. Finalizing editor with blob size:', blob.size, 'duration:', measuredDur);
-        setupLoadedRecording(blob, finalTelemetry, measuredDur, sid);
-        showToast({
-          type: 'success',
-          title: 'Recording Loaded',
-          message: `Screen recording loaded with smart zoom pills (${(measuredDur / 1000).toFixed(1)}s).`
-        });
+        const loaded = await setupLoadedRecording(blob, finalTelemetry, measuredDur, sid);
+        if (loaded) {
+          showToast({
+            type: 'success',
+            title: 'Recording Loaded',
+            message: `Recording ready (${(measuredDur / 1000).toFixed(1)}s).`
+          });
+        }
       } else {
         console.warn('[SmoothStudio] Finished recording but no video frames were captured.');
         showToast({
@@ -1244,9 +1248,11 @@ export function EditorStudio() {
           title: 'Recording Failed',
           message: 'Recording failed: no video was captured. The display capture stream produced zero encoded frames.'
         });
+        dispatchLoad({ type: 'fail', loadId: stopLoadId, message: 'No video was captured.' });
       }
     } catch (err: any) {
       console.error('[SmoothStudio] Error during stop processing:', err);
+      dispatchLoad({ type: 'fail', loadId: stopLoadId, message: err?.message || 'Error loading recording into editor.' });
       showToast({
         type: 'error',
         title: 'Stop Recording Failed',
@@ -1311,7 +1317,7 @@ export function EditorStudio() {
     const safeTrimStart = Math.max(0, Math.min(durationMs, trimStartMs));
     const safeTrimEnd = Math.max(safeTrimStart, Math.min(durationMs, trimEndMs > 0 ? trimEndMs : durationMs));
     const clamped = Math.max(safeTrimStart, Math.min(safeTrimEnd, timeMs));
-    setCurrentTimeMs(clamped);
+    seekPlayhead(clamped);
   };
 
   const handleCutAllSilences = () => {
@@ -1983,7 +1989,7 @@ export function EditorStudio() {
         )}
 
         {/* Empty State Overlay when No Recording Exists */}
-        {hasNoRecording && !videoElement && !isRecordingLive && !showRecordPrompt && (
+        {hasNoRecording && !videoElement && !isRecordingLive && !showRecordPrompt && load.phase !== 'loading' && (
           <div className="absolute inset-0 z-30 bg-[#0B0C10]/95 flex flex-col items-center justify-center p-6 text-center">
             <div className="w-16 h-16 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-center mb-5 text-red-400">
               <AlertTriangle className="w-8 h-8" />
@@ -2002,9 +2008,60 @@ export function EditorStudio() {
             </button>
           </div>
         )}
+
+        {/* Loading: nothing is shown or playable until the recording is fully in sync */}
+        {load.phase === 'loading' && (
+          <div
+            className="absolute inset-0 z-40 bg-[#0B0C10]/95 flex flex-col items-center justify-center p-6 text-center"
+            role="status"
+            aria-live="polite"
+          >
+            <div className="w-10 h-10 rounded-full border-2 border-purple-500/30 border-t-purple-400 animate-spin mb-5" />
+            <h2 className="text-lg font-semibold text-white mb-4">Preparing your recording…</h2>
+            <ol className="text-left space-y-1.5 text-sm">
+              {LOAD_STEPS.map((item, index) => {
+                const current = LOAD_STEPS.findIndex((s) => s.step === load.step);
+                const status = index < current ? 'done' : index === current ? 'active' : 'todo';
+                return (
+                  <li
+                    key={item.step}
+                    className={`flex items-center gap-2 ${
+                      status === 'done' ? 'text-gray-400' : status === 'active' ? 'text-white font-medium' : 'text-gray-600'
+                    }`}
+                  >
+                    <span className={`w-4 text-center ${status === 'done' ? 'text-emerald-400' : status === 'active' ? 'text-purple-300' : ''}`}>
+                      {status === 'done' ? '✓' : status === 'active' ? '●' : '○'}
+                    </span>
+                    {item.label}
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        )}
+
+        {load.phase === 'failed' && !videoElement && (
+          <div className="absolute inset-0 z-40 bg-[#0B0C10]/95 flex flex-col items-center justify-center p-6 text-center" role="alert">
+            <div className="w-14 h-14 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-center mb-4 text-red-400">
+              <AlertTriangle className="w-7 h-7" />
+            </div>
+            <h2 className="text-lg font-semibold text-white mb-2">The recording could not be loaded</h2>
+            <p className="text-sm text-gray-400 max-w-md mb-5">{load.message}</p>
+            <button
+              onClick={() => { dispatchLoad({ type: 'reset' }); setHasNoRecording(true); }}
+              className="px-5 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white text-sm font-medium transition-colors"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Bottom Magnetic Pill Multi-Track Timeline */}
+      {/* Bottom Magnetic Pill Multi-Track Timeline (locked until the recording is in sync) */}
+      <div
+        className={load.phase === 'loading' || load.phase === 'failed' ? 'pointer-events-none opacity-40 transition-opacity' : 'transition-opacity'}
+        aria-disabled={load.phase === 'loading' || load.phase === 'failed'}
+      >
       <MagneticTimeline
         durationMs={durationMs}
         currentTimeMs={currentTimeMs}
@@ -2043,6 +2100,7 @@ export function EditorStudio() {
         onUpdateCaption={handleUpdateCaption}
         onDeleteCaption={handleDeleteCaption}
       />
+      </div>
 
       {/* Flight Doctor Diagnostics Modal */}
       <DiagnosticsDoctor

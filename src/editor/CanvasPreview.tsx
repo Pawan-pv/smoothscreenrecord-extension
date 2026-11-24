@@ -187,18 +187,24 @@ export function CanvasPreview({
       return;
     }
 
+    // The frame drawn below is the one the video shows right now. While it plays, the
+    // camera, cursor and overlays use that frame's time, not the playhead of the last
+    // render, so the zoom can never lag behind (or run ahead of) the picture.
+    const playingVideo = video instanceof HTMLVideoElement && !video.paused && !video.seeking && video.readyState >= 2;
+    const frameTimeMs = playingVideo ? (video as HTMLVideoElement).currentTime * 1000 : currentTimeMs;
+
     // Direct analytical cinematic camera evaluation: guarantees 100% identical camera
     // framing across 60Hz/120Hz preview, 60fps MP4, and 15fps GIF with zero drift.
-    const camera = cameraPath.at(currentTimeMs);
+    const camera = cameraPath.at(frameTimeMs);
     currentCameraRef.current = camera;
 
-    const activePill = pills.find((p) => currentTimeMs >= p.startTime && currentTimeMs <= p.endTime);
+    const activePill = pills.find((p) => frameTimeMs >= p.startTime && frameTimeMs <= p.endTime);
 
     // Reuse persistent options structure to maintain 0 allocation in 60fps render window
     const opts = renderOptionsRef.current;
     opts.canvas = canvas;
     opts.video = video;
-    opts.currentTimeMs = currentTimeMs;
+    opts.currentTimeMs = frameTimeMs;
     opts.camera = camera;
     opts.activePill = activePill;
     opts.cursorEngine = cursorEngine;

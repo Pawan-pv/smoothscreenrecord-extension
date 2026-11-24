@@ -15,8 +15,7 @@ import {
   BackdropMatrixParams
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
-import { generateAutoZoomPills, resolveSourcePixelWidth, AUTO_ZOOM_DEFAULT_DEPTH } from '../engine/spring-physics';
-import { DEFAULT_TRANSITION_MS } from '../engine/camera-path';
+import { generateAutoZoomPills, resolveSourcePixelWidth, AUTO_ZOOM_DEFAULT_DEPTH, AUTO_ZOOM_CONFIG } from '../engine/spring-physics';
 import { toCaptureSpace } from '../engine/capture-space';
 import { prepareVideo, studioLoadReducer, LoadStep, LOAD_STEPS } from './studio-load';
 import { nextRecordingPhase, RecordingPhase, RecordingEvent, ExportJob } from './studio-session';
@@ -107,7 +106,7 @@ export interface AutoZoomSettings {
 const AUTO_ZOOM_SETTINGS_KEY = 'smoothstudio.autoZoom';
 
 function loadAutoZoomSettings(): AutoZoomSettings {
-  const defaults: AutoZoomSettings = { enabled: true, depth: AUTO_ZOOM_DEFAULT_DEPTH, speedMs: DEFAULT_TRANSITION_MS };
+  const defaults: AutoZoomSettings = { enabled: true, depth: AUTO_ZOOM_DEFAULT_DEPTH, speedMs: AUTO_ZOOM_CONFIG.LEAD_IN_MS };
   try {
     const saved = JSON.parse(localStorage.getItem(AUTO_ZOOM_SETTINGS_KEY) || 'null');
     if (!saved || typeof saved !== 'object') return defaults;

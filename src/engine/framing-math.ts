@@ -95,6 +95,22 @@ function isPortraitOrSquare(aspect: AspectRatioType): boolean {
   return aspect === '9:16' || aspect === '4:5' || aspect === '1:1';
 }
 
+/**
+ * The visible sub-rectangle of a srcW x srcH source at this zoom, centred on the focus
+ * (fx, fy, normalised 0..1) and CLAMPED inside the source: the rect is moved, never
+ * shrunk, so the focus point is always inside it.
+ */
+export function cropRect(zoom: number, fx: number, fy: number, srcW: number, srcH: number): { x: number; y: number; w: number; h: number } {
+  const z = Math.max(1, Number.isFinite(zoom) ? zoom : 1);
+  const w = srcW / z;
+  const h = srcH / z;
+  const cx = Number.isFinite(fx) ? fx : 0.5;
+  const cy = Number.isFinite(fy) ? fy : 0.5;
+  const x = Math.max(0, Math.min(srcW - w, cx * srcW - w / 2));
+  const y = Math.max(0, Math.min(srcH - h, cy * srcH - h / 2));
+  return { x, y, w, h };
+}
+
 export function computeFrameLayout(options: FrameLayoutOptions): FrameLayout {
   const canvasW = Math.max(2, options.canvasW);
   const canvasH = Math.max(2, options.canvasH);
@@ -130,10 +146,16 @@ export function computeFrameLayout(options: FrameLayoutOptions): FrameLayout {
   const focusY = (options.cameraY ?? 0.5) * sourceH;
   sourceCrop.x = Math.max(0, Math.min(sourceW - sourceCrop.width, focusX - sourceCrop.width / 2));
   sourceCrop.y = Math.max(0, Math.min(sourceH - sourceCrop.height, focusY - sourceCrop.height / 2));
-  const halfViewX = 0.5 / cameraScale;
-  const halfViewY = 0.5 / cameraScale;
-  const clampedCameraX = Math.max(halfViewX, Math.min(1 - halfViewX, (focusX - sourceCrop.x) / sourceCrop.width));
-  const clampedCameraY = Math.max(halfViewY, Math.min(1 - halfViewY, (focusY - sourceCrop.y) / sourceCrop.height));
+  // The zoomed view inside the window's part of the source, clamped (moved, never shrunk).
+  const view = cropRect(
+    cameraScale,
+    (focusX - sourceCrop.x) / sourceCrop.width,
+    (focusY - sourceCrop.y) / sourceCrop.height,
+    1,
+    1
+  );
+  const clampedCameraX = view.x + view.w / 2;
+  const clampedCameraY = view.y + view.h / 2;
 
   return {
     canvasW,

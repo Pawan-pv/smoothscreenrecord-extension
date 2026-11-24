@@ -417,7 +417,9 @@ export function CanvasPreview({
     onUpdatePill({
       ...selectedPill,
       targetX: clampedX,
-      targetY: clampedY
+      targetY: clampedY,
+      // A target placed by hand is one fixed focus: the shot's click keyframes no longer apply.
+      keyframes: undefined
     });
   };
 

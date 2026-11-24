@@ -1,5 +1,5 @@
 import { ClickEvent, ZoomPill } from '../types/telemetry';
-import { buildCameraPath, CameraPath, DEFAULT_TRANSITION_MS } from './camera-path';
+import { buildCameraPath, CameraPath } from './camera-path';
 
 export interface SpringConfig {
   stiffness: number; // Spring tension (e.g. 180)
@@ -173,23 +173,37 @@ export function calculateIsometricTilt(targetX: number, targetY: number, scale: 
 }
 
 // ---------------------------------------------------------------------------
-// Auto-zoom (ScreenSmooth-style)
+// Auto-zoom: clicks are clustered into SHOTS. A burst of clicks in one area is
+// one zoom; inside it the camera pans from click to click and only returns to
+// 1.0x after a real pause.
 //
-//   - Every click is a zoom, centred on the click point. Only a re-click on the same
-//     spot while the camera is still moving (a double-click) is the same action.
-//   - Every auto zoom has the same depth (default 1.5x).
-//   - The camera is fully zoomed in as the click lands.
-//   - A click within 3 s of the previous one keeps the zoom and pans to it.
-//   - 2.5 s after the last click the camera zooms out, as fast as it zoomed in.
+//   1. CLUSTER  a new shot starts when the gap from the previous click is more
+//               than IDLE_GAP_MS, or the click is more than NEW_SHOT_DIST from
+//               the shot's current focus (its latest click).
+//   2. SEGMENT  start = first click - LEAD_IN_MS, end = last click + HOLD_OUT_MS,
+//               one focus keyframe per click at click.t - LEAD_IN_MS.
+//   3. MERGE    overlapping segments become one (keyframes concatenated).
+//   4. NOISE    a segment shorter than MIN_SHOT_MS is dropped.
 // ---------------------------------------------------------------------------
 export const AUTO_ZOOM_DEPTHS = [1.25, 1.5, 2, 2.5] as const;
 export const AUTO_ZOOM_DEFAULT_DEPTH = 1.5;
-/** Hold after the last click before zooming out. */
-export const AUTO_ZOOM_HOLD_MS = 2500;
-/** A click this soon after the previous one pans the zoom instead of zooming out and in again. */
-export const AUTO_ZOOM_CHAIN_MS = 3000;
-/** A quick re-click this close (CSS px of the page) to the previous click is the same action. */
-export const AUTO_ZOOM_SAME_SPOT_PX = 40;
+
+/** Every tunable of the auto-zoom clustering, in one place. */
+export const AUTO_ZOOM_CONFIG = {
+  /** A gap longer than this between two clicks ends the shot. */
+  IDLE_GAP_MS: 1800,
+  /** A click farther than this (normalised 0..1 distance) from the shot's focus starts a new shot. */
+  NEW_SHOT_DIST: 0.35,
+  /** The camera starts moving this long before a click (zoom ramp-in and pan lead). */
+  LEAD_IN_MS: 400,
+  /** The shot holds this long after its last click before the zoom releases. */
+  HOLD_OUT_MS: 900,
+  /** A shot shorter than this (after lead-in and hold-out) is noise and dropped. */
+  MIN_SHOT_MS: 700,
+  /** Zoom depth of a shot. */
+  INTENSITY: AUTO_ZOOM_DEFAULT_DEPTH
+};
+export type AutoZoomConfig = typeof AUTO_ZOOM_CONFIG;
 
 /**
  * Largest scale that still looks sharp for a recording of this real pixel
@@ -221,13 +235,18 @@ export function resolveSourcePixelWidth(
 }
 
 export interface AutoZoomOptions {
-  /** Zoom depth of every auto zoom (default 1.5x). */
+  /** Zoom depth of every shot (default AUTO_ZOOM_CONFIG.INTENSITY). */
   depth?: number;
-  /** How long the camera takes to zoom in, pan and zoom out (default DEFAULT_TRANSITION_MS). */
+  /** Lead-in / ramp length in ms (default AUTO_ZOOM_CONFIG.LEAD_IN_MS). */
   transitionMs?: number;
+  /** Overrides of the clustering constants. */
+  config?: Partial<AutoZoomConfig>;
 }
 
-/** One zoom per click. Clicks are normalized (0..1) or, in older recordings, pixels of the viewport. */
+/**
+ * One zoom segment per shot (cluster of clicks), each with one focus keyframe per
+ * click. Clicks are normalized (0..1) or, in older recordings, pixels of the viewport.
+ */
 export function generateAutoZoomPills(
   clicks: ClickEvent[],
   videoDurationMs: number,
@@ -236,72 +255,78 @@ export function generateAutoZoomPills(
   options: AutoZoomOptions = {}
 ): ZoomPill[] {
   if (!Number.isFinite(videoDurationMs) || videoDurationMs <= 0) return [];
+  const cfg: AutoZoomConfig = { ...AUTO_ZOOM_CONFIG, ...(options.config || {}) };
   const vw = Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1920;
   const vh = Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 1080;
-  const depth = Math.max(1.05, Math.min(2.8, Number.isFinite(options.depth) ? (options.depth as number) : AUTO_ZOOM_DEFAULT_DEPTH));
-  const transition = Number.isFinite(options.transitionMs) && (options.transitionMs as number) > 0
+  const depth = Math.max(1.05, Math.min(2.8, Number.isFinite(options.depth) ? (options.depth as number) : cfg.INTENSITY));
+  const leadIn = Number.isFinite(options.transitionMs) && (options.transitionMs as number) > 0
     ? (options.transitionMs as number)
-    : DEFAULT_TRANSITION_MS;
+    : cfg.LEAD_IN_MS;
   const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
   const norm = (v: number, size: number) => clamp01(v >= 0 && v <= 1 ? v : v / size);
 
   const sorted = clicks
     .filter((c) => Number.isFinite(c.t) && c.t >= 0 && c.t <= videoDurationMs && Number.isFinite(c.x) && Number.isFinite(c.y))
+    .map((c) => ({ t: c.t, x: norm(c.x, vw), y: norm(c.y, vh), label: c.targetText && c.targetText !== '[hidden input]' ? c.targetText : '' }))
     .sort((a, b) => a.t - b.t);
 
-  // A re-click on the same spot while the camera is still moving to it (a
-  // double-click) is the same action. A click anywhere else gets its own zoom.
-  interface Action { t: number; lastT: number; x: number; y: number; label: string }
-  const actions: Action[] = [];
+  // 1. CLUSTER
+  type Click = (typeof sorted)[number];
+  const clusters: Click[][] = [];
   for (const c of sorted) {
-    const last = actions[actions.length - 1];
-    const x = norm(c.x, vw);
-    const y = norm(c.y, vh);
-    const sameSpot = last && Math.hypot((x - last.x) * vw, (y - last.y) * vh) <= AUTO_ZOOM_SAME_SPOT_PX;
-    if (last && sameSpot && c.t - last.lastT < transition + 150) {
-      last.lastT = c.t;
-      continue;
+    const current = clusters[clusters.length - 1];
+    const prev = current?.[current.length - 1];
+    if (!current || !prev || c.t - prev.t > cfg.IDLE_GAP_MS || Math.hypot(c.x - prev.x, c.y - prev.y) > cfg.NEW_SHOT_DIST) {
+      clusters.push([c]);
+    } else {
+      current.push(c);
     }
-    const name = c.targetText && c.targetText !== '[hidden input]' ? c.targetText : '';
-    actions.push({
-      t: c.t,
-      lastT: c.t,
-      x,
-      y,
-      label: name ? `Click "${name.slice(0, 20)}"` : 'Click'
-    });
   }
 
+  // 2. SEGMENT
+  interface Segment { start: number; end: number; clicks: Click[] }
+  const segments: Segment[] = clusters.map((cl) => ({
+    start: Math.max(0, cl[0].t - leadIn),
+    end: Math.min(videoDurationMs, cl[cl.length - 1].t + cfg.HOLD_OUT_MS),
+    clicks: cl
+  }));
+
+  // 3. MERGE overlaps (never emit overlapping segments)
+  const merged: Segment[] = [];
+  for (const seg of segments) {
+    const last = merged[merged.length - 1];
+    if (last && last.end > seg.start) {
+      last.end = Math.max(last.end, seg.end);
+      last.clicks = last.clicks.concat(seg.clicks);
+    } else {
+      merged.push({ ...seg, clicks: [...seg.clicks] });
+    }
+  }
+
+  // 4. DROP NOISE
   const pills: ZoomPill[] = [];
-  /** End of the previous zoom when it hands over to this one (chained), else -Infinity. */
-  let handOver = -Infinity;
-  actions.forEach((a, i) => {
-    const next = actions[i + 1];
-    // Fully zoomed as the click lands; after a hand-over the camera pans over from
-    // the previous click (later than the click when the clicks come faster than a move).
-    const startTime = Math.max(0, a.t - transition, handOver);
-    // The next click is close: hand over to it (the camera pans, no zoom-out). Never
-    // before this click itself: the camera reaches every click.
-    const chained = Boolean(next && next.t - a.lastT <= AUTO_ZOOM_CHAIN_MS);
-    const endTime = chained
-      ? Math.max(a.lastT, next.t - transition)
-      : a.lastT + AUTO_ZOOM_HOLD_MS;
-    const end = Math.min(videoDurationMs, endTime);
-    handOver = chained ? end : -Infinity;
-    if (end <= startTime) return;
+  merged.forEach((seg, i) => {
+    if (seg.end - seg.start < cfg.MIN_SHOT_MS || seg.end <= seg.start) return;
+    const first = seg.clicks[0];
+    const named = seg.clicks.find((c) => c.label);
+    const count = seg.clicks.length;
+    const label = named
+      ? `Click "${named.label.slice(0, 20)}"${count > 1 ? ` +${count - 1}` : ''}`
+      : count > 1 ? `${count} clicks` : 'Click';
     pills.push({
-      id: `zoom_${Math.round(a.t)}_${i}`,
-      startTime,
-      endTime: end,
-      targetX: a.x,
-      targetY: a.y,
+      id: `zoom_${Math.round(first.t)}_${i}`,
+      startTime: seg.start,
+      endTime: seg.end,
+      targetX: first.x,
+      targetY: first.y,
       targetScale: depth,
       tiltX: 0,
       tiltY: 0,
       spotlight: false,
-      label: a.label,
+      label,
       autoGenerated: true,
-      transitionDuration: transition
+      transitionDuration: leadIn,
+      keyframes: seg.clicks.map((c) => ({ t: Math.max(seg.start, c.t - leadIn), x: c.x, y: c.y }))
     });
   });
   return pills;

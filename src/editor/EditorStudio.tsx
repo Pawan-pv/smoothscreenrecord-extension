@@ -250,28 +250,6 @@ export function EditorStudio() {
       trimEndMs
     });
   }, [autoCutSilences, cursorSmoothing, silences, trimEndMs, trimStartMs]);
-  useEffect(() => {
-    // Test hooks exist only in the Vite dev server. The `if` is dead-code
-    // eliminated in production builds, so none of these globals ship.
-    if (import.meta.env.DEV) {
-      (window as any).__captureEngine = captureEngineRef.current;
-      (window as any).__ScreenCaptureEngine = ScreenCaptureEngine;
-      (window as any).__SopGuideExporter = SopGuideExporter;
-      (window as any).__HtmlWidgetExporter = HtmlWidgetExporter;
-      (window as any).__HardwareMp4Exporter = HardwareMp4Exporter;
-      (window as any).__HardwareGifExporter = HardwareGifExporter;
-      (window as any).__GIF_QUALITY_PRESETS = GIF_QUALITY_PRESETS;
-      (window as any).__VIBE_PRESETS = VIBE_PRESETS;
-      (window as any).__AudioProcessor = AudioProcessor;
-      // Programmatic capture hooks: they allow starting/stopping a recording
-      // without moving keyboard focus to the editor window (focus changes would
-      // otherwise pause the compositor of the captured surface).
-      (window as any).__startLiveRecording = (sourceTabId?: number, includeMic = true) =>
-        handleStartLiveRecordingRef.current?.(sourceTabId, includeMic);
-      (window as any).__stopLiveRecording = (tel?: any, blob?: any) =>
-        handleStopLiveRecordingRef.current?.(tel, blob);
-    }
-  }, []);
   const animationFrameRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
   // Deduplicates procedural SFX so a single click/keystroke/zoom event never
@@ -525,7 +503,6 @@ export function EditorStudio() {
     firedSfxRef.current.clear();
     setVideoBlob(blob);
     setTelemetry(data);
-    if (import.meta.env.DEV) (window as any).__lastLoadedTelemetry = data;
 
     // Compute safe, finite duration fallback
     const safeDuration = (measuredDurationMs && measuredDurationMs > 0)
@@ -557,11 +534,6 @@ export function EditorStudio() {
     if (loadedSid) video.setAttribute('data-session-id', loadedSid);
     video.style.cssText = 'position: fixed; bottom: 0; right: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; z-index: -1;';
     document.body.appendChild(video);
-    if (import.meta.env.DEV) {
-      (window as any).__smoothstudio_video = video;
-      (window as any).__lastLoadedVideoBlob = blob;
-      (window as any).__lastLoadedVideoElement = video;
-    }
 
     video.addEventListener('play', () => setIsPlaying(true));
     video.addEventListener('pause', () => setIsPlaying(false));
@@ -654,7 +626,6 @@ export function EditorStudio() {
         }
       ) : [];
     setPills(autoPills);
-    if (import.meta.env.DEV) (window as any).__smoothstudio_pills = autoPills;
 
     // Captions are only ever sourced from a REAL transcription supplied with the
     // recording. Nothing is invented: without transcription there are no
@@ -737,21 +708,6 @@ export function EditorStudio() {
       videoElement.currentTime = safeTrimStart / 1000;
     }
   }, [durationMs, trimStartMs, videoElement]);
-
-  useEffect(() => {
-    if (import.meta.env.DEV) {
-      (window as any).__setupLoadedRecording = setupLoadedRecording;
-      (window as any).__setSilences = setSilences;
-      (window as any).__silences = silences;
-      (window as any).__autoCutSilences = autoCutSilences;
-      (window as any).__setAutoCutSilences = setAutoCutSilences;
-      (window as any).__durationMs = durationMs;
-      (window as any).__captions = captions;
-      (window as any).__trimStartMs = trimStartMs;
-      (window as any).__trimEndMs = trimEndMs;
-      (window as any).__setTrim = (start: number, end: number) => handleUpdateTrim(start, end);
-    }
-  });
 
   // 2. Playback Loop (60 FPS)
   useEffect(() => {
@@ -1012,7 +968,6 @@ export function EditorStudio() {
       hudLiveRef.current = false;
       // QA-037: a recording started again in this editor must not inherit the
       // previous recording's declared timeline origin.
-      if (import.meta.env.DEV) delete (window as any).__smoothstudioTimelineOrigin;
       if (hudLiveWatchdogRef.current) {
         clearTimeout(hudLiveWatchdogRef.current);
         hudLiveWatchdogRef.current = null;
@@ -1060,7 +1015,6 @@ export function EditorStudio() {
       const notifyTimelineOrigin = (originEpoch: number) => {
         // QA-037: the harness anchors the wall clock at this declared instant;
         // the recorded page's own clock band is the independent check.
-        if (import.meta.env.DEV) (window as any).__smoothstudioTimelineOrigin = originEpoch;
         if (typeof chrome !== 'undefined' && chrome.runtime) {
           chrome.runtime.sendMessage(
             { type: 'RECORDING_LIVE', epoch: originEpoch, sessionId },
@@ -1311,7 +1265,6 @@ export function EditorStudio() {
     if (selectedPillId && !autoPills.some((p) => p.id === selectedPillId)) {
       setSelectedPillId(null);
     }
-    if (import.meta.env.DEV) (window as any).__smoothstudio_pills = autoPills;
   };
 
   // Timeline seek: reset SFX dedup so re-scrubbing can re-arm event triggers

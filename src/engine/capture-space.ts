@@ -13,6 +13,45 @@ import type { BoundingBox, TelemetryData } from '../types/telemetry';
  * placed reliably: not a window/screen capture, no layout recorded, or a picture
  * whose shape is not the screen/window the page was on (another monitor or app).
  */
+/**
+ * Why a window / screen recording's page cannot be placed on its frame, or null when
+ * it can (or when there is nothing to place: a tab recording, or already converted).
+ * toCaptureSpace uses exactly these checks.
+ */
+export function captureSpaceProblem(
+  data: TelemetryData,
+  displaySurface: string | undefined,
+  frameWidth?: number,
+  frameHeight?: number
+): string | null {
+  if (displaySurface !== 'window' && displaySurface !== 'monitor') return null;
+  if (data.metadata?.coordinateSpace === 'capture') return null;
+  const layout = data.metadata?.screenLayout;
+  const vw = data.metadata?.width;
+  const vh = data.metadata?.height;
+  if (!layout) return 'the page did not report where it was on the screen';
+  if (!(Number(vw) > 0) || !(Number(vh) > 0)) return 'the page size is unknown';
+  const frame = captureFrame(layout, displaySurface);
+  if (![frame.left, frame.top, frame.width, frame.height, layout.viewportLeft, layout.viewportTop].every(Number.isFinite)) {
+    return 'the page position on the screen is incomplete';
+  }
+  if (!(frame.width > 0) || !(frame.height > 0)) return 'the screen size is unknown';
+  if (Number(frameWidth) > 0 && Number(frameHeight) > 0) {
+    const pictureAspect = (frameWidth as number) / (frameHeight as number);
+    const frameAspect = frame.width / frame.height;
+    if (Math.abs(pictureAspect - frameAspect) / frameAspect > 0.05) {
+      return `the recorded picture (${frameWidth}x${frameHeight}) is not the shape of the ${displaySurface === 'monitor' ? 'screen' : 'window'} the page was on (${Math.round(frame.width)}x${Math.round(frame.height)}): another monitor or app was shared`;
+    }
+  }
+  return null;
+}
+
+function captureFrame(layout: NonNullable<TelemetryData['metadata']['screenLayout']>, displaySurface: string) {
+  return displaySurface === 'monitor'
+    ? { left: layout.screenLeft, top: layout.screenTop, width: layout.screenWidth, height: layout.screenHeight }
+    : { left: layout.windowLeft, top: layout.windowTop, width: layout.windowWidth, height: layout.windowHeight };
+}
+
 export function toCaptureSpace(
   data: TelemetryData,
   displaySurface: string | undefined,
@@ -21,23 +60,12 @@ export function toCaptureSpace(
 ): TelemetryData | null {
   if (displaySurface !== 'window' && displaySurface !== 'monitor') return null;
   if (data.metadata?.coordinateSpace === 'capture') return data;
+  if (captureSpaceProblem(data, displaySurface, frameWidth, frameHeight)) return null;
 
-  const layout = data.metadata?.screenLayout;
-  const vw = data.metadata?.width;
-  const vh = data.metadata?.height;
-  if (!layout || !(Number(vw) > 0) || !(Number(vh) > 0)) return null;
-
-  const frame = displaySurface === 'monitor'
-    ? { left: layout.screenLeft, top: layout.screenTop, width: layout.screenWidth, height: layout.screenHeight }
-    : { left: layout.windowLeft, top: layout.windowTop, width: layout.windowWidth, height: layout.windowHeight };
-  if (![frame.left, frame.top, frame.width, frame.height, layout.viewportLeft, layout.viewportTop].every(Number.isFinite)) return null;
-  if (!(frame.width > 0) || !(frame.height > 0)) return null;
-
-  if (Number(frameWidth) > 0 && Number(frameHeight) > 0) {
-    const pictureAspect = (frameWidth as number) / (frameHeight as number);
-    const frameAspect = frame.width / frame.height;
-    if (Math.abs(pictureAspect - frameAspect) / frameAspect > 0.05) return null;
-  }
+  const layout = data.metadata!.screenLayout!;
+  const vw = data.metadata!.width;
+  const vh = data.metadata!.height;
+  const frame = captureFrame(layout, displaySurface);
 
   const zoom = Number.isFinite(layout.zoom) && layout.zoom > 0 ? layout.zoom : 1;
   const clamp01 = (v: number) => Math.max(0, Math.min(1, v));

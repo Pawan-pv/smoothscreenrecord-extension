@@ -20,7 +20,7 @@ import {
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
 import { generateAutoZoomPills, resolveSourcePixelWidth, AUTO_ZOOM_DEFAULT_DEPTH, AUTO_ZOOM_CONFIG } from '../engine/spring-physics';
-import { toCaptureSpace } from '../engine/capture-space';
+import { toCaptureSpace, captureSpaceProblem } from '../engine/capture-space';
 import { prepareVideo, studioLoadReducer, LoadStep, LOAD_STEPS } from './studio-load';
 import { nextRecordingPhase, RecordingPhase, RecordingEvent, ExportJob } from './studio-session';
 import { CursorSplineEngine, CursorMotionSettings, DEFAULT_CURSOR_MOTION } from '../engine/cursor-spline';
@@ -787,13 +787,25 @@ export function EditorStudio() {
 
       // A window / entire-screen recording shows the page somewhere inside the picture:
       // the clicks and the cursor are moved onto the recorded frame (its real size is known now).
-      const data = toCaptureSpace(
-        loadedData,
-        loadedData.metadata?.displaySurface || captureEngineRef.current.getTrackSettings()?.displaySurface,
-        media.width,
-        media.height
-      ) ?? loadedData;
+      const loadedSurface = loadedData.metadata?.displaySurface || captureEngineRef.current.getTrackSettings()?.displaySurface;
+      const data = toCaptureSpace(loadedData, loadedSurface, media.width, media.height) ?? loadedData;
       cursorEngineRef.current.setData(data.mousePoints || [], data.clicks || [], data.pressEvents || []);
+      // A window / screen recording whose page cannot be placed gets no auto zooms: say why
+      // instead of silently showing none.
+      const placementProblem = captureSpaceProblem(loadedData, loadedSurface, media.width, media.height);
+      if (placementProblem && (loadedData.clicks || []).length > 0) {
+        console.warn('[SmoothStudio] Auto-zoom is off for this recording:', placementProblem, {
+          surface: loadedSurface,
+          picture: `${media.width}x${media.height}`,
+          screenLayout: loadedData.metadata?.screenLayout,
+          page: `${loadedData.metadata?.width}x${loadedData.metadata?.height}`
+        });
+        showToast({
+          type: 'warning',
+          title: 'Auto-zoom is off for this recording',
+          message: `The clicks could not be placed on the video: ${placementProblem}. Record the screen the Chrome window is on, or a Chrome tab; zooms can still be added by hand.`
+        });
+      }
 
       // ---- zooms: built against the real length ----
       step('zooms');

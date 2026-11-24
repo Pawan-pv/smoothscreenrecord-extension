@@ -9,7 +9,8 @@ import {
   CaptionStyle,
   CursorTheme,
   FramingMode,
-  ShadowMode
+  ShadowMode,
+  BackgroundLayer
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
 import { buildCameraPath } from './camera-path';
@@ -62,8 +63,7 @@ export interface GifExportOptions {
   trimStartMs?: number;
   trimEndMs?: number;
   framePadding?: number;
-  backgroundColor?: string | null;
-  backgroundImage?: CanvasImageSource | null;
+  background?: BackgroundLayer | null;
   framingMode?: FramingMode;
   shadowMode?: ShadowMode;
   qualityPreset?: GifQualityPreset;
@@ -497,8 +497,7 @@ export class HardwareGifExporter {
           outroHeadline,
           outroCtaText,
           framePadding: options.framePadding,
-          backgroundColor: options.backgroundColor,
-          backgroundImage: options.backgroundImage,
+          background: options.background,
           framingMode,
           shadowMode,
           backgroundTimeMs: 0

@@ -9,7 +9,8 @@ import {
   CaptionStyle,
   CursorTheme,
   FramingMode,
-  ShadowMode
+  ShadowMode,
+  BackgroundLayer
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
 import { buildCameraPath } from './camera-path';
@@ -79,8 +80,7 @@ export interface ExportOptions {
   outroHeadline?: string;
   outroCtaText?: string;
   framePadding?: number;
-  backgroundColor?: string | null;
-  backgroundImage?: CanvasImageSource | null;
+  background?: BackgroundLayer | null;
   framingMode?: FramingMode;
   shadowMode?: ShadowMode;
   targetWidth?: number;
@@ -124,8 +124,7 @@ export class HardwareMp4Exporter {
       showCursor,
       showHud,
       framePadding,
-      backgroundColor,
-      backgroundImage,
+      background,
       framingMode,
       shadowMode,
       signal,
@@ -322,8 +321,7 @@ export class HardwareMp4Exporter {
           outroHeadline: options.outroHeadline,
           outroCtaText: options.outroCtaText,
           framePadding,
-          backgroundColor,
-          backgroundImage,
+          background,
           framingMode,
           shadowMode,
           followCursor: options.followCursor,
@@ -365,8 +363,7 @@ export class HardwareMp4Exporter {
         outroHeadline: options.outroHeadline,
         outroCtaText: options.outroCtaText,
         framePadding,
-        backgroundColor,
-        backgroundImage,
+        background,
         framingMode,
         shadowMode,
         followCursor: options.followCursor,
@@ -420,8 +417,7 @@ export class HardwareMp4Exporter {
     outroHeadline?: string;
     outroCtaText?: string;
     framePadding?: number;
-    backgroundColor?: string | null;
-    backgroundImage?: CanvasImageSource | null;
+    background?: BackgroundLayer | null;
     framingMode?: FramingMode;
     shadowMode?: ShadowMode;
     followCursor?: boolean;
@@ -452,8 +448,7 @@ export class HardwareMp4Exporter {
       showCursor,
       showHud,
       framePadding,
-      backgroundColor,
-      backgroundImage,
+      background,
       framingMode,
       shadowMode,
       followCursor = true,
@@ -621,8 +616,7 @@ export class HardwareMp4Exporter {
         outroHeadline,
         outroCtaText,
         framePadding,
-        backgroundColor,
-        backgroundImage,
+        background,
         framingMode,
         shadowMode
       });
@@ -752,8 +746,7 @@ export class HardwareMp4Exporter {
     outroHeadline?: string;
     outroCtaText?: string;
     framePadding?: number;
-    backgroundColor?: string | null;
-    backgroundImage?: CanvasImageSource | null;
+    background?: BackgroundLayer | null;
     framingMode?: FramingMode;
     shadowMode?: ShadowMode;
     followCursor?: boolean;
@@ -776,8 +769,7 @@ export class HardwareMp4Exporter {
       showCursor,
       showHud,
       framePadding,
-      backgroundColor,
-      backgroundImage,
+      background,
       framingMode,
       shadowMode,
       followCursor = true,
@@ -886,8 +878,7 @@ export class HardwareMp4Exporter {
         outroHeadline,
         outroCtaText,
         framePadding,
-        backgroundColor,
-        backgroundImage,
+        background,
         framingMode,
         shadowMode
       });

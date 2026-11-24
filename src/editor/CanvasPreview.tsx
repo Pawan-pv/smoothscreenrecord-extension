@@ -8,7 +8,8 @@ import {
   CaptionStyle,
   CursorTheme,
   BackdropMatrixParams,
-  ShadowMode
+  ShadowMode,
+  BackgroundLayer
 } from '../types/telemetry';
 import { StudioRenderer, RenderFrameOptions, getAspectDimensions } from '../engine/renderer';
 import { CameraState } from '../engine/spring-physics';
@@ -68,8 +69,7 @@ interface CanvasPreviewProps {
   outroCtaText?: string;
   backdropParams?: BackdropMatrixParams;
   framePadding?: number;
-  backgroundColor?: string | null;
-  backgroundImage?: CanvasImageSource | null;
+  background?: BackgroundLayer | null;
   framingMode?: FramingMode;
   shadowMode?: ShadowMode;
   onCanvasClickToAddZoom?: (normalizedX: number, normalizedY: number) => void;
@@ -110,8 +110,7 @@ export function CanvasPreview({
   outroCtaText,
   backdropParams,
   framePadding,
-  backgroundColor,
-  backgroundImage,
+  background,
   framingMode,
   shadowMode,
   onCanvasClickToAddZoom
@@ -240,8 +239,7 @@ export function CanvasPreview({
     opts.outroCtaText = outroCtaText;
     opts.backdropParams = backdropParams;
     opts.framePadding = framePadding;
-    opts.backgroundColor = backgroundColor;
-    opts.backgroundImage = backgroundImage;
+    opts.background = background;
     opts.framingMode = framingMode;
     opts.shadowMode = shadowMode;
 
@@ -380,8 +378,7 @@ export function CanvasPreview({
     outroCtaText,
     backdropParams,
     framePadding,
-    backgroundColor,
-    backgroundImage,
+    background,
     framingMode,
     shadowMode
   ]);

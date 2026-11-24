@@ -8,8 +8,10 @@ import {
   CaptionStyle,
   CursorTheme,
   BackdropMatrixParams,
+  BackgroundLayer,
   ShadowMode
 } from '../types/telemetry';
+import { BackgroundCache, backgroundMode } from './background-painter';
 import { CameraState } from './spring-physics';
 import { CursorSplineEngine, InterpolatedCursor } from './cursor-spline';
 import {
@@ -224,69 +226,15 @@ export interface RenderFrameOptions {
   outroCtaText?: string;
   backdropParams?: BackdropMatrixParams;
   framePadding?: number; // 0..0.20 (0% to 20%, default 0.08)
-  backgroundColor?: string | null;
-  backgroundImage?: CanvasImageSource | null;
+  /** What fills the canvas behind the window. Absent = the preset's animated backdrop. */
+  background?: BackgroundLayer | null;
   framingMode?: FramingMode;
   shadowMode?: ShadowMode;
   backgroundTimeMs?: number;
 }
 
-export function resolveBackgroundLayer(
-  backgroundImage: CanvasImageSource | null | undefined,
-  backgroundColor: string | null | undefined
-): 'image' | 'solid' | 'mesh' {
-  if (backgroundImage) return 'image';
-  if (backgroundColor) return 'solid';
-  return 'mesh';
-}
-
-export interface CoverFitResult {
-  sx: number;
-  sy: number;
-  sw: number;
-  sh: number;
-  dx: number;
-  dy: number;
-  dw: number;
-  dh: number;
-}
-
-export function computeCoverFit(
-  imgW: number,
-  imgH: number,
-  targetW: number,
-  targetH: number
-): CoverFitResult {
-  const safeImgW = Math.max(1, imgW);
-  const safeImgH = Math.max(1, imgH);
-  const targetAspect = targetW / targetH;
-  const imgAspect = safeImgW / safeImgH;
-  let sx = 0;
-  let sy = 0;
-  let sw = safeImgW;
-  let sh = safeImgH;
-
-  if (imgAspect > targetAspect) {
-    // Image is wider than canvas: crop horizontal sides
-    sw = Math.round(safeImgH * targetAspect);
-    sx = Math.round((safeImgW - sw) / 2);
-  } else {
-    // Image is taller than canvas: crop vertical top & bottom
-    sh = Math.round(safeImgW / targetAspect);
-    sy = Math.round((safeImgH - sh) / 2);
-  }
-
-  return {
-    sx,
-    sy,
-    sw,
-    sh,
-    dx: 0,
-    dy: 0,
-    dw: targetW,
-    dh: targetH
-  };
-}
+export { computeCoverFit } from './background-painter';
+export type { CoverFitResult } from './background-painter';
 
 export function getAspectDimensions(aspect: AspectRatioType, targetWidth = 1920): { width: number; height: number } {
   let raw: { width: number; height: number };
@@ -311,6 +259,7 @@ export class StudioRenderer {
   private offscreenVideoCanvas: HTMLCanvasElement;
   private offscreenVideoCtx: CanvasRenderingContext2D;
   private activeRipplesScratch: { x: number; y: number; progress: number }[] = [];
+  private backgroundCache = new BackgroundCache();
 
   // Pre-allocated static cosmic star coordinates for zero-allocation 60fps starfield
   private static readonly STARS = Array.from({ length: 48 }, (_, i) => ({
@@ -365,19 +314,11 @@ export class StudioRenderer {
     const canvasW = canvas.width;
     const canvasH = canvas.height;
 
-    // 1. Draw Advanced Backdrop (Custom Cover Image, Solid Color, or Preset Matrix)
-    const backgroundImage = options.backgroundImage;
-    const backgroundColor = options.backgroundColor;
-    const backgroundLayer = resolveBackgroundLayer(backgroundImage, backgroundColor);
-    if (backgroundLayer === 'image') {
-      const img = backgroundImage as any;
-      const imgW = img.naturalWidth || img.videoWidth || img.width || canvasW;
-      const imgH = img.naturalHeight || img.videoHeight || img.height || canvasH;
-      const fit = computeCoverFit(imgW, imgH, canvasW, canvasH);
-      ctx.drawImage(backgroundImage!, fit.sx, fit.sy, fit.sw, fit.sh, fit.dx, fit.dy, fit.dw, fit.dh);
-    } else if (backgroundLayer === 'solid') {
-      ctx.fillStyle = backgroundColor!;
-      ctx.fillRect(0, 0, canvasW, canvasH);
+    // 1. Background: a static one (color, gradient, wallpaper, image) painted once at this
+    // canvas size and cached, or the preset's animated Backdrop Matrix.
+    const background = options.background;
+    if (background && backgroundMode(background) === 'static') {
+      this.backgroundCache.draw(ctx, canvasW, canvasH, background);
     } else {
       this.drawBackdropMatrix(ctx, canvasW, canvasH, preset, options.backgroundTimeMs ?? currentTimeMs, backdropParams);
     }

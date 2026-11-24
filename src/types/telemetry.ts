@@ -153,6 +153,29 @@ export type CursorTheme = 'mac-obsidian' | 'neon-glow' | 'minimal-white';
 
 export type FramingMode = 'smart-fill' | 'fit';
 
+/** What fills the canvas behind the recording window. */
+export type BackgroundSpec =
+  | { kind: 'backdrop' } // the preset's animated Backdrop Matrix
+  | { kind: 'solid'; color: string }
+  | { kind: 'gradient'; colors: string[]; angle: number; shape: 'linear' | 'radial' }
+  | { kind: 'wallpaper'; id: string }
+  | { kind: 'image'; uploadId: string };
+
+/** Applied to wallpapers and images. 0..100 each. */
+export interface BackgroundEffects {
+  blur: number;
+  dim: number;
+}
+
+/** A background as the renderer draws it: the spec, its effects and (for an image) the decoded picture. */
+export interface BackgroundLayer {
+  spec: BackgroundSpec;
+  effects: BackgroundEffects;
+  image?: CanvasImageSource | null;
+}
+
+export const DEFAULT_BACKGROUND_EFFECTS: BackgroundEffects = { blur: 0, dim: 0 };
+
 export interface TelemetryData {
   metadata: RecordingMetadata;
   mousePoints: MousePoint[];

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useReducer } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useReducer, useMemo } from 'react';
 import {
   TelemetryData,
   ZoomPill,
@@ -12,7 +12,11 @@ import {
   CapturedNativeCursor,
   FramingMode,
   ShadowMode,
-  BackdropMatrixParams
+  BackdropMatrixParams,
+  BackgroundSpec,
+  BackgroundEffects,
+  BackgroundLayer,
+  DEFAULT_BACKGROUND_EFFECTS
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
 import { generateAutoZoomPills, resolveSourcePixelWidth, AUTO_ZOOM_DEFAULT_DEPTH, AUTO_ZOOM_CONFIG } from '../engine/spring-physics';
@@ -218,10 +222,17 @@ export function EditorStudio() {
   const [outroHeadline, setOutroHeadline] = useState<string>('');
   const [outroCtaText, setOutroCtaText] = useState<string>('');
   const [framePadding, setFramePadding] = useState<number>(0.08);
-  const [backgroundColor, setBackgroundColor] = useState<string | null>(null);
+  /** What fills the canvas behind the window (one source of truth for preview and exports). */
+  const [backgroundSpec, setBackgroundSpec] = useState<BackgroundSpec>({ kind: 'backdrop' });
+  const [backgroundEffects, setBackgroundEffects] = useState<BackgroundEffects>(DEFAULT_BACKGROUND_EFFECTS);
   const [backgroundImageUrl, setBackgroundImageUrl] = useState<string | null>(null);
   const [backgroundImage, setBackgroundImage] = useState<HTMLImageElement | null>(null);
   const backgroundImageUrlRef = useRef<string | null>(null);
+  const backgroundColor = backgroundSpec.kind === 'solid' ? backgroundSpec.color : null;
+  const background = useMemo<BackgroundLayer>(
+    () => ({ spec: backgroundSpec, effects: backgroundEffects, image: backgroundSpec.kind === 'image' ? backgroundImage : null }),
+    [backgroundSpec, backgroundEffects, backgroundImage]
+  );
 
   useEffect(() => {
     return () => {
@@ -240,17 +251,24 @@ export function EditorStudio() {
     if (currentUrl?.startsWith('blob:')) URL.revokeObjectURL(currentUrl);
   }, []);
 
-  const handleSelectBackgroundImage = useCallback((url: string | null, image: HTMLImageElement | null) => {
+  const handleSelectBackgroundImage = useCallback((url: string | null, image: HTMLImageElement | null, uploadId = 'session') => {
     if (!url || !image) {
       clearBackgroundImage();
+      setBackgroundSpec({ kind: 'backdrop' });
       return;
     }
     const previousUrl = backgroundImageUrlRef.current;
     backgroundImageUrlRef.current = url;
     setBackgroundImageUrl(url);
     setBackgroundImage(image);
-    setBackgroundColor(null);
+    setBackgroundSpec({ kind: 'image', uploadId });
     if (previousUrl && previousUrl !== url && previousUrl.startsWith('blob:')) URL.revokeObjectURL(previousUrl);
+  }, [clearBackgroundImage]);
+
+  /** Any non-image background: a solid color, a gradient, a wallpaper or the preset backdrop. */
+  const handleChangeBackground = useCallback((spec: BackgroundSpec) => {
+    if (spec.kind !== 'image') clearBackgroundImage();
+    setBackgroundSpec(spec);
   }, [clearBackgroundImage]);
 
   const handleBackgroundImageError = useCallback((url: string) => {
@@ -259,9 +277,8 @@ export function EditorStudio() {
   }, [showToast]);
 
   const handleSelectBackgroundColor = useCallback((color: string | null) => {
-    if (color) clearBackgroundImage();
-    setBackgroundColor(color);
-  }, [clearBackgroundImage]);
+    handleChangeBackground(color ? { kind: 'solid', color } : { kind: 'backdrop' });
+  }, [handleChangeBackground]);
   const [followCursor, setFollowCursor] = useState<boolean>(true);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
 
@@ -899,9 +916,9 @@ export function EditorStudio() {
 
   const handleSelectPreset = useCallback((newPreset: VibePreset) => {
     setPreset(newPreset);
-    // The latest choice wins: picking a preset drops an uploaded image AND a solid colour.
+    // The latest choice wins: picking a preset drops any custom background.
     clearBackgroundImage();
-    setBackgroundColor(null);
+    setBackgroundSpec({ kind: 'backdrop' });
     if (newPreset.backdrop) {
       setBackdropParams(newPreset.backdrop);
     }
@@ -1508,8 +1525,7 @@ export function EditorStudio() {
         trimStartMs: trimStartMs > 0 ? trimStartMs : undefined,
         trimEndMs: trimEndMs > 0 && trimEndMs < durationMs ? trimEndMs : undefined,
         framePadding,
-        backgroundColor,
-        backgroundImage,
+        background,
         framingMode,
         shadowMode,
         targetWidth: targetExportWidth,
@@ -1592,8 +1608,7 @@ export function EditorStudio() {
         trimStartMs: trimStartMs > 0 ? trimStartMs : undefined,
         trimEndMs: trimEndMs > 0 && trimEndMs < durationMs ? trimEndMs : undefined,
         framePadding,
-        backgroundColor,
-        backgroundImage,
+        background,
         framingMode,
         shadowMode,
         qualityPreset: gifPreset,
@@ -2016,8 +2031,7 @@ export function EditorStudio() {
           outroHeadline={outroHeadline}
           outroCtaText={outroCtaText}
           framePadding={framePadding}
-          backgroundColor={backgroundColor}
-          backgroundImage={backgroundImage}
+          background={background}
           onCanvasClickToAddZoom={handleAddPillAtPlayhead}
           showCaptions={showCaptions}
         />

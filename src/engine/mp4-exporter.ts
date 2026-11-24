@@ -540,7 +540,7 @@ export class HardwareMp4Exporter {
     // Deterministic camera schedule, built once (same as the preview and the GIF export).
     const cameraPath = buildCameraPath(pills, {
       followCursor,
-      cursorAt: (t) => cursorEngine.getCursorAt(t),
+      cursorAt: (t) => cursorEngine.getCameraCursorAt(t),
       viewportWidth: metadata?.width || outW,
       viewportHeight: metadata?.height || outH
     });
@@ -821,7 +821,7 @@ export class HardwareMp4Exporter {
 
     const cameraPath = buildCameraPath(pills, {
       followCursor,
-      cursorAt: (t) => cursorEngine.getCursorAt(t),
+      cursorAt: (t) => cursorEngine.getCameraCursorAt(t),
       viewportWidth: metadata?.width || exportCanvas.width,
       viewportHeight: metadata?.height || exportCanvas.height
     });

@@ -393,7 +393,7 @@ export class HardwareGifExporter {
     // smoothed cursor path: the same one the preview and the MP4 export use.
     const cameraPath = buildCameraPath(pills, {
       followCursor,
-      cursorAt: (t) => cursorEngine.getCursorAt(t),
+      cursorAt: (t) => cursorEngine.getCameraCursorAt(t),
       viewportWidth: metadata?.width || fullW,
       viewportHeight: metadata?.height || fullH
     });

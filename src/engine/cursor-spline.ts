@@ -332,6 +332,14 @@ export class CursorSplineEngine {
     return this.clicks;
   }
 
+  /**
+   * The cursor position for the camera to follow, or null when the recording has no
+   * cursor samples (getCursorAt then reports (0,0), which is not a real position).
+   */
+  public getCameraCursorAt(timeMs: number): InterpolatedCursor | null {
+    return this.mousePoints.length > 0 ? this.getCursorAt(timeMs) : null;
+  }
+
   public getPressScaleAt(timeMs: number): number {
     const latestDown = [...this.pressEvents].reverse().find((event) => event.t <= timeMs && event.type === 'down');
     const latestUp = [...this.pressEvents].reverse().find((event) => event.t <= timeMs && event.type === 'up');

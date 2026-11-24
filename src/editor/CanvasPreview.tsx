@@ -154,7 +154,7 @@ export function CanvasPreview({
   const cameraPath = useMemo(
     () => buildCameraPath(pills, {
       followCursor,
-      cursorAt: (t) => cursorEngine.getCursorAt(t),
+      cursorAt: (t) => cursorEngine.getCameraCursorAt(t),
       viewportWidth: metadata?.width || targetWidth,
       viewportHeight: metadata?.height || targetHeight
     }),

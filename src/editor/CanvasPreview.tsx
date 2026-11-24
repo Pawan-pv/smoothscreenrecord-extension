@@ -411,12 +411,18 @@ export function CanvasPreview({
     const clampedX = Math.max(0.05, Math.min(0.95, source.x));
     const clampedY = Math.max(0.05, Math.min(0.95, source.y));
 
+    // Moving the target moves a multi-click shot's whole focus path with it (the pan
+    // between its clicks is kept), instead of collapsing the shot to one point.
+    const dx = clampedX - selectedPill.targetX;
+    const dy = clampedY - selectedPill.targetY;
+    const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
     onUpdatePill({
       ...selectedPill,
       targetX: clampedX,
       targetY: clampedY,
-      // A target placed by hand is one fixed focus: the shot's click keyframes no longer apply.
-      keyframes: undefined
+      ...(selectedPill.keyframes
+        ? { keyframes: selectedPill.keyframes.map((k) => ({ ...k, x: clamp01(k.x + dx), y: clamp01(k.y + dy) })) }
+        : {})
     });
   };
 

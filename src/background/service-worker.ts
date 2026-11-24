@@ -95,6 +95,42 @@ async function readRecordingContext(): Promise<{ originEpoch: number | null; pri
   };
 }
 
+/**
+ * Entire-screen / window recordings follow the user across tabs: the tab in front is
+ * tracked too, so clicks after a tab switch are not lost. Kept in storage.session (it
+ * outlives the worker idling). `windowId`: a window share only follows tabs of that window.
+ */
+const CTX_FOLLOW_KEY = 'smoothstudio_follow';
+interface FollowState { enabled: boolean; windowId: number | null; tabIds: number[] }
+const NO_FOLLOW: FollowState = { enabled: false, windowId: null, tabIds: [] };
+
+async function readFollow(): Promise<FollowState> {
+  const data: Record<string, any> = await getStorageArea().get([CTX_FOLLOW_KEY]).catch(() => ({}));
+  const f = data[CTX_FOLLOW_KEY];
+  if (!f || typeof f !== 'object') return { ...NO_FOLLOW };
+  return {
+    enabled: Boolean(f.enabled),
+    windowId: typeof f.windowId === 'number' ? f.windowId : null,
+    tabIds: Array.isArray(f.tabIds) ? f.tabIds.filter((id: unknown) => typeof id === 'number') : []
+  };
+}
+
+function writeFollow(f: FollowState): Promise<void> {
+  return getStorageArea().set({ [CTX_FOLLOW_KEY]: f }).catch(() => undefined);
+}
+
+/** Every tab tracked by the live recording: the one it started on, and the ones followed. */
+async function trackedTabIds(curr: SessionState): Promise<number[]> {
+  const follow = await readFollow();
+  const ids = typeof curr.activeRecordingTabId === 'number' ? [curr.activeRecordingTabId] : [];
+  for (const id of follow.tabIds) if (!ids.includes(id)) ids.push(id);
+  return ids;
+}
+
+async function isTrackedTab(curr: SessionState, tabId: number | undefined): Promise<boolean> {
+  return typeof tabId === 'number' && curr.isRecording && (await trackedTabIds(curr)).includes(tabId);
+}
+
 // Segment writes are read-modify-write on the index: serialise them.
 let segmentQueue: Promise<unknown> = Promise.resolve();
 function queueSegmentOp<T>(op: () => Promise<T>): Promise<T> {
@@ -218,24 +254,64 @@ async function endRecordingSession(expectedSessionId: string | null = null): Pro
     const tabId = curr.activeRecordingTabId;
     let telemetry: any = null;
     let finalResponse: any = null;
-    if (tabId) {
-      finalResponse = await new Promise<any>((resolve) => {
-        let done = false;
-        const finish = (v: any) => { if (!done) { done = true; resolve(v); } };
-        try {
-          chrome.tabs.sendMessage(tabId, { type: 'STOP_TELEMETRY', sessionId }, (response) => {
-            void chrome.runtime?.lastError; // the tab may be gone
-            finish(response || null);
-          });
-        } catch { finish(null); }
-        setTimeout(() => finish(null), STOP_TELEMETRY_TIMEOUT_MS);
+    const stopTab = (id: number) => new Promise<any>((resolve) => {
+      let done = false;
+      const finish = (v: any) => { if (!done) { done = true; resolve(v); } };
+      try {
+        chrome.tabs.sendMessage(id, { type: 'STOP_TELEMETRY', sessionId }, (response) => {
+          void chrome.runtime?.lastError; // the tab may be gone
+          finish(response || null);
+        });
+      } catch { finish(null); }
+      setTimeout(() => finish(null), STOP_TELEMETRY_TIMEOUT_MS);
+    });
+    // Tabs followed during a screen / window recording stop together with the first one.
+    const follow = await readFollow();
+    const followedIds = follow.tabIds.filter((id) => id !== tabId);
+    const [primaryResponse, ...followedResponses] = await Promise.all([
+      tabId ? stopTab(tabId) : Promise.resolve(null),
+      ...followedIds.map((id) => stopTab(id))
+    ]);
+    finalResponse = primaryResponse;
+    telemetry = finalResponse?.data || null;
+    // A followed tab's last capture joins the merge as one more segment, with its own page.
+    const followedSegments: TelemetrySegment[] = [];
+    followedResponses.forEach((resp, i) => {
+      if (Array.isArray(resp?.unacked)) followedSegments.push(...resp.unacked);
+      const d = resp?.data;
+      if (!d) return;
+      followedSegments.push({
+        sessionId: sessionId as string,
+        loadId: `final:tab${followedIds[i]}`,
+        seq: 0,
+        originEpoch: typeof resp.originEpoch === 'number' ? resp.originEpoch : (d.metadata?.startTime ?? Date.now()),
+        batch: {
+          mousePoints: d.mousePoints || [],
+          clicks: d.clicks || [],
+          pressEvents: d.pressEvents || [],
+          keystrokes: d.keystrokes || [],
+          inputEvents: d.inputEvents || [],
+          typingSessions: d.typingSessions || [],
+          scrollEvents: d.scrollEvents || [],
+          visibilityEvents: d.visibilityEvents || []
+        },
+        page: {
+          url: d.metadata?.url,
+          title: d.metadata?.title,
+          width: d.metadata?.width,
+          height: d.metadata?.height,
+          devicePixelRatio: d.metadata?.devicePixelRatio,
+          ...(d.metadata?.screenLayout ? { screenLayout: d.metadata.screenLayout } : {})
+        }
       });
-      telemetry = finalResponse?.data || null;
-    }
+    });
     // Pages the recorded tab went through (navigation / reload) handed their
     // telemetry over in segments: stitch them and the last page into one stream.
     const handedOver = await readSegments(sessionId);
-    const unacked: TelemetrySegment[] = Array.isArray(finalResponse?.unacked) ? finalResponse.unacked : [];
+    const unacked: TelemetrySegment[] = [
+      ...(Array.isArray(finalResponse?.unacked) ? finalResponse.unacked : []),
+      ...followedSegments
+    ];
     if (handedOver.length > 0 || unacked.length > 0) {
       const ctx = await readRecordingContext();
       const all = [...handedOver, ...unacked];
@@ -282,6 +358,7 @@ async function endRecordingSession(expectedSessionId: string | null = null): Pro
     // telemetry (and never a different session's).
     await getStorageArea().set({ lastSessionId: sessionId }).catch(() => undefined);
     await persistSessionState({ isRecording: false, activeRecordingTabId: null, activeSessionId: null });
+    await writeFollow({ ...NO_FOLLOW });
     return {
       telemetry: telemetry && telemetry.metadata ? telemetry : null,
       sessionId,
@@ -433,7 +510,7 @@ chrome.tabs?.onRemoved?.addListener((tabId) => {
  */
 async function rearmRecordedTab(tab: chrome.tabs.Tab): Promise<void> {
   const curr = await loadSessionState();
-  if (!curr.isRecording || tab.id !== curr.activeRecordingTabId) return;
+  if (!(await isTrackedTab(curr, tab.id))) return;
   const ctx = await readRecordingContext();
   if (ctx.privacyOptions) {
     const shield = await dispatchToTab(tab, { type: 'APPLY_PRIVACY_OPTIONS', options: ctx.privacyOptions });
@@ -452,6 +529,50 @@ async function rearmRecordedTab(tab: chrome.tabs.Tab): Promise<void> {
   });
   if (!res.ok) console.warn('[SmoothStudio SW] Telemetry not re-armed after navigation:', res.reason);
 }
+
+/**
+ * Entire screen / window: the tab in front of the focused window joins the recording
+ * (privacy shield first, then tracking on the recording's own clock, no HUD gate).
+ * Serialised: a burst of activations arms each tab once.
+ */
+let followQueue: Promise<void> = Promise.resolve();
+function followActiveTab(): void {
+  followQueue = followQueue.then(async () => {
+    const curr = await loadSessionState();
+    if (!curr.isRecording) return;
+    const follow = await readFollow();
+    if (!follow.enabled) return;
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => [] as chrome.tabs.Tab[]);
+    if (!tab || typeof tab.id !== 'number' || !tab.url || !isWebTab(tab)) return;
+    if (tab.id === curr.activeEditorTabId) return;
+    if (follow.windowId !== null && tab.windowId !== follow.windowId) return;
+    if ((await trackedTabIds(curr)).includes(tab.id)) return;
+    const ctx = await readRecordingContext();
+    if (ctx.originEpoch === null) return; // not live yet: the start tab is armed by the start itself
+    if (ctx.privacyOptions) {
+      const shield = await dispatchToTab(tab, { type: 'APPLY_PRIVACY_OPTIONS', options: ctx.privacyOptions });
+      if (!shield.ok) console.warn('[SmoothStudio SW] Privacy shield not applied to followed tab:', shield.reason);
+    }
+    const res = await dispatchToTab(tab, {
+      type: 'START_TELEMETRY',
+      originEpoch: ctx.originEpoch,
+      sessionId: curr.activeSessionId || null,
+      resume: true
+    });
+    if (!res.ok) {
+      console.warn('[SmoothStudio SW] Followed tab not tracked:', tab.id, res.reason);
+      return;
+    }
+    const latest = await readFollow();
+    if (!latest.tabIds.includes(tab.id)) await writeFollow({ ...latest, tabIds: [...latest.tabIds, tab.id] });
+    console.log('[SmoothStudio SW] Following tab', tab.id, 'into the recording');
+  }).catch((err) => console.warn('[SmoothStudio SW] Follow tab failed:', err));
+}
+
+chrome.tabs?.onActivated?.addListener(() => followActiveTab());
+chrome.windows?.onFocusChanged?.addListener((windowId) => {
+  if (windowId !== chrome.windows.WINDOW_ID_NONE) followActiveTab();
+});
 
 chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete') return;
@@ -531,7 +652,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ? endRecordingSession(prev.activeSessionId || null).then(() => undefined)
           : undefined))
         .catch(() => undefined);
-      const resetContext = endPrevious.then(() => clearSegments()).then(() => (
+      const resetContext = endPrevious.then(() => clearSegments()).then(() => writeFollow({ ...NO_FOLLOW })).then(() => (
         Number.isFinite(provisionalOrigin) && provisionalOrigin > 0
           ? getStorageArea().set({ [CTX_ORIGIN_KEY]: provisionalOrigin })
           : getStorageArea().remove(CTX_ORIGIN_KEY)
@@ -542,7 +663,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         activeEditorTabId: editorTabId,
         quality,
         activeSessionId: sessionId
-      })).then(() => {
+      })).then(async () => {
+        // Entire screen / window: follow the user across tabs (a window share: that window only).
+        const surface = message.shareSurface;
+        if ((surface === 'monitor' || surface === 'window') && typeof targetRecordingTabId === 'number') {
+          const startTab = await chrome.tabs.get(targetRecordingTabId).catch(() => null);
+          await writeFollow({
+            enabled: true,
+            windowId: surface === 'window' && typeof startTab?.windowId === 'number' ? startTab.windowId : null,
+            tabIds: []
+          });
+        }
+      }).then(() => {
         // START_TELEMETRY goes to the recorded tab only: the stop only ever
         // reaches that tab, so any other tab started here would keep its HUD
         // and keep tracking after the recording ended.
@@ -735,8 +867,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'TELEMETRY_SEGMENT') {
     const segment = message.segment as TelemetrySegment | undefined;
     loadSessionState().then(async (curr) => {
-      const belongs = Boolean(segment) && curr.isRecording
-        && typeof sender.tab?.id === 'number' && sender.tab.id === curr.activeRecordingTabId
+      const belongs = Boolean(segment) && await isTrackedTab(curr, sender.tab?.id)
         && (segment!.sessionId || null) === (curr.activeSessionId || null);
       if (!belongs) {
         sendResponse({ ok: false, reason: 'not_the_recorded_tab' });
@@ -749,8 +880,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // 5c. A cross-origin iframe of the recorded tab: is the tab being recorded?
   if (message.type === 'FRAME_TRACKING_STATUS') {
-    loadSessionState().then((curr) => {
-      sendResponse({ recording: curr.isRecording && typeof sender.tab?.id === 'number' && sender.tab.id === curr.activeRecordingTabId });
+    loadSessionState().then(async (curr) => {
+      sendResponse({ recording: await isTrackedTab(curr, sender.tab?.id) });
     });
     return true;
   }
@@ -759,8 +890,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // relayed to the top page of the same tab, which records them in its stream.
   if (message.type === 'FRAME_TELEMETRY') {
     const tabId = sender.tab?.id;
-    loadSessionState().then((curr) => {
-      if (!curr.isRecording || typeof tabId !== 'number' || tabId !== curr.activeRecordingTabId || !Array.isArray(message.events)) {
+    loadSessionState().then(async (curr) => {
+      if (!(await isTrackedTab(curr, tabId)) || typeof tabId !== 'number' || !Array.isArray(message.events)) {
         sendResponse({ ok: false });
         return;
       }

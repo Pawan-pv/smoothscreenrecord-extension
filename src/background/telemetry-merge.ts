@@ -8,7 +8,8 @@ import type {
   TypingSession,
   ScrollEvent,
   VisibilityEvent,
-  RecordingMetadata
+  RecordingMetadata,
+  PageGeometry
 } from '../types/telemetry';
 
 /**
@@ -82,6 +83,16 @@ function shifted<T extends { t: number }>(items: T[], delta: number): T[] {
   return items.map((i) => ({ ...i, t: Math.round(i.t + delta) })).filter((i) => i.t >= 0);
 }
 
+/** Tags pointer events with the index of the page geometry they were measured in. */
+function tagged<T extends { g?: number }>(items: T[], g: number | undefined): T[] {
+  return g === undefined ? items : items.map((i) => ({ ...i, g }));
+}
+
+function geometryOf(page: { width?: number; height?: number; screenLayout?: RecordingMetadata['screenLayout'] } | undefined): PageGeometry | null {
+  if (!page || !(Number(page.width) > 0) || !(Number(page.height) > 0)) return null;
+  return { width: page.width as number, height: page.height as number, ...(page.screenLayout ? { screenLayout: page.screenLayout } : {}) };
+}
+
 function shiftedTyping(items: TypingSession[], delta: number): TypingSession[] {
   if (!delta) return items.slice();
   return items
@@ -125,22 +136,35 @@ export function mergeTelemetrySegments(input: MergeInput): TelemetryData | null 
     return finalData;
   }
 
+  // Pages can differ (tabs followed during a screen recording): every segment's pointer
+  // events are tagged with its page geometry, so each is placed with its own page's
+  // viewport and screen position.
+  const geometries: PageGeometry[] = [];
+  const geometryIndex = (geometry: PageGeometry | null): number | undefined => {
+    if (!geometry) return undefined;
+    const key = JSON.stringify(geometry);
+    const found = geometries.findIndex((g) => JSON.stringify(g) === key);
+    if (found >= 0) return found;
+    geometries.push(geometry);
+    return geometries.length - 1;
+  };
+
   const out = emptyBatch();
-  const add = (batch: Partial<TelemetryBatch>, origin: number) => {
+  const add = (batch: Partial<TelemetryBatch>, origin: number, g?: number) => {
     const delta = origin - input.referenceOrigin;
-    out.mousePoints.push(...shifted(batch.mousePoints || [], delta));
-    out.clicks.push(...shifted(batch.clicks || [], delta));
-    out.pressEvents.push(...shifted(batch.pressEvents || [], delta));
+    out.mousePoints.push(...tagged(shifted(batch.mousePoints || [], delta), g));
+    out.clicks.push(...tagged(shifted(batch.clicks || [], delta), g));
+    out.pressEvents.push(...tagged(shifted(batch.pressEvents || [], delta), g));
     out.keystrokes.push(...shifted(batch.keystrokes || [], delta));
-    out.inputEvents.push(...shifted(batch.inputEvents || [], delta));
+    out.inputEvents.push(...tagged(shifted(batch.inputEvents || [], delta), g));
     out.typingSessions.push(...shiftedTyping(batch.typingSessions || [], delta));
     out.scrollEvents.push(...shifted(batch.scrollEvents || [], delta));
     out.visibilityEvents!.push(...shifted(batch.visibilityEvents || [], delta));
   };
 
-  for (const s of unique) add(s.batch, s.originEpoch);
+  for (const s of unique) add(s.batch, s.originEpoch, geometryIndex(geometryOf(s.page)));
   if (finalData) {
-    add(finalData, input.final?.originEpoch ?? input.referenceOrigin);
+    add(finalData, input.final?.originEpoch ?? input.referenceOrigin, geometryIndex(geometryOf(finalData.metadata)));
   }
 
   out.mousePoints.sort(byTime);
@@ -179,6 +203,7 @@ export function mergeTelemetrySegments(input: MergeInput): TelemetryData | null 
     title: firstPage?.title ?? fm?.title ?? 'Screen Recording',
     url: firstPage?.url ?? fm?.url,
     ...(screenLayout ? { screenLayout } : {}),
+    ...(geometries.length > 0 ? { pageGeometries: geometries } : {}),
     brandColors: fm?.brandColors ?? [...ordered].reverse().find((s) => s.page.brandColors)?.page.brandColors ?? DEFAULT_BRAND
   };
 

@@ -10,6 +10,8 @@ export interface MousePoint {
   x: number; // normalised or pixel x coordinate
   y: number; // normalised or pixel y coordinate
   c: CursorStyle;
+  /** Index into metadata.pageGeometries of the page this came from (multi-tab recordings). */
+  g?: number;
 }
 
 export type CursorStyle = 'default' | 'pointer' | 'text' | 'grab' | 'grabbing' | 'not-allowed' | 'crosshair';
@@ -36,6 +38,8 @@ export interface ClickEvent {
    * recordings, which are always treated as interactive (a click is never dropped on a guess).
    */
   interactive?: boolean;
+  /** Index into metadata.pageGeometries of the page this came from (multi-tab recordings). */
+  g?: number;
 }
 
 export interface PressEvent {
@@ -44,6 +48,8 @@ export interface PressEvent {
   x: number;
   y: number;
   button: number;
+  /** Index into metadata.pageGeometries of the page this came from (multi-tab recordings). */
+  g?: number;
 }
 
 export interface KeystrokeEvent {
@@ -70,6 +76,8 @@ export interface InputFocusEvent {
   t: number;
   type: 'focus' | 'blur' | 'type';
   bounds: BoundingBox;
+  /** Index into metadata.pageGeometries of the page this came from (multi-tab recordings). */
+  g?: number;
 }
 
 /** The recorded tab became hidden (the user left it) or visible again. */
@@ -88,6 +96,13 @@ export interface ScrollEvent {
  * Where the recorded page sat on the screen, in screen CSS pixels (DIPs). Lets the editor
  * place page clicks on a window or entire-screen recording.
  */
+/** One page's viewport size (CSS px) and where it sat on the screen. */
+export interface PageGeometry {
+  width: number;
+  height: number;
+  screenLayout?: ScreenLayout;
+}
+
 export interface ScreenLayout {
   /** Top-left corner of the page viewport on the screen. */
   viewportLeft: number;
@@ -120,6 +135,11 @@ export interface RecordingMetadata {
   capturedNativeCursor?: CapturedNativeCursor;
   /** Where the page sat on the screen while recording (absent in older recordings). */
   screenLayout?: ScreenLayout;
+  /**
+   * Pages of a recording that followed the user across tabs: viewport size and screen
+   * position of each, indexed by the events' `g`. Absent for a single-page recording.
+   */
+  pageGeometries?: PageGeometry[];
   /**
    * 'capture': the coordinates were converted from the page viewport into the recorded
    * window/screen frame. Absent = page viewport coordinates.

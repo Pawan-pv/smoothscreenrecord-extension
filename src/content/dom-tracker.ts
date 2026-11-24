@@ -61,6 +61,17 @@ let hasPointer = false;
  * never records the stale position in between.
  */
 let pointerInOpaqueFrame = false;
+/**
+ * The pointer is over this page (it moved here and has not left the viewport).
+ * Several tabs can be tracked at once (a screen recording follows tab switches):
+ * only the page that owns the pointer records it, never a stale position.
+ */
+let pointerInside = false;
+
+/** The pointer left the viewport (relatedTarget null: out of the page, not into a child). */
+function handlePointerLeave(e: MouseEvent) {
+  if (!e.relatedTarget) pointerInside = false;
+}
 let sampleTimer: ReturnType<typeof setInterval> | null = null;
 
 export function normalizeCursorStyle(raw: string): CursorStyle {
@@ -388,6 +399,7 @@ function handleMouseMove(e: MouseEvent) {
   lastMouseX = coords.x;
   lastMouseY = coords.y;
   hasPointer = true;
+  pointerInside = true;
   pointerInOpaqueFrame = isOpaqueIframe(e.target);
 
   const now = performance.now();
@@ -410,6 +422,8 @@ function isOpaqueIframe(target: EventTarget | null): boolean {
 /** Fixed-rate sampler: records the latest pointer position every SAMPLE_INTERVAL_MS. */
 function sampleCursor() {
   if (!isRecording || !hasPointer || !originEpoch || pointerInOpaqueFrame) return;
+  // Hidden tab, or the pointer is elsewhere: another page (or nothing) owns it now.
+  if (!pointerInside || document.visibilityState !== 'visible') return;
   const t = Math.round(getRelativeTime());
   if (t < 0) return;
   const last = mousePoints[mousePoints.length - 1];
@@ -439,6 +453,7 @@ function handlePress(e: MouseEvent, type: 'down' | 'up') {
   lastMouseX = coords.x;
   lastMouseY = coords.y;
   hasPointer = true;
+  pointerInside = true;
   lastCursor = readCursorStyle(e);
   // A press is an exact event: its position is recorded at its own time, besides the fixed-rate samples.
   mousePoints.push({ t: Math.round(getRelativeTime()), x: coords.x, y: coords.y, c: lastCursor });
@@ -1213,6 +1228,7 @@ export function startTracking(
   // anything touches the page's DOM, so a page that rejects our HUD (or anything
   // else) can never leave a recording without clicks.
   window.addEventListener('mousemove', handleMouseMove, { passive: true, capture: true });
+  document.addEventListener('mouseout', handlePointerLeave, { passive: true, capture: true });
   window.addEventListener('pointerdown', handlePointerDown, { passive: true, capture: true });
   window.addEventListener('pointerup', handlePointerUp, { passive: true, capture: true });
   window.addEventListener('mousedown', handleMouseDown, { passive: true, capture: true });
@@ -1229,6 +1245,7 @@ export function startTracking(
   if (flushTimer !== null) clearInterval(flushTimer);
   flushTimer = setInterval(() => flushTelemetry('interval'), FLUSH_INTERVAL_MS);
   hasPointer = false;
+  pointerInside = false;
   pointerInOpaqueFrame = false;
   startCursorSampler();
   try {
@@ -1272,6 +1289,7 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
   closeTypingSession();
 
   window.removeEventListener('mousemove', handleMouseMove, { capture: true });
+  document.removeEventListener('mouseout', handlePointerLeave, { capture: true });
   window.removeEventListener('pointerdown', handlePointerDown, { capture: true });
   window.removeEventListener('pointerup', handlePointerUp, { capture: true });
   window.removeEventListener('mousedown', handleMouseDown, { capture: true });

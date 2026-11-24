@@ -1354,7 +1354,9 @@ export function EditorStudio() {
             type: 'START_STUDIO_RECORDING',
             tabId: sourceTabId,
             focusTarget: Boolean(sourceTabId),
-            sessionId
+            sessionId,
+            // Entire screen / window: the worker follows the user across tabs.
+            shareSurface: captureEngineRef.current.getTrackSettings()?.displaySurface
           },
           (response) => {
             if (chrome.runtime?.lastError || !response) return;

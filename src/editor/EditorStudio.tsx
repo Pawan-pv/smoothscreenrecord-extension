@@ -15,7 +15,7 @@ import {
   BackdropMatrixParams
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
-import { generateAutoZoomPills } from '../engine/spring-physics';
+import { generateAutoZoomPills, resolveSourcePixelWidth } from '../engine/spring-physics';
 import { CursorSplineEngine } from '../engine/cursor-spline';
 import { AudioProcessor } from '../engine/audio-processor';
 import { SfxSynthesizer } from '../engine/sfx-synthesizer';
@@ -635,7 +635,13 @@ export function EditorStudio() {
         data.metadata?.width || 1920,
         data.metadata?.height || 1080,
         data.scrollEvents,
-        data.typingSessions
+        data.typingSessions,
+        {
+          mousePoints: data.mousePoints,
+          keystrokes: data.keystrokes,
+          visibilityEvents: data.visibilityEvents,
+          sourcePixelWidth: resolveSourcePixelWidth(captureEngineRef.current.getTrackSettings()?.width, undefined, data.metadata)
+        }
       ) : [];
     setPills(autoPills);
     if (import.meta.env.DEV) (window as any).__smoothstudio_pills = autoPills;
@@ -1279,7 +1285,17 @@ export function EditorStudio() {
       telemetry.metadata?.width || 1920,
       telemetry.metadata?.height || 1080,
       telemetry.scrollEvents,
-      telemetry.typingSessions
+      telemetry.typingSessions,
+      {
+        mousePoints: telemetry.mousePoints,
+        keystrokes: telemetry.keystrokes,
+        visibilityEvents: telemetry.visibilityEvents,
+        sourcePixelWidth: resolveSourcePixelWidth(
+          captureEngineRef.current.getTrackSettings()?.width,
+          videoElement instanceof HTMLVideoElement ? videoElement.videoWidth : undefined,
+          telemetry.metadata
+        )
+      }
     );
     setPills(autoPills);
     if (selectedPillId && !autoPills.some((p) => p.id === selectedPillId)) {
@@ -1921,6 +1937,7 @@ export function EditorStudio() {
           showCursor={showCursor}
           showHud={showHud}
           followCursor={followCursor}
+          cameraCursorKey={`${cursorSmoothing}|${telemetry?.metadata?.id ?? ''}|${telemetry?.mousePoints?.length ?? 0}`}
           metadata={telemetry?.metadata}
           cursorTheme={cursorTheme}
           cursorScale={cursorScale}
@@ -2003,6 +2020,11 @@ export function EditorStudio() {
         onRedetectZooms={handleRedetectZooms}
         onUpdatePill={handleUpdatePill}
         onDeletePill={handleDeletePill}
+        sourcePixelWidth={resolveSourcePixelWidth(
+          captureEngineRef.current.getTrackSettings()?.width,
+          videoElement instanceof HTMLVideoElement ? videoElement.videoWidth : undefined,
+          telemetry?.metadata
+        )}
         onAddPillAtPlayhead={() => handleAddPillAtPlayhead(0.5, 0.5)}
         silences={silences}
         onToggleSilenceCut={handleToggleSilenceCut}

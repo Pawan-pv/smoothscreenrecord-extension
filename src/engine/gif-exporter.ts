@@ -12,7 +12,7 @@ import {
   ShadowMode
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
-import { computeCinematicCameraState } from './spring-physics';
+import { buildCameraPath } from './camera-path';
 import { CursorSplineEngine } from './cursor-spline';
 import { SequentialVideoFrameSource } from './sequential-frame-source';
 import {
@@ -389,6 +389,15 @@ export class HardwareGifExporter {
       }
     }
 
+    // The camera is a deterministic schedule built once from the zooms and the
+    // smoothed cursor path: the same one the preview and the MP4 export use.
+    const cameraPath = buildCameraPath(pills, {
+      followCursor,
+      cursorAt: (t) => cursorEngine.getCursorAt(t),
+      viewportWidth: metadata?.width || fullW,
+      viewportHeight: metadata?.height || fullH
+    });
+
     // The frame source owns its VideoFrames; close() releases the current and
     // queued frames plus the decoder on both the success and the error path.
     try {
@@ -396,15 +405,7 @@ export class HardwareGifExporter {
         if (signal?.aborted) throw createExportAbortError();
         const currentMs = timestamps[f];
 
-        const cursor = cursorEngine.getCursorAt(currentMs);
-        const camera = computeCinematicCameraState(
-          currentMs,
-          pills,
-          cursor,
-          metadata?.width || fullW,
-          metadata?.height || fullH,
-          followCursor
-        );
+        const camera = cameraPath.at(currentMs);
         const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
 
         if (frameSource && stagingCanvas && stagingCtx) {

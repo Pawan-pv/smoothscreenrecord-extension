@@ -12,7 +12,7 @@ import {
   ShadowMode
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
-import { computeCinematicCameraState } from './spring-physics';
+import { buildCameraPath } from './camera-path';
 import { CursorSplineEngine } from './cursor-spline';
 import { diagnosticChannel } from './diagnostic-channel';
 import {
@@ -537,19 +537,19 @@ export class HardwareMp4Exporter {
     // created. Never configure an untested codec/resolution combination.
     videoEncoder.configure(encoderConfig);
 
+    // Deterministic camera schedule, built once (same as the preview and the GIF export).
+    const cameraPath = buildCameraPath(pills, {
+      followCursor,
+      cursorAt: (t) => cursorEngine.getCursorAt(t),
+      viewportWidth: metadata?.width || outW,
+      viewportHeight: metadata?.height || outH
+    });
+
     try {
     for (let f = 0; f < totalFrames; f++) {
       const currentMs = timelineTimestamps[f];
 
-      const cursor = cursorEngine.getCursorAt(currentMs);
-      const camera = computeCinematicCameraState(
-        currentMs,
-        pills,
-        cursor,
-        metadata?.width || outW,
-        metadata?.height || outH,
-        followCursor
-      );
+      const camera = cameraPath.at(currentMs);
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
 
       if (signal?.aborted) throw abortError();
@@ -819,19 +819,18 @@ export class HardwareMp4Exporter {
       await fallbackSeeker.waitUntilReady();
     }
 
+    const cameraPath = buildCameraPath(pills, {
+      followCursor,
+      cursorAt: (t) => cursorEngine.getCursorAt(t),
+      viewportWidth: metadata?.width || exportCanvas.width,
+      viewportHeight: metadata?.height || exportCanvas.height
+    });
+
     try {
     for (let f = 0; f < totalFrames; f++) {
       const currentMs = timelineTimestamps[f];
 
-      const cursor = cursorEngine.getCursorAt(currentMs);
-      const camera = computeCinematicCameraState(
-        currentMs,
-        pills,
-        cursor,
-        metadata?.width || exportCanvas.width,
-        metadata?.height || exportCanvas.height,
-        followCursor
-      );
+      const camera = cameraPath.at(currentMs);
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
       if (video instanceof HTMLVideoElement && fallbackSeeker) {
         await fallbackSeeker.seekTo(currentMs / 1000);

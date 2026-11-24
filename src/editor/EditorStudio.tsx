@@ -802,7 +802,7 @@ export function EditorStudio() {
       if ((loadedData.clicks || []).length === 0 && (loadedData.mousePoints || []).length === 0) {
         const explain = (url?: string | null) => {
           const blocked = untrackablePage(url);
-          console.warn('[SmoothStudio] No clicks or mouse movement were recorded.', { url: url || '(unknown)', blocked });
+          console.warn('[SmoothStudio] No clicks or mouse movement were recorded: ' + JSON.stringify({ url: url || '(unknown)', blocked }));
           showToast({
             type: 'warning',
             title: 'No clicks were recorded',
@@ -825,12 +825,12 @@ export function EditorStudio() {
       }
       const placementProblem = captureSpaceProblem(loadedData, loadedSurface, media.width, media.height);
       if (placementProblem && (loadedData.clicks || []).length > 0) {
-        console.warn('[SmoothStudio] Auto-zoom is off for this recording:', placementProblem, {
+        console.warn('[SmoothStudio] Auto-zoom is off for this recording: ' + placementProblem + ' ' + JSON.stringify({
           surface: loadedSurface,
           picture: `${media.width}x${media.height}`,
           screenLayout: loadedData.metadata?.screenLayout,
           page: `${loadedData.metadata?.width}x${loadedData.metadata?.height}`
-        });
+        }));
         showToast({
           type: 'warning',
           title: 'Auto-zoom is off for this recording',
@@ -1377,6 +1377,8 @@ export function EditorStudio() {
               armLiveGateRef.current();
             }
             if (tracking) return;
+            const failure = results.find((r) => r && !r.ok)?.reason;
+            if (tabId !== null) console.warn('[SmoothStudio] Click tracking did not start: ' + JSON.stringify({ tabId, results }));
             const warn = (page: string | null) => showToast({
               type: 'warning',
               title: 'Clicks will not be tracked',
@@ -1384,7 +1386,7 @@ export function EditorStudio() {
                 ? `Chrome does not let extensions work on ${page}, so this recording will have no auto-zoom. Click inside a normal website instead.`
                 : tabId === null
                   ? 'No normal website is open. Clicks are tracked only inside a web page in a Chrome tab: open your site, then record again for auto-zoom.'
-                  : 'The page being recorded did not respond. Refresh it (after reloading the extension) and record again for auto-zoom.'
+                  : `The recorded page could not start click tracking${failure && failure !== 'missing_ack' ? ` (${failure})` : ''}. Refresh it (after reloading the extension) and record again for auto-zoom.`
             });
             if (tabId !== null && chrome.tabs?.get) {
               chrome.tabs.get(tabId, (tab) => {

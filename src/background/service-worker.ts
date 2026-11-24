@@ -373,7 +373,8 @@ function sendTabMessageWithAck(tabId: number, message: any): Promise<{ ok: boole
           resolve({ ok: true, response });
           return;
         }
-        resolve({ ok: false, response, reason: 'missing_ack' });
+        // The page answered with its own reason (e.g. tracking could not start): pass it on.
+        resolve({ ok: false, response, reason: typeof response?.reason === 'string' ? response.reason : 'missing_ack' });
       });
     } catch (error) {
       resolve({ ok: false, reason: error instanceof Error ? error.message : String(error) });

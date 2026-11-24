@@ -83,6 +83,11 @@ export interface ExportOptions {
   framingMode?: FramingMode;
   shadowMode?: ShadowMode;
   targetWidth?: number;
+  /**
+   * Whether the camera follows the cursor between zooms. Defaults to true (the
+   * editor's default); the preview and the export must use the same value.
+   */
+  followCursor?: boolean;
   /** Called once the encoder configuration is settled: the REAL size, codec and encoder path. */
   onEncoderSelected?: (info: ExportEncoderInfo) => void;
   /** Cancels the export during a seek or between frames. */
@@ -320,6 +325,7 @@ export class HardwareMp4Exporter {
           backgroundImage,
           framingMode,
           shadowMode,
+          followCursor: options.followCursor,
           onProgress,
           audioTrack
         });
@@ -362,6 +368,7 @@ export class HardwareMp4Exporter {
         backgroundImage,
         framingMode,
         shadowMode,
+        followCursor: options.followCursor,
         onProgress
       });
     } finally {
@@ -416,6 +423,7 @@ export class HardwareMp4Exporter {
     backgroundImage?: CanvasImageSource | null;
     framingMode?: FramingMode;
     shadowMode?: ShadowMode;
+    followCursor?: boolean;
     /** Cancels the export during a seek or between frames. */
     signal?: AbortSignal;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
@@ -447,6 +455,7 @@ export class HardwareMp4Exporter {
       backgroundImage,
       framingMode,
       shadowMode,
+      followCursor = true,
       metadata,
       cursorTheme,
       cursorScale,
@@ -539,7 +548,7 @@ export class HardwareMp4Exporter {
         cursor,
         metadata?.width || outW,
         metadata?.height || outH,
-        true
+        followCursor
       );
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
 
@@ -737,6 +746,7 @@ export class HardwareMp4Exporter {
     backgroundImage?: CanvasImageSource | null;
     framingMode?: FramingMode;
     shadowMode?: ShadowMode;
+    followCursor?: boolean;
     /** Cancels the export during a seek or between frames. */
     signal?: AbortSignal;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
@@ -760,6 +770,7 @@ export class HardwareMp4Exporter {
       backgroundImage,
       framingMode,
       shadowMode,
+      followCursor = true,
       metadata,
       cursorTheme,
       cursorScale,
@@ -819,7 +830,7 @@ export class HardwareMp4Exporter {
         cursor,
         metadata?.width || exportCanvas.width,
         metadata?.height || exportCanvas.height,
-        true
+        followCursor
       );
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
       if (video instanceof HTMLVideoElement && fallbackSeeker) {

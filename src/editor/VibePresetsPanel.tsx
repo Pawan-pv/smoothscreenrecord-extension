@@ -375,6 +375,9 @@ export function VibePresetsPanel({
               onChangeBackdropParams?.({ presetType: 'keynote-pro' });
               if (currentPreset.id !== 'keynote-pro') {
                 onSelectPreset(VIBE_PRESETS['keynote-pro']);
+              } else {
+                // Already on this backdrop: choosing it again still drops an uploaded image / solid colour.
+                handleResetBackground();
               }
             }}
             className={`p-1.5 rounded-lg border text-center transition-all ${
@@ -391,6 +394,9 @@ export function VibePresetsPanel({
               onChangeBackdropParams?.({ presetType: 'stripe-mesh' });
               if (currentPreset.id !== 'stripe-mesh') {
                 onSelectPreset(VIBE_PRESETS['stripe-mesh']);
+              } else {
+                // Already on this backdrop: choosing it again still drops an uploaded image / solid colour.
+                handleResetBackground();
               }
             }}
             className={`p-1.5 rounded-lg border text-center transition-all ${
@@ -407,6 +413,9 @@ export function VibePresetsPanel({
               onChangeBackdropParams?.({ presetType: 'linear-cosmic' });
               if (currentPreset.id !== 'linear-cosmic') {
                 onSelectPreset(VIBE_PRESETS['linear-cosmic']);
+              } else {
+                // Already on this backdrop: choosing it again still drops an uploaded image / solid colour.
+                handleResetBackground();
               }
             }}
             className={`p-1.5 rounded-lg border text-center transition-all ${

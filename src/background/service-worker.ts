@@ -736,8 +736,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.type === 'RESET_PRIVACY') {
       getStorageArea().remove(CTX_PRIVACY_KEY).catch(() => undefined);
     }
+    // A message that names a tab (the popup's Start) only goes to that tab: it
+    // must not inject the shield into every open page, and its result is the
+    // answer to "did the shield reach the page I am about to record?".
+    const onlyTabId = typeof message.tabId === 'number' ? message.tabId : null;
     chrome.tabs.query({}, (tabs) => {
-      Promise.all(tabs.filter((tab) => typeof tab.id === 'number').map((tab) => dispatchToTab(tab, message)))
+      Promise.all(tabs
+        .filter((tab) => typeof tab.id === 'number' && (onlyTabId === null || tab.id === onlyTabId))
+        .map((tab) => dispatchToTab(tab, message)))
         .then((results) => sendResponse({ status: 'forwarded', results }));
     });
     return true;

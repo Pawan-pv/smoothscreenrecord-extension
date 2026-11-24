@@ -21,6 +21,8 @@ import { AudioProcessor } from '../engine/audio-processor';
 import { SfxSynthesizer } from '../engine/sfx-synthesizer';
 import { HardwareMp4Exporter, ExportEncoderInfo } from '../engine/mp4-exporter';
 import { describeMp4Export } from '../engine/export-report';
+import { loadPrivacyPrefs } from '../engine/privacy-prefs';
+import { resolveEditorShortcut } from './keyboard-shortcuts';
 import { HardwareGifExporter, GIF_QUALITY_PRESETS, GifQualityPreset } from '../engine/gif-exporter';
 import { SopGuideExporter } from '../engine/sop-guide-exporter';
 import { HtmlWidgetExporter } from '../engine/html-widget-exporter';
@@ -859,7 +861,9 @@ export function EditorStudio() {
 
   const handleSelectPreset = useCallback((newPreset: VibePreset) => {
     setPreset(newPreset);
+    // The latest choice wins: picking a preset drops an uploaded image AND a solid colour.
     clearBackgroundImage();
+    setBackgroundColor(null);
     if (newPreset.backdrop) {
       setBackdropParams(newPreset.backdrop);
     }
@@ -923,33 +927,39 @@ export function EditorStudio() {
     }
   }, [encoderStreamMode, showToast]);
 
-  // Keyboard shortcuts: Space (play/pause), ArrowLeft/Right (seek), Z (add zoom)
+  // Keyboard shortcuts: Space (play/pause), ArrowLeft/Right (seek), Z (add zoom),
+  // Delete/Backspace (delete the selected zoom). Typing surfaces (input, textarea,
+  // select, contenteditable) keep every key; a focused button keeps Space.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const shortcut = resolveEditorShortcut(e, { hasSelectedPill: Boolean(selectedPillId) });
+      if (!shortcut) return;
 
-      if (e.code === 'Space') {
+      if (shortcut === 'toggle-play') {
         e.preventDefault();
         handleTogglePlay();
-      } else if (e.code === 'ArrowLeft') {
+      } else if (shortcut === 'delete-pill') {
+        e.preventDefault();
+        const doomed = selectedPillId;
+        setPills((prev) => prev.filter((p) => p.id !== doomed));
+        setSelectedPillId(null);
+      } else if (shortcut === 'seek-back') {
         e.preventDefault();
         firedSfxRef.current.clear();
         const safeTrimStart = Math.max(0, Math.min(durationMs, trimStartMs));
         setCurrentTimeMs((t) => Math.max(safeTrimStart, t - 1000));
-      } else if (e.code === 'ArrowRight') {
+      } else if (shortcut === 'seek-forward') {
         e.preventDefault();
         firedSfxRef.current.clear();
         const safeTrimEnd = Math.max(0, Math.min(durationMs, trimEndMs > 0 ? trimEndMs : durationMs));
         setCurrentTimeMs((t) => Math.min(safeTrimEnd, t + 1000));
-      } else if (e.code === 'KeyZ' && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
-        if (!e.metaKey && !e.ctrlKey) {
-          handleAddPillAtPlayhead(0.5, 0.5);
-        }
+      } else if (shortcut === 'add-zoom') {
+        handleAddPillAtPlayhead(0.5, 0.5);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [durationMs, trimStartMs, trimEndMs, currentTimeMs, handleAddPillAtPlayhead, handleTogglePlay]);
+  }, [durationMs, trimStartMs, trimEndMs, currentTimeMs, selectedPillId, handleAddPillAtPlayhead, handleTogglePlay]);
 
   useEffect(() => { currentTimeRef.current = currentTimeMs; }, [currentTimeMs]);
   useEffect(() => { sfxSynthesizerRef.current.setEnabled(soundEnabled); }, [soundEnabled]);
@@ -1083,12 +1093,15 @@ export function EditorStudio() {
       // No originEpoch is sent: the content script owns the HUD-visible epoch
       // and publishes it back with HUD_VISIBLE.
       if (typeof chrome !== 'undefined' && chrome.runtime) {
-        // QA-006: forward privacy options to the target tab when starting from
-        // the editor, matching popup.tsx:103-109. Default to all categories ON
-        // so sensitive data is never recorded unblurred.
+        // QA-006: forward the privacy options to the target tab when starting from
+        // the editor. They are the user's saved popup choices (a category switched
+        // OFF stays OFF); with nothing saved every category is ON, so sensitive data
+        // is never recorded unblurred by default.
+        const privacyPrefs = await loadPrivacyPrefs();
         chrome.runtime.sendMessage({
           type: 'APPLY_PRIVACY_OPTIONS',
-          options: { blurEmails: true, blurRevenue: true, blurApiKeys: true }
+          options: privacyPrefs,
+          ...(sourceTabId ? { tabId: sourceTabId } : {})
         }, () => {
           void chrome.runtime?.lastError;
         });
@@ -1425,6 +1438,7 @@ export function EditorStudio() {
         framingMode,
         shadowMode,
         targetWidth: targetExportWidth,
+        followCursor,
         mediaDurationMs: mediaDurationRef.current ?? undefined,
         onProgress: (pct) => setExportProgress(pct)
       });
@@ -1471,6 +1485,7 @@ export function EditorStudio() {
       const config = GIF_QUALITY_PRESETS[gifPreset] || GIF_QUALITY_PRESETS.compact;
       const gifBlob = await exporter.exportGif({
         signal: gifAbortController.signal,
+        followCursor,
         videoSource: videoElement,
         videoBlob: videoBlob ?? undefined,
         durationMs,

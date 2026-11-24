@@ -66,6 +66,8 @@ export interface GifExportOptions {
   framingMode?: FramingMode;
   shadowMode?: ShadowMode;
   qualityPreset?: GifQualityPreset;
+  /** Whether the camera follows the cursor between zooms (same as the preview). Defaults to true. */
+  followCursor?: boolean;
   fps?: number; // defaults to 12fps (Compact preset) for optimal GIF size (<5MB)
   maxDimension?: number; // defaults to 640px (Compact preset)
   maxColors?: number; // defaults to 128 colors (Compact preset)
@@ -253,6 +255,7 @@ export class HardwareGifExporter {
       outroCtaText,
       framingMode,
       shadowMode,
+      followCursor = true,
       qualityPreset = 'compact',
       fps: explicitFps,
       maxDimension: explicitMaxDimension,
@@ -400,7 +403,7 @@ export class HardwareGifExporter {
           cursor,
           metadata?.width || fullW,
           metadata?.height || fullH,
-          true
+          followCursor
         );
         const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
 

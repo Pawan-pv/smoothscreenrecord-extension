@@ -233,10 +233,21 @@ describe('Service Worker: Long-Lived Port & Background Message Processing', () =
 
       await new Promise((resolve) => setTimeout(resolve, 30));
 
+      // The shield goes into EVERY frame (cross-origin iframes included); the
+      // tracker stays top-frame only so sub-frames emit no second telemetry stream.
+      expect(chrome.scripting.executeScript).toHaveBeenCalledWith({
+        target: { tabId: 606, allFrames: true },
+        files: ['content/privacy-redactor.js']
+      });
       expect(chrome.scripting.executeScript).toHaveBeenCalledWith({
         target: { tabId: 606 },
-        files: ['content/privacy-redactor.js', 'content/dom-tracker.js']
+        files: ['content/dom-tracker.js']
       });
+      for (const call of (chrome.scripting.executeScript as any).mock.calls) {
+        if (call[0].files.includes('content/dom-tracker.js')) {
+          expect(call[0].target.allFrames, 'dom-tracker must not be injected into sub-frames').toBeFalsy();
+        }
+      }
       expect(responses).toEqual([
         expect.objectContaining({ type: 'START_TELEMETRY', sessionId: 'reinject_ses' })
       ]);

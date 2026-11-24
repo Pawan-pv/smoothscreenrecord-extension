@@ -175,7 +175,8 @@ export function calculateIsometricTilt(targetX: number, targetY: number, scale: 
 // ---------------------------------------------------------------------------
 // Auto-zoom (ScreenSmooth-style)
 //
-//   - Every click is a zoom, centred on the click point.
+//   - Every click is a zoom, centred on the click point. Only a re-click on the same
+//     spot while the camera is still moving (a double-click) is the same action.
 //   - Every auto zoom has the same depth (default 1.5x).
 //   - The camera is fully zoomed in as the click lands.
 //   - A click within 3 s of the previous one keeps the zoom and pans to it.
@@ -187,6 +188,8 @@ export const AUTO_ZOOM_DEFAULT_DEPTH = 1.5;
 export const AUTO_ZOOM_HOLD_MS = 2500;
 /** A click this soon after the previous one pans the zoom instead of zooming out and in again. */
 export const AUTO_ZOOM_CHAIN_MS = 3000;
+/** A quick re-click this close (CSS px of the page) to the previous click is the same action. */
+export const AUTO_ZOOM_SAME_SPOT_PX = 40;
 
 /**
  * Largest scale that still looks sharp for a recording of this real pixel
@@ -246,13 +249,16 @@ export function generateAutoZoomPills(
     .filter((c) => Number.isFinite(c.t) && c.t >= 0 && c.t <= videoDurationMs && Number.isFinite(c.x) && Number.isFinite(c.y))
     .sort((a, b) => a.t - b.t);
 
-  // A click that lands while the camera is still moving to the previous one
-  // (a double-click, a quick re-click) is the same action.
+  // A re-click on the same spot while the camera is still moving to it (a
+  // double-click) is the same action. A click anywhere else gets its own zoom.
   interface Action { t: number; lastT: number; x: number; y: number; label: string }
   const actions: Action[] = [];
   for (const c of sorted) {
     const last = actions[actions.length - 1];
-    if (last && c.t - last.lastT < transition + 150) {
+    const x = norm(c.x, vw);
+    const y = norm(c.y, vh);
+    const sameSpot = last && Math.hypot((x - last.x) * vw, (y - last.y) * vh) <= AUTO_ZOOM_SAME_SPOT_PX;
+    if (last && sameSpot && c.t - last.lastT < transition + 150) {
       last.lastT = c.t;
       continue;
     }
@@ -260,21 +266,28 @@ export function generateAutoZoomPills(
     actions.push({
       t: c.t,
       lastT: c.t,
-      x: norm(c.x, vw),
-      y: norm(c.y, vh),
+      x,
+      y,
       label: name ? `Click "${name.slice(0, 20)}"` : 'Click'
     });
   }
 
   const pills: ZoomPill[] = [];
+  /** End of the previous zoom when it hands over to this one (chained), else -Infinity. */
+  let handOver = -Infinity;
   actions.forEach((a, i) => {
     const next = actions[i + 1];
-    const startTime = Math.max(0, a.t - transition);
-    // The next click is close: hand over to it (the camera pans, no zoom-out).
-    const endTime = next && next.t - a.lastT <= AUTO_ZOOM_CHAIN_MS
-      ? Math.max(0, next.t - transition)
+    // Fully zoomed as the click lands; after a hand-over the camera pans over from
+    // the previous click (later than the click when the clicks come faster than a move).
+    const startTime = Math.max(0, a.t - transition, handOver);
+    // The next click is close: hand over to it (the camera pans, no zoom-out). Never
+    // before this click itself: the camera reaches every click.
+    const chained = Boolean(next && next.t - a.lastT <= AUTO_ZOOM_CHAIN_MS);
+    const endTime = chained
+      ? Math.max(a.lastT, next.t - transition)
       : a.lastT + AUTO_ZOOM_HOLD_MS;
     const end = Math.min(videoDurationMs, endTime);
+    handOver = chained ? end : -Infinity;
     if (end <= startTime) return;
     pills.push({
       id: `zoom_${Math.round(a.t)}_${i}`,

@@ -101,6 +101,12 @@ let sessionId: string | null = null;
  * video t=0 and telemetry t=0 are the same wall-clock moment.
  */
 let hudLiveSent = false;
+/**
+ * True once the recorder's own live instant (TIMELINE_ORIGIN) is applied: it is the
+ * video's t = 0 and final. The HUD becoming visible later must not re-base the clock
+ * again (that erased every click recorded so far and shifted the rest off the video).
+ */
+let timelineOriginFixed = false;
 let hudVisibilityListener: (() => void) | null = null;
 let hudFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 /** QA-037: the HUD timer is re-based to the recorder's real live instant. */
@@ -1044,7 +1050,7 @@ function clearHudLiveWaiters(): void {
  * the telemetry clock is re-based to the same epoch the recorder uses.
  */
 function markRecordingLiveOnScreen(): void {
-  if (hudLiveSent || !isRecording) return;
+  if (hudLiveSent || !isRecording || timelineOriginFixed) return;
   hudLiveSent = true;
   clearHudLiveWaiters();
   originEpoch = epochNow();
@@ -1079,6 +1085,12 @@ function applyTimelineOrigin(epoch: number, incomingSessionId?: string | null): 
   if (typeof epoch !== 'number' || !Number.isFinite(epoch) || epoch <= 0) return;
   if (incomingSessionId && sessionId && incomingSessionId !== sessionId) return;
   if (!isRecording) return;
+  // The same origin again (a repeated message): nothing to re-base, nothing to drop.
+  if (timelineOriginFixed && Math.abs(epoch - originEpoch) < 1) return;
+  timelineOriginFixed = true;
+  // The recorder is live: the HUD-visible signal is no longer needed (and must not re-base).
+  hudLiveSent = true;
+  clearHudLiveWaiters();
   originEpoch = epoch;
   const behindMs = Math.max(0, Date.now() - epoch);
   startTime = performance.now() - behindMs;
@@ -1191,6 +1203,7 @@ export function startTracking(
   // A resumed page joins a recording that is already live: the HUD is shown
   // and the origin is the recording's own, never re-based to this page load.
   hudLiveSent = Boolean(options.resume);
+  timelineOriginFixed = Boolean(options.resume);
 
   injectRecordingHud();
 

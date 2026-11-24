@@ -1319,12 +1319,16 @@ export function EditorStudio() {
       };
       // Last resort only: no HUD signal at all (a recorded surface without a
       // content script, e.g. another app or a chrome:// page).
-      goLiveRef.current = (epoch) => {
+      goLiveRef.current = (epoch, why) => {
         if (hudLiveRef.current || recordingRef.current !== 'recording') return;
-        const origin = captureEngineRef.current.resumeCapture(epoch);
+        const origin = captureEngineRef.current.resumeCapture(epoch, why);
         if (origin === null) return;
         hudLiveRef.current = true;
-        console.log(`[SmoothStudio] Recording live (watchdog) at epoch ${origin}`);
+        if (hudLiveWatchdogRef.current) {
+          clearTimeout(hudLiveWatchdogRef.current);
+          hudLiveWatchdogRef.current = null;
+        }
+        console.log(`[SmoothStudio] Recording live (${why || 'watchdog'}) at epoch ${origin}`);
         notifyTimelineOrigin(origin);
       };
 
@@ -1359,7 +1363,20 @@ export function EditorStudio() {
             const tabId = typeof response.activeRecordingTabId === 'number' ? response.activeRecordingTabId : null;
             trackedTabIdRef.current = tabId;
             const results: Array<{ ok?: boolean; reason?: string }> = Array.isArray(response.telemetry) ? response.telemetry : [];
-            if (tabId !== null && results.some((r) => r && r.ok)) return;
+            const tracking = tabId !== null && results.some((r) => r && r.ok);
+            // A window / entire-screen capture shows the screen from its first frame: there
+            // is no tab switch to wait for. Go live now that the page is armed, so clicks are
+            // recorded from the start (waiting for the page's HUD took up to ~7 s and dropped
+            // every click made meanwhile).
+            const surface = captureEngineRef.current.getTrackSettings()?.displaySurface;
+            if (surface === 'monitor' || surface === 'window') {
+              goLiveRef.current(undefined, 'screen capture: page armed');
+            } else if (!tracking) {
+              // A tab capture whose page cannot signal its HUD: start on the picture alone
+              // (the live gate) instead of waiting for the 8 s watchdog.
+              armLiveGateRef.current();
+            }
+            if (tracking) return;
             const warn = (page: string | null) => showToast({
               type: 'warning',
               title: 'Clicks will not be tracked',

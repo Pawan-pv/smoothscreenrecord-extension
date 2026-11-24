@@ -717,4 +717,45 @@ test.describe('Tier 1 Fast Verification Suite', () => {
     expect(hashes.byDefault, 'the default is ON, exactly like the editor').toBe(hashes.on);
     expect(hashes.off, 'switching it OFF must change the exported picture').not.toBe(hashes.on);
   });
+  test('h) Dead-Zone Smart Pan reaches the export: jitter inside the safe zone changes nothing, leaving it pans', async () => {
+    test.setTimeout(120_000);
+    const hashes = await harnessPage.evaluate(async () => {
+      const { HardwareGifExporter, CursorSplineEngine, VIBE_PRESETS } = (window as any).__tier1Harness;
+      const blob = await (await fetch('/tier1-c2.webm')).blob();
+      const sha = async (b: Blob) => {
+        const digest = await crypto.subtle.digest('SHA-256', await b.arrayBuffer());
+        return Array.from(new Uint8Array(digest)).map((x) => x.toString(16).padStart(2, '0')).join('');
+      };
+      // A 2x zoom on the centre: the safe zone is +-0.125 around it.
+      const run = async (cursorAt: (t: number) => { x: number; y: number }) => {
+        const points: any[] = [];
+        for (let t = 0; t <= 2000; t += 25) points.push({ t, ...cursorAt(t), c: 'default' });
+        return sha(await new HardwareGifExporter().exportGif({
+          videoBlob: blob,
+          durationMs: 2000,
+          trimStartMs: 0,
+          trimEndMs: 2000,
+          aspectRatio: '16:9',
+          preset: VIBE_PRESETS['keynote-pro'],
+          pills: [{ id: 'z', startTime: 0, endTime: 2000, targetX: 0.5, targetY: 0.5, targetScale: 2, tiltX: 0, tiltY: 0 }],
+          silences: [],
+          cursorEngine: new CursorSplineEngine(points, [], [], { smoothing: 0.6 }),
+          keystrokes: [],
+          cutSilences: false,
+          showSpotlight: false,
+          showCursor: false,
+          showHud: false,
+          qualityPreset: 'compact',
+          followCursor: true
+        }));
+      };
+      return {
+        still: await run(() => ({ x: 0.5, y: 0.5 })),
+        jitter: await run((t) => ({ x: 0.5 + 0.06 * Math.sin(t / 90), y: 0.5 + 0.06 * Math.cos(t / 70) })),
+        leaves: await run((t) => ({ x: t < 600 ? 0.5 : 0.9, y: 0.5 }))
+      };
+    });
+    expect(hashes.jitter, 'a cursor inside the central safe zone must not move the camera').toBe(hashes.still);
+    expect(hashes.leaves, 'a cursor that leaves the safe zone must pan the camera').not.toBe(hashes.still);
+  });
 });

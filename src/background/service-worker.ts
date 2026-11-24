@@ -518,7 +518,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // A new recording starts with no telemetry from an earlier one and with
       // the provisional origin it was given (RECORDING_LIVE makes it exact).
       const provisionalOrigin = Number(message.originEpoch);
-      const resetContext = clearSegments().then(() => (
+      // A session that is still live (its editor died, or its stop never
+      // arrived) is ended first, on ITS tab: otherwise that tab keeps its HUD
+      // and keeps tracking forever, because the new session's stop only
+      // reaches the new recorded tab.
+      const endPrevious = loadSessionState()
+        .then((prev) => (prev.isRecording && (prev.activeSessionId || null) !== sessionId
+          ? endRecordingSession(prev.activeSessionId || null).then(() => undefined)
+          : undefined))
+        .catch(() => undefined);
+      const resetContext = endPrevious.then(() => clearSegments()).then(() => (
         Number.isFinite(provisionalOrigin) && provisionalOrigin > 0
           ? getStorageArea().set({ [CTX_ORIGIN_KEY]: provisionalOrigin })
           : getStorageArea().remove(CTX_ORIGIN_KEY)
@@ -530,12 +539,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         quality,
         activeSessionId: sessionId
       })).then(() => {
-        // Broadcast START_TELEMETRY to target tab and active web page tabs.
+        // START_TELEMETRY goes to the recorded tab only: the stop only ever
+        // reaches that tab, so any other tab started here would keep its HUD
+        // and keep tracking after the recording ended.
         // `originEpoch` is the wall-clock timestamp of the first captured video
         // frame: sharing it makes telemetry time and video time use ONE clock.
         const originEpoch = message.originEpoch;
         chrome.tabs.query({}, (tabs) => {
-          const targets = tabs.filter((tab) => tab.id && (tab.id === targetRecordingTabId || tab.active));
+          const targets = tabs.filter((tab) => typeof tab.id === 'number' && tab.id === targetRecordingTabId);
           Promise.all(targets.map((tab) => dispatchToTab(tab, { type: 'START_TELEMETRY', originEpoch, sessionId })))
             .then((results) => {
               for (const result of results) {

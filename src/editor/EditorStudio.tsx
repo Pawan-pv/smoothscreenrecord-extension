@@ -19,6 +19,7 @@ import { generateAutoZoomPills, resolveSourcePixelWidth, AUTO_ZOOM_DEFAULT_DEPTH
 import { DEFAULT_TRANSITION_MS } from '../engine/camera-path';
 import { toCaptureSpace } from '../engine/capture-space';
 import { prepareVideo, studioLoadReducer, LoadStep, LOAD_STEPS } from './studio-load';
+import { nextRecordingPhase, RecordingPhase, RecordingEvent, ExportJob } from './studio-session';
 import { CursorSplineEngine } from '../engine/cursor-spline';
 import { AudioProcessor } from '../engine/audio-processor';
 import { SfxSynthesizer } from '../engine/sfx-synthesizer';
@@ -291,7 +292,23 @@ export function EditorStudio() {
   const [gifPreset, setGifPreset] = useState<GifQualityPreset>('compact');
 
   const [copiedSop, setCopiedSop] = useState<boolean>(false);
-  const [isRecordingLive, setIsRecordingLive] = useState<boolean>(false);
+  /** Recording lifecycle (studio-session.ts). The ref is read by callbacks of older renders. */
+  const [recordingPhase, setRecordingPhaseState] = useState<RecordingPhase>('idle');
+  const recordingRef = useRef<RecordingPhase>('idle');
+  const isRecordingLive = recordingPhase === 'recording';
+  /** Moves the recording machine; false (and nothing changes) when the event is not allowed now. */
+  const sendRecording = (event: RecordingEvent): boolean => {
+    const next = nextRecordingPhase(recordingRef.current, event);
+    if (!next) {
+      console.log(`[SmoothStudio] Recording: '${event}' ignored while ${recordingRef.current}`);
+      return false;
+    }
+    recordingRef.current = next;
+    setRecordingPhaseState(next);
+    return true;
+  };
+  /** The one export running right now (they share the source video). */
+  const exportJobRef = useRef<ExportJob | null>(null);
   const [showRecordPrompt, setShowRecordPrompt] = useState<boolean>(false);
   const [recordTargetTabId, setRecordTargetTabId] = useState<number | undefined>(undefined);
   const [recordIncludeMic, setRecordIncludeMic] = useState<boolean>(true);
@@ -318,8 +335,6 @@ export function EditorStudio() {
   const currentTimeRef = useRef<number>(0);
   const handleStopLiveRecordingRef = useRef<((passedTelemetry?: TelemetryData | null, passedBlob?: Blob | null) => Promise<void>) | null>(null);
   const handleStartLiveRecordingRef = useRef<((sourceTabId?: number, includeMic?: boolean) => Promise<void>) | null>(null);
-  const isStoppingRef = useRef<boolean>(false);
-  const hasFinalizedRef = useRef<boolean>(false);
   const telemetryReceivedRef = useRef<boolean>(false);
   // QA-029: the recorder stays paused until the recorded tab's HUD is on
   // screen. `goLiveRef` is called by the HUD_VISIBLE message (or by a watchdog)
@@ -354,8 +369,8 @@ export function EditorStudio() {
           keepalivePort.onDisconnect.addListener(() => {
             void chrome.runtime?.lastError;
             keepalivePort = null;
-            // Reconnect so the SW stays awake across restarts during stop/commit.
-            if (!isStoppingRef.current) connectKeepalive();
+            // Reconnect so the SW stays awake across restarts, also during stop/commit.
+            connectKeepalive();
           });
         } catch {}
       };
@@ -708,7 +723,7 @@ export function EditorStudio() {
 
   /** Play / pause. Nothing plays until the recording is fully loaded and in sync. */
   const handleTogglePlay = useCallback(() => {
-    if (!isStudioReady) return;
+    if (!isStudioReady || exportJobRef.current) return;
     if (isPlaying) {
       setIsPlaying(false);
       return;
@@ -1004,9 +1019,14 @@ export function EditorStudio() {
 
   // Handle Live Screen Recording within the browser tab
   const handleStartLiveRecording = async (sourceTabId?: number, includeMic = true) => {
+    if (exportJobRef.current) {
+      showToast({ type: 'info', title: 'Export in progress', message: 'Finish or cancel the export before recording.' });
+      return;
+    }
+    if (load.phase === 'loading') return;
+    // Only from idle: a second Record click, or Record during a stop, does nothing.
+    if (!sendRecording('start')) return;
     try {
-      hasFinalizedRef.current = false;
-      isStoppingRef.current = false;
       telemetryReceivedRef.current = false;
       latestTelemetryRef.current = null;
       hudLiveRef.current = false;
@@ -1037,13 +1057,14 @@ export function EditorStudio() {
         },
         onStop: (stoppedBlob) => {
           console.log('[SmoothStudio] captureEngine onStop triggered with blob size:', stoppedBlob?.size);
-          setIsRecordingLive(false);
-          if (!isStoppingRef.current) {
+          // The capture ended by itself (Chrome's "Stop sharing", the tab closed).
+          if (recordingRef.current !== 'stopping') {
             void handleStopLiveRecordingRef.current?.(null, stoppedBlob);
           }
         }
       });
-      setIsRecordingLive(true);
+      // The capture ended while the picker was still resolving: the stop owns the session now.
+      if (!sendRecording('started')) return;
 
       // Clear record=true query param without refreshing page
       if (typeof window !== 'undefined' && window.history) {
@@ -1067,9 +1088,9 @@ export function EditorStudio() {
         }
       };
       armLiveGateRef.current = (hudEpoch) => {
-        if (hudLiveRef.current || isStoppingRef.current || hasFinalizedRef.current) return;
+        if (hudLiveRef.current || recordingRef.current !== 'recording') return;
         const armed = captureEngineRef.current.armLiveGate((origin) => {
-          if (isStoppingRef.current || hasFinalizedRef.current) return;
+          if (recordingRef.current !== 'recording') return;
           hudLiveRef.current = true;
           if (hudLiveWatchdogRef.current) {
             clearTimeout(hudLiveWatchdogRef.current);
@@ -1095,7 +1116,7 @@ export function EditorStudio() {
       // Last resort only: no HUD signal at all (a recorded surface without a
       // content script, e.g. another app or a chrome:// page).
       goLiveRef.current = (epoch) => {
-        if (hudLiveRef.current || isStoppingRef.current || hasFinalizedRef.current) return;
+        if (hudLiveRef.current || recordingRef.current !== 'recording') return;
         const origin = captureEngineRef.current.resumeCapture(epoch);
         if (origin === null) return;
         hudLiveRef.current = true;
@@ -1136,7 +1157,7 @@ export function EditorStudio() {
       }, 8000);
     } catch (err: any) {
       console.warn('Capture canceled or rejected:', err);
-      setIsRecordingLive(false);
+      sendRecording('start-failed');
       showToast({
         type: 'warning',
         title: 'Recording Not Started',
@@ -1156,28 +1177,24 @@ export function EditorStudio() {
       latestTelemetryRef.current = passedTelemetry;
     }
 
-    // One stop per session: a second stop request while (or after) this
-    // session is being finalized only hands over its telemetry.
-    if (hasFinalizedRef.current || isStoppingRef.current) {
+    // One stop per session: a stop while this session is being finalized (or
+    // when nothing records) only hands over its telemetry. It must never load
+    // the previous recording again.
+    if (recordingRef.current === 'idle' || recordingRef.current === 'stopping') {
+      console.log(`[SmoothStudio] Stop request ignored while ${recordingRef.current}.`);
       return;
     }
-    // A stop request when this editor is not recording must not load the
-    // previous recording again. Reset the stop guards so the session can
-    // never become un-stoppable after an ignored stop request.
-    if (!passedBlob && !captureEngineRef.current.getStatus()) {
-      console.log('[SmoothStudio] Stop request ignored: this editor is not recording.');
-      hasFinalizedRef.current = false;
-      isStoppingRef.current = false;
+    // The picker is still open and nothing was captured yet: there is nothing to stop.
+    if (recordingRef.current === 'starting' && !passedBlob && !captureEngineRef.current.getStatus()) {
+      console.log('[SmoothStudio] Stop request ignored: the capture has not started yet.');
       return;
     }
-    hasFinalizedRef.current = true;
-    isStoppingRef.current = true;
+    sendRecording('stop');
     keepaliveStateRef.current?.startFastPing();
     if (hudLiveWatchdogRef.current) {
       clearTimeout(hudLiveWatchdogRef.current);
       hudLiveWatchdogRef.current = null;
     }
-    setIsRecordingLive(false);
     setIsPlaying(false);
     const stopLoadId = ++loadIdRef.current;
     dispatchLoad({ type: 'begin', loadId: stopLoadId, step: 'finishing' });
@@ -1213,7 +1230,6 @@ export function EditorStudio() {
             message: stopErr?.message || 'Recording failed: no video was captured.'
           });
           dispatchLoad({ type: 'fail', loadId: stopLoadId, message: stopErr?.message || 'Recording failed: no video was captured.' });
-          hasFinalizedRef.current = false;
           return;
         }
       }
@@ -1260,8 +1276,8 @@ export function EditorStudio() {
       });
     } finally {
       keepaliveStateRef.current?.stopFastPing();
-      isStoppingRef.current = false;
       latestTelemetryRef.current = null;
+      sendRecording('stopped');
     }
   };
 
@@ -1390,9 +1406,29 @@ export function EditorStudio() {
 
   const isUpscaled = targetExportWidth > sourceWidth;
 
+  /** Claims the source video for one export; false when it cannot run now. */
+  const beginExport = (job: ExportJob): boolean => {
+    if (exportJobRef.current) {
+      showToast({ type: 'info', title: 'Export in progress', message: 'Wait for the current export to finish, or cancel it.' });
+      return false;
+    }
+    if (recordingRef.current !== 'idle') {
+      showToast({ type: 'info', title: 'Recording in progress', message: 'Stop the recording before exporting.' });
+      return false;
+    }
+    if (load.phase !== 'ready') return false;
+    exportJobRef.current = job;
+    setIsPlaying(false);
+    return true;
+  };
+  const endExport = (job: ExportJob) => {
+    if (exportJobRef.current === job) exportJobRef.current = null;
+  };
+
   // 1. Hardware 60fps MP4 Export (with safe fail-over path to client WebM)
   const handleExportMp4 = async () => {
     if (!videoElement) return;
+    if (!beginExport('mp4')) return;
 
     // Safe Fail-over Path: If user downgraded encoder stream, download pure client WebM directly
     if (encoderStreamMode === 'client-webm') {
@@ -1406,6 +1442,7 @@ export function EditorStudio() {
         scheduleObjectUrlRevoke(url);
         setExportComplete(true);
         setIsExporting(false);
+        endExport('mp4');
         showToast({
           type: 'success',
           title: 'Pure WebM Export Complete',
@@ -1491,12 +1528,14 @@ export function EditorStudio() {
       if (exportAbortRef.current === abortController) exportAbortRef.current = null;
       setIsExporting(false);
       setExportProgress(0);
+      endExport('mp4');
     }
   };
 
   // 2. Hardware 20fps GIF Export
   const handleExportGif = async () => {
     if (!videoElement) return;
+    if (!beginExport('gif')) return;
     setIsExportingGif(true);
     setExportGifProgress(0);
     setExportGifComplete(false);
@@ -1564,6 +1603,7 @@ export function EditorStudio() {
       if (exportAbortRef.current === gifAbortController) exportAbortRef.current = null;
       setIsExportingGif(false);
       setExportGifProgress(0);
+      endExport('gif');
     }
   };
 
@@ -1649,10 +1689,11 @@ export function EditorStudio() {
             <button
               id="record-new-screen-top-btn"
               onClick={() => handleStartLiveRecording()}
-              className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-medium flex items-center gap-1.5 border border-white/10 transition-colors"
+              disabled={recordingPhase !== 'idle' || isExporting || isExportingGif || load.phase === 'loading'}
+              className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-medium flex items-center gap-1.5 border border-white/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <CircleDot className="w-3.5 h-3.5 text-red-400" />
-              Record New Screen
+              {recordingPhase === 'starting' ? 'Starting…' : recordingPhase === 'stopping' ? 'Stopping…' : 'Record New Screen'}
             </button>
           )}
 
@@ -1965,7 +2006,7 @@ export function EditorStudio() {
         />
 
         {/* Record Prompt Dialog Overlay */}
-        {showRecordPrompt && !isRecordingLive && (
+        {showRecordPrompt && recordingPhase === 'idle' && (
           <div className="absolute inset-0 z-40 bg-[#0B0C10]/95 flex flex-col items-center justify-center p-6 text-center">
             <div className="w-16 h-16 rounded-2xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center mb-5 text-purple-400">
               <Video className="w-8 h-8" />
@@ -1989,7 +2030,7 @@ export function EditorStudio() {
         )}
 
         {/* Empty State Overlay when No Recording Exists */}
-        {hasNoRecording && !videoElement && !isRecordingLive && !showRecordPrompt && load.phase !== 'loading' && (
+        {hasNoRecording && !videoElement && recordingPhase === 'idle' && !showRecordPrompt && load.phase !== 'loading' && (
           <div className="absolute inset-0 z-30 bg-[#0B0C10]/95 flex flex-col items-center justify-center p-6 text-center">
             <div className="w-16 h-16 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-center mb-5 text-red-400">
               <AlertTriangle className="w-8 h-8" />

@@ -29,11 +29,23 @@ import { VideoFrameSeeker } from './video-seeker';
 import { SequentialVideoFrameSource } from './sequential-frame-source';
 import { resolveExportTimelineMs, clampTrimBounds } from './export-timeline';
 import { negotiateVideoEncoderConfig, NegotiatedVideoEncoderConfig } from './video-codec-negotiation';
+import { createExportAbortError } from './export-safety';
 
 function abortError(): Error {
-  const err = new Error('The export was cancelled.');
-  err.name = 'AbortError';
-  return err;
+  return createExportAbortError();
+}
+
+/** What the encoder was actually configured with (after negotiation). */
+export interface ExportEncoderInfo {
+  codec: string;
+  width: number;
+  height: number;
+  requestedWidth: number;
+  requestedHeight: number;
+  framerate: number;
+  hardwareAcceleration: 'prefer-hardware' | 'prefer-software' | 'no-preference';
+  /** True when the requested size was not accepted and a smaller one is used. */
+  downscaled: boolean;
 }
 
 
@@ -71,6 +83,8 @@ export interface ExportOptions {
   framingMode?: FramingMode;
   shadowMode?: ShadowMode;
   targetWidth?: number;
+  /** Called once the encoder configuration is settled: the REAL size, codec and encoder path. */
+  onEncoderSelected?: (info: ExportEncoderInfo) => void;
   /** Cancels the export during a seek or between frames. */
   signal?: AbortSignal;
   /** Real container duration of the recording, when known. */
@@ -109,7 +123,8 @@ export class HardwareMp4Exporter {
       framingMode,
       shadowMode,
       signal,
-      onProgress
+      onProgress,
+      onEncoderSelected
     } = options;
     if (signal?.aborted) throw abortError();
     const wallClockDurationMs = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
@@ -123,9 +138,22 @@ export class HardwareMp4Exporter {
     const hasWebCodecs = typeof VideoEncoder !== 'undefined';
     let encoderConfig: NegotiatedVideoEncoderConfig | null = null;
     if (hasWebCodecs) {
+      const requestedW = outW;
+      const requestedH = outH;
       encoderConfig = await negotiateVideoEncoderConfig(outW, outH);
       outW = encoderConfig.width;
       outH = encoderConfig.height;
+      onEncoderSelected?.({
+        codec: encoderConfig.codec,
+        width: outW,
+        height: outH,
+        requestedWidth: requestedW,
+        requestedHeight: requestedH,
+        framerate: encoderConfig.framerate,
+        hardwareAcceleration: encoderConfig.hardwareAcceleration,
+        downscaled: outW !== requestedW || outH !== requestedH
+      });
+      if (signal?.aborted) throw abortError();
     }
     const fps = encoderConfig?.framerate ?? 60;
 

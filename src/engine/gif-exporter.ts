@@ -22,6 +22,7 @@ import {
   resolveGifMaxDimension
 } from './gif-budget';
 import { clampTrimBounds } from './export-timeline';
+import { createExportAbortError } from './export-safety';
 
 export interface GifExportOptions {
   videoSource?: HTMLVideoElement | HTMLCanvasElement;
@@ -70,6 +71,8 @@ export interface GifExportOptions {
   maxColors?: number; // defaults to 128 colors (Compact preset)
   enableDeduplication?: boolean; // defaults to true
   onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
+  /** Cancels the export between frames and during a seek; rejects with an AbortError. */
+  signal?: AbortSignal;
 }
 
 export type GifQualityPreset = 'compact' | 'web' | 'high';
@@ -255,8 +258,10 @@ export class HardwareGifExporter {
       maxDimension: explicitMaxDimension,
       maxColors: explicitMaxColors,
       enableDeduplication = true,
-      onProgress
+      onProgress,
+      signal
     } = options;
+    if (signal?.aborted) throw createExportAbortError();
 
     const presetConfig = GIF_QUALITY_PRESETS[qualityPreset] || GIF_QUALITY_PRESETS.compact;
     const fps = explicitFps ?? presetConfig.fps;
@@ -357,6 +362,11 @@ export class HardwareGifExporter {
     let renderVideo: HTMLVideoElement | HTMLCanvasElement = videoSource || document.createElement('canvas');
     if (videoBlob && typeof VideoDecoder !== 'undefined') {
       const opened = await SequentialVideoFrameSource.open(videoBlob);
+      if (opened.ok && signal?.aborted) {
+        // Cancelled while the decoder was opening: release it before leaving.
+        opened.source.close();
+        throw createExportAbortError();
+      }
       if (opened.ok) {
         frameSource = opened.source;
         stagingCanvas = document.createElement('canvas');
@@ -380,6 +390,7 @@ export class HardwareGifExporter {
     // queued frames plus the decoder on both the success and the error path.
     try {
       for (let f = 0; f < totalFrames; f++) {
+        if (signal?.aborted) throw createExportAbortError();
         const currentMs = timestamps[f];
 
         const cursor = cursorEngine.getCursorAt(currentMs);
@@ -394,7 +405,7 @@ export class HardwareGifExporter {
         const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
 
         if (frameSource && stagingCanvas && stagingCtx) {
-          const frame = await frameSource.frameAt(currentMs);
+          const frame = await frameSource.frameAt(currentMs, signal);
           if (stagingCanvas.width !== frame.displayWidth || stagingCanvas.height !== frame.displayHeight) {
             stagingCanvas.width = frame.displayWidth;
             stagingCanvas.height = frame.displayHeight;
@@ -418,6 +429,7 @@ export class HardwareGifExporter {
               if (settled) return;
               settled = true;
               videoSource.removeEventListener('seeked', onSeeked);
+              signal?.removeEventListener('abort', done);
               if (timer !== null) clearTimeout(timer);
               resolve();
             };
@@ -428,6 +440,7 @@ export class HardwareGifExporter {
               return;
             }
             videoSource.addEventListener('seeked', onSeeked);
+            signal?.addEventListener('abort', done, { once: true });
             // A seek that never completes must not hang the whole export.
             timer = setTimeout(done, 2000);
             try {
@@ -439,6 +452,7 @@ export class HardwareGifExporter {
         } else if (onRenderCanvasFrame) {
           onRenderCanvasFrame(currentMs);
         }
+        if (signal?.aborted) throw createExportAbortError();
 
         this.renderer.renderFrame({
           canvas: exportCanvas,
@@ -492,6 +506,7 @@ export class HardwareGifExporter {
 
         if (f % 5 === 0) {
           await new Promise((r) => setTimeout(r, 1));
+          if (signal?.aborted) throw createExportAbortError();
         }
 
         if (f % 6 === 0 && onProgress) {

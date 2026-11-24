@@ -26,6 +26,17 @@ import {
  * Pure module: the only DOM touch is the optional pagehide listener.
  */
 
+/** The error every export rejects with when the user cancels it. */
+export function createExportAbortError(): Error {
+  const err = new Error('The export was cancelled.');
+  err.name = 'AbortError';
+  return err;
+}
+
+export function isExportAbortError(err: unknown): boolean {
+  return Boolean(err) && (err as { name?: string }).name === 'AbortError';
+}
+
 /** A step may only use a snapshot within this distance of its own timestamp. */
 export const SNAPSHOT_MAX_DISTANCE_MS = 3000;
 

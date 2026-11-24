@@ -1264,12 +1264,7 @@ export function VibePresetsPanel({
           <div id="cursor-mode-hint" className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-[11px] text-indigo-200 flex items-start gap-2 leading-relaxed">
             <Info className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
             <span>
-              {showCursor
-                ? 'Styled cursor: drawn from the page\'s mouse data, so it shows only while the mouse is over the recorded Chrome tab. If you also see your real cursor, switch the vector cursor off.'
-                : metadata?.cursorMode === 'real' || capturedNativeCursor === 'always' || capturedNativeCursor === 'motion'
-                  ? 'This recording contains your real cursor, so the cursor style settings do not change it. To style the cursor, keep "Styled cursor" on in the popup when you record the screen or a window.'
-                  : 'The recorded page could not be placed on this screen recording, so it has no styled cursor.'}
-              {metadata?.coordinateSpace !== 'capture' && ' Auto-zoom is off for this recording: add zooms by hand.'}
+              Window/monitor capture keeps the native cursor and disables DOM Auto Zoom. Add zooms manually, or share a browser tab for cinematic cursor tracking.
             </span>
           </div>
         )}

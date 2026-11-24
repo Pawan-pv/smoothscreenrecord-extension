@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
-import { Video, Mic, MousePointer2, EyeOff, Shield, Sparkles, Sliders, ExternalLink } from 'lucide-react';
+import { Video, Mic, EyeOff, Shield, Sparkles, Sliders, ExternalLink } from 'lucide-react';
 import { ensureDevChromeMocks } from '../engine/dev-environment';
 import { loadPrivacyPrefs, savePrivacyPrefs } from '../engine/privacy-prefs';
 import { describeShieldOutcome } from './shield-feedback';
@@ -21,7 +21,6 @@ const isLikelyWebTab = (t?: chrome.tabs.Tab): boolean => {
 export function PopupApp() {
   const [isRecording, setIsRecording] = useState(false);
   const [includeMic, setIncludeMic] = useState(true);
-  const [styledCursor, setStyledCursor] = useState(true);
   const [blurEmails, setBlurEmails] = useState(true);
   const [blurRevenue, setBlurRevenue] = useState(true);
   const [blurApiKeys, setBlurApiKeys] = useState(true);
@@ -138,7 +137,7 @@ export function PopupApp() {
         const launchWithTarget = (targetTab?: chrome.tabs.Tab) => {
           const targetTabId = targetTab?.id;
           const openEditor = () => {
-            const url = chrome.runtime.getURL(`editor.html?record=true&includeMic=${includeMic}&styledCursor=${styledCursor}&sourceTab=${targetTabId || ''}`);
+            const url = chrome.runtime.getURL(`editor.html?record=true&includeMic=${includeMic}&sourceTab=${targetTabId || ''}`);
             chrome.tabs.create({ url });
             window.close();
           };
@@ -175,7 +174,7 @@ export function PopupApp() {
       });
     } else {
       // In standalone browser mode, redirect to studio editor with recording prompt
-      window.open(`/editor.html?record=true&includeMic=${includeMic}&styledCursor=${styledCursor}`, '_blank');
+      window.open(`/editor.html?record=true&includeMic=${includeMic}`, '_blank');
     }
   };
 
@@ -284,22 +283,6 @@ export function PopupApp() {
               checked={includeMic}
               onChange={(e) => setIncludeMic(e.target.checked)}
               className="sr-only peer"
-            />
-            <div className="w-8 h-4 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-purple-600"></div>
-          </label>
-        </div>
-        <div className="flex items-center justify-between text-xs" title="When you share a window or the entire screen: leave your real cursor out and draw the styled cursor (themes, sway, tilt). It shows while the mouse is over the recorded Chrome tab.">
-          <span className="flex items-center gap-2 text-gray-300">
-            <MousePointer2 className="w-3.5 h-3.5 text-purple-400" />
-            Styled cursor (screen &amp; window)
-          </span>
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={styledCursor}
-              onChange={(e) => setStyledCursor(e.target.checked)}
-              className="sr-only peer"
-              aria-label="Styled cursor for screen and window recordings"
             />
             <div className="w-8 h-4 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-purple-600"></div>
           </label>

@@ -45,9 +45,12 @@ let lastCursor: CursorStyle = 'default';
 let lastSampleTime = 0;
 let lastScrollTime = 0;
 /**
- * The cursor path is sampled on a FIXED clock (every 16 ms, 60 Hz), not on every
- * mousemove: raw mousemove is bursty and its rate depends on the device. Mousemove
- * only updates the latest pointer position; the sampler records it.
+ * Every pointer move is recorded with its own event time (moves are dispatched at most
+ * once per display frame, so this is ~60-144 a second while moving). The editor
+ * resamples the path onto an even time grid before smoothing, so the device's event
+ * rate does not matter. (Stamping the latest position with a 16 ms timer's time, as
+ * before, made samples repeat and then jump: visible micro-stutter.)
+ * The timer below only pins a pointer that rests, every STILL_SAMPLE_MS.
  */
 const SAMPLE_INTERVAL_MS = 16;
 const CURSOR_STYLE_READ_MS = 50;
@@ -68,9 +71,15 @@ let pointerInOpaqueFrame = false;
  */
 let pointerInside = false;
 
-/** The pointer left the viewport (relatedTarget null: out of the page, not into a child). */
+/**
+ * The pointer left the viewport (relatedTarget null: out of the page, not into a child).
+ * A leave marker is recorded: the cursor is not on the page from here until it moves
+ * back, so the editor fades it out instead of leaving it frozen at the edge.
+ */
 function handlePointerLeave(e: MouseEvent) {
-  if (!e.relatedTarget) pointerInside = false;
+  if (e.relatedTarget) return;
+  pointerInside = false;
+  if (isRecording && hasPointer) recordPointSample(eventRelativeTime(e), lastMouseX, lastMouseY, true);
 }
 let sampleTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -134,6 +143,24 @@ function epochNow(): number {
 function getRelativeTime(): number {
   if (!originEpoch) return 0;
   return epochNow() - originEpoch;
+}
+
+/**
+ * Timeline time of an input EVENT: when the browser received it (event.timeStamp, on
+ * the clock of the window it fired in, e.g. a same-origin iframe), not when our
+ * handler ran. Exact timing is what keeps a recorded movement smooth.
+ */
+function eventRelativeTime(e: Event): number {
+  if (!originEpoch) return 0;
+  const view = (e as UIEvent).view as (Window & typeof globalThis) | null | undefined;
+  let origin = performance.timeOrigin;
+  try {
+    if (view && view.performance) origin = view.performance.timeOrigin;
+  } catch { /* a window we cannot read: our own clock */ }
+  const at = origin + e.timeStamp;
+  // A timestamp that is not on a sensible clock (very old browsers): the handler time.
+  const now = epochNow();
+  return Number.isFinite(at) && Math.abs(now - at) < 2000 ? at - originEpoch : now - originEpoch;
 }
 
 /** Human readable label for an element (form field name, button caption...). */
@@ -407,6 +434,25 @@ function handleMouseMove(e: MouseEvent) {
     lastSampleTime = now;
     lastCursor = readCursorStyle(e);
   }
+  recordPointSample(eventRelativeTime(e), coords.x, coords.y);
+}
+
+/** Records one cursor position at a timeline time (never two at the same millisecond). */
+function recordPointSample(time: number, x: number, y: number, left = false): void {
+  if (!originEpoch) return;
+  const t = Math.round(time);
+  if (t < 0) return;
+  const last = mousePoints[mousePoints.length - 1];
+  const point: MousePoint = left ? { t, x, y, c: lastCursor, l: 1 } : { t, x, y, c: lastCursor };
+  if (last && last.t === t) {
+    mousePoints[mousePoints.length - 1] = point; // the newer position of the same instant
+    return;
+  }
+  if (last && last.t > t) {
+    insertByTime(mousePoints, point); // an event that was dispatched late
+    return;
+  }
+  mousePoints.push(point);
 }
 
 /** An <iframe> whose document this page cannot reach (cross-origin). */
@@ -428,11 +474,10 @@ function sampleCursor() {
   if (t < 0) return;
   const last = mousePoints[mousePoints.length - 1];
   if (last && last.t >= t) return;
-  // A still pointer is recorded every STILL_SAMPLE_MS only (enough to pin it in place):
-  // moving it is recorded at the full rate, without filling storage while it rests.
-  const still = last && last.x === lastMouseX && last.y === lastMouseY && last.c === lastCursor;
-  if (still && t - last.t < STILL_SAMPLE_MS) return;
-  mousePoints.push({ t, x: lastMouseX, y: lastMouseY, c: lastCursor });
+  // Moves record themselves (handleMouseMove). This only pins a resting pointer, so a
+  // pause is held in place instead of being bridged by a slow glide.
+  if (last && t - last.t < STILL_SAMPLE_MS) return;
+  recordPointSample(t, lastMouseX, lastMouseY);
 }
 
 function startCursorSampler() {
@@ -455,9 +500,10 @@ function handlePress(e: MouseEvent, type: 'down' | 'up') {
   hasPointer = true;
   pointerInside = true;
   lastCursor = readCursorStyle(e);
-  // A press is an exact event: its position is recorded at its own time, besides the fixed-rate samples.
-  mousePoints.push({ t: Math.round(getRelativeTime()), x: coords.x, y: coords.y, c: lastCursor });
-  pressEvents.push({ t: Math.round(getRelativeTime()), type, x: coords.x, y: coords.y, button: e.button });
+  // A press is an exact event: its position is recorded at its own (event) time.
+  const at = eventRelativeTime(e);
+  recordPointSample(at, coords.x, coords.y);
+  pressEvents.push({ t: Math.round(at), type, x: coords.x, y: coords.y, button: e.button });
 }
 
 function handlePointerDown(e: PointerEvent) { handlePress(e, 'down'); }
@@ -481,21 +527,17 @@ function handleClick(e: MouseEvent) {
   const target = e.target as Element | null;
   const containerBounds = findParentContainer(target, coords.offsetX, coords.offsetY);
 
+  const at = eventRelativeTime(e);
   clicks.push({
-    t: Math.round(getRelativeTime()),
+    t: Math.round(at),
     x: coords.x,
     y: coords.y,
     ...clickDetails(e, lastCursor),
     containerBounds
   });
 
-  // Ensure an immediate mouse point is also captured on click
-  mousePoints.push({
-    t: Math.round(getRelativeTime()),
-    x: coords.x,
-    y: coords.y,
-    c: lastCursor
-  });
+  // The cursor is exactly here as the click lands.
+  recordPointSample(at, coords.x, coords.y);
 }
 
 // ---------------------------------------------------------------------------
@@ -924,8 +966,14 @@ function handlePageHide(): void {
 
 /** The user left (or came back to) the recorded tab: a zoom must not stay held on a page nobody sees. */
 function handleVisibilityChange() {
-  if (!isRecording || !hudLiveSent) return;
+  if (!isRecording) return;
   const state = document.visibilityState === 'hidden' ? 'hidden' : 'visible';
+  if (state === 'hidden' && hasPointer && pointerInside) {
+    // The tab went away (tab switch, minimise): the cursor is no longer on this page.
+    pointerInside = false;
+    recordPointSample(getRelativeTime(), lastMouseX, lastMouseY, true);
+  }
+  if (!hudLiveSent) return;
   visibilityEvents.push({ t: Math.round(getRelativeTime()), state });
 }
 

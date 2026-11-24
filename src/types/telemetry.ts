@@ -10,6 +10,8 @@ export interface MousePoint {
   x: number; // normalised or pixel x coordinate
   y: number; // normalised or pixel y coordinate
   c: CursorStyle;
+  /** 1 = the pointer left the page right after this point (out of the viewport / tab hidden). */
+  l?: 1;
   /** Index into metadata.pageGeometries of the page this came from (multi-tab recordings). */
   g?: number;
 }

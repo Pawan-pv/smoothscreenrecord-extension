@@ -934,15 +934,15 @@ export class CursorSplineEngine {
       ctx.lineWidth = 1.2;
       ctx.stroke();
     } else {
+      // Obsidian, like its arrow: a dark core with a white rim on the whole I-beam
+      // (bars included), so it reads on light and dark pages alike.
+      ctx.lineCap = 'round';
       ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 2.2;
+      ctx.lineWidth = 3.4;
       ctx.stroke();
-
-      ctx.beginPath();
-      ctx.moveTo(0, 1);
-      ctx.lineTo(0, 17);
+      ctx.shadowColor = 'transparent';
       ctx.strokeStyle = '#0F1117';
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 1.6;
       ctx.stroke();
     }
   }

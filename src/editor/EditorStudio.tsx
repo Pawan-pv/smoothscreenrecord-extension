@@ -393,6 +393,23 @@ export function EditorStudio() {
     recentUploadUrlsRef.current = [];
   }, []);
 
+  // Paste an image anywhere in the editor (not while typing in a field) to use it as the background.
+  useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.closest('input, textarea, select') || target.isContentEditable)) return;
+      const items = Array.from(event.clipboardData?.items || []).filter((item) => item.kind === 'file');
+      if (items.length === 0) return; // plain text etc.: not ours
+      const item = items.find((i) => i.type.startsWith('image/')) || items[0];
+      const file = item.getAsFile();
+      if (!file) return;
+      event.preventDefault();
+      void handleUploadBackgroundFile(file); // a non-image is refused there, with a message
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [handleUploadBackgroundFile]);
+
   // Remember every change (not while the saved image is still being restored).
   useEffect(() => {
     if (restoringBackgroundRef.current) return;

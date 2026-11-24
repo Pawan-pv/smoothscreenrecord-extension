@@ -207,6 +207,38 @@ export function VibePresetsPanel({
   };
 
   const [backgroundTab, setBackgroundTab] = React.useState<BackgroundTab>(tabOf(background));
+  // An image chosen from anywhere (drop, paste, restore) shows the Image tab.
+  React.useEffect(() => {
+    if (background.kind === 'image') setBackgroundTab('image');
+  }, [background.kind]);
+  const [isDraggingFile, setIsDraggingFile] = React.useState(false);
+  const dragDepthRef = React.useRef(0);
+  const hasFiles = (e: React.DragEvent) => Array.from(e.dataTransfer?.types || []).includes('Files');
+  const handleBackgroundDragEnter = (e: React.DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDraggingFile(true);
+  };
+  const handleBackgroundDragOver = (e: React.DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+  const handleBackgroundDragLeave = (e: React.DragEvent) => {
+    if (!hasFiles(e)) return;
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDraggingFile(false);
+  };
+  const handleBackgroundDrop = (e: React.DragEvent) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDraggingFile(false);
+    const files = Array.from(e.dataTransfer.files || []);
+    const file = files.find((f) => f.type.startsWith('image/')) || files[0];
+    if (file) onUploadBackgroundFile?.(file); // a non-image is refused there, with a message
+  };
   const hasCustomBackground = background.kind !== 'backdrop';
   const gradient = background.kind === 'gradient' ? background : null;
   const gradientColors = gradient?.colors ?? GRADIENT_PRESETS[0].colors;
@@ -648,8 +680,19 @@ export function VibePresetsPanel({
         />
       </div>
 
-      {/* Custom Background: gradients, solid colors and images */}
-      <div className="pt-2 border-t border-white/10 space-y-2">
+      {/* Custom Background: wallpapers, gradients, solid colors and images (drop an image anywhere here) */}
+      <div
+        className={`pt-2 border-t border-white/10 space-y-2 rounded-lg transition-colors ${
+          isDraggingFile ? 'outline outline-2 outline-dashed outline-pink-400/70 bg-pink-500/10' : ''
+        }`}
+        onDragEnter={handleBackgroundDragEnter}
+        onDragOver={handleBackgroundDragOver}
+        onDragLeave={handleBackgroundDragLeave}
+        onDrop={handleBackgroundDrop}
+      >
+        {isDraggingFile && (
+          <div className="text-center text-[11px] text-pink-200 py-1">Drop the image to use it as the background</div>
+        )}
         <div className="flex items-center justify-between text-xs font-semibold text-gray-300 uppercase tracking-wider">
           <span className="flex items-center gap-1.5">
             <Palette className="w-3.5 h-3.5 text-pink-400" />
@@ -824,9 +867,10 @@ export function VibePresetsPanel({
           <div className="pt-1 space-y-2">
             <label className="w-full py-1.5 px-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs text-gray-300 cursor-pointer flex items-center justify-center gap-2 transition-colors">
               <Upload className="w-3.5 h-3.5 text-indigo-400" />
-              <span>{backgroundImageUrl ? 'Replace Custom Image' : 'Upload Background Image'}</span>
+              <span>{backgroundImageUrl ? 'Replace image' : 'Browse for an image'}</span>
               <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
             </label>
+            <p className="text-[10px] text-gray-500 text-center">…or drop an image on this panel, or paste one (Ctrl+V).</p>
             {recentUploads.length > 0 && (
               <div className="space-y-1">
                 <div className="text-[10px] uppercase tracking-wider text-gray-500">Recent</div>

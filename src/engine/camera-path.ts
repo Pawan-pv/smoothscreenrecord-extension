@@ -87,6 +87,11 @@ export interface CameraPathOptions {
   cursorAt?: (timeMs: number) => CursorSample | null | undefined;
   viewportWidth?: number;
   viewportHeight?: number;
+  /**
+   * Share of the source's width / height the output window shows at 1.0x
+   * (cameraViewFraction). Default 1 x 1 (Fit). Smart-fill shows less on one axis.
+   */
+  viewFraction?: { x: number; y: number };
 }
 
 export interface CameraPath {
@@ -98,10 +103,18 @@ const NEUTRAL: CameraState = { x: 0.5, y: 0.5, scale: 1, tiltX: 0, tiltY: 0 };
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
-/** Keeps the cropped view inside the frame: no empty space at the edges. */
-function clampCenter(v: number, scale: number): number {
-  const half = 0.5 / Math.max(1, scale);
+/**
+ * Keeps the cropped view inside the frame: no empty space at the edges. `fraction` is the
+ * share of the source the window shows at 1.0x on this axis, so the view's half-size is
+ * `0.5 * fraction / scale` and a clamped target is always inside the view.
+ */
+function clampCenter(v: number, scale: number, fraction = 1): number {
+  const half = (0.5 * fraction) / Math.max(1, scale);
   return Math.max(half, Math.min(1 - half, v));
+}
+
+function sanitizeFraction(v: number | undefined): number {
+  return Number.isFinite(v) && (v as number) > 0 ? Math.min(1, v as number) : 1;
 }
 
 interface PanTrack {
@@ -135,17 +148,20 @@ function buildPanTrack(
   follow: boolean,
   cursorAt: CameraPathOptions['cursorAt'],
   viewportWidth: number,
-  viewportHeight: number
+  viewportHeight: number,
+  view: { x: number; y: number }
 ): PanTrack {
-  const startX = clampCenter(zoom.targetX, zoom.scale);
-  const startY = clampCenter(zoom.targetY, zoom.scale);
+  const startX = clampCenter(zoom.targetX, zoom.scale, view.x);
+  const startY = clampCenter(zoom.targetY, zoom.scale, view.y);
   if (!follow || !cursorAt) {
     const fixed = { x: startX, y: startY };
     return { at: () => fixed };
   }
 
-  const half = 0.5 / Math.max(1, zoom.scale);
-  const safe = DEAD_ZONE_FRACTION * half;
+  const halfX = (0.5 * view.x) / Math.max(1, zoom.scale);
+  const halfY = (0.5 * view.y) / Math.max(1, zoom.scale);
+  const safeX = DEAD_ZONE_FRACTION * halfX;
+  const safeY = DEAD_ZONE_FRACTION * halfY;
   const steps = Math.max(1, Math.ceil((zoom.end - zoom.start) / PAN_STEP_MS));
   const xs = new Float64Array(steps + 2);
   const ys = new Float64Array(steps + 2);
@@ -166,10 +182,10 @@ function buildPanTrack(
       const py = clamp01(raw.y <= 1 ? raw.y : raw.y / viewportHeight);
       const dx = px - focusX;
       const dy = py - focusY;
-      if (dx > safe) focusX = px - safe; else if (dx < -safe) focusX = px + safe;
-      if (dy > safe) focusY = py - safe; else if (dy < -safe) focusY = py + safe;
-      focusX = Math.max(half, Math.min(1 - half, focusX));
-      focusY = Math.max(half, Math.min(1 - half, focusY));
+      if (dx > safeX) focusX = px - safeX; else if (dx < -safeX) focusX = px + safeX;
+      if (dy > safeY) focusY = py - safeY; else if (dy < -safeY) focusY = py + safeY;
+      focusX = Math.max(halfX, Math.min(1 - halfX, focusX));
+      focusY = Math.max(halfY, Math.min(1 - halfY, focusY));
     }
     xs[i] = camX;
     ys[i] = camY;
@@ -215,6 +231,7 @@ export function buildCameraPath(pills: ZoomPill[], options: CameraPathOptions = 
   const follow = options.followCursor !== false;
   const vw = options.viewportWidth && options.viewportWidth > 0 ? options.viewportWidth : 1920;
   const vh = options.viewportHeight && options.viewportHeight > 0 ? options.viewportHeight : 1080;
+  const view = { x: sanitizeFraction(options.viewFraction?.x), y: sanitizeFraction(options.viewFraction?.y) };
 
   const zooms: Zoom[] = normalizeZooms(pills).map(({ pill, start, end }) => {
     const duration = end - start;
@@ -232,7 +249,7 @@ export function buildCameraPath(pills: ZoomPill[], options: CameraPathOptions = 
       tiltX: pill.tiltX || 0,
       tiltY: pill.tiltY || 0
     };
-    return { ...zoom, pan: buildPanTrack(zoom, follow, options.cursorAt, vw, vh) };
+    return { ...zoom, pan: buildPanTrack(zoom, follow, options.cursorAt, vw, vh, view) };
   });
 
   if (zooms.length === 0) return { at: () => ({ ...NEUTRAL }) };
@@ -241,8 +258,8 @@ export function buildCameraPath(pills: ZoomPill[], options: CameraPathOptions = 
   const chained = (a: Zoom, b: Zoom) => b.start - a.end <= CHAIN_GAP_MS;
 
   const finish = (x: number, y: number, scale: number, tiltX: number, tiltY: number): CameraState => ({
-    x: clampCenter(x, scale),
-    y: clampCenter(y, scale),
+    x: clampCenter(x, scale, view.x),
+    y: clampCenter(y, scale, view.y),
     scale,
     tiltX,
     tiltY

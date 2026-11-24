@@ -13,6 +13,7 @@ import {
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
 import { buildCameraPath } from './camera-path';
+import { cameraViewFraction, mediaSourceSize } from './framing-math';
 import { CursorSplineEngine } from './cursor-spline';
 import { diagnosticChannel } from './diagnostic-channel';
 import {
@@ -542,7 +543,16 @@ export class HardwareMp4Exporter {
       followCursor,
       cursorAt: (t) => cursorEngine.getCameraCursorAt(t),
       viewportWidth: metadata?.width || outW,
-      viewportHeight: metadata?.height || outH
+      viewportHeight: metadata?.height || outH,
+      viewFraction: cameraViewFraction({
+        canvasW: exportCanvas.width,
+        canvasH: exportCanvas.height,
+        sourceW: mediaSourceSize(video).width,
+        sourceH: mediaSourceSize(video).height,
+        aspectRatio,
+        framingMode,
+        framePadding
+      })
     });
 
     try {
@@ -823,7 +833,16 @@ export class HardwareMp4Exporter {
       followCursor,
       cursorAt: (t) => cursorEngine.getCameraCursorAt(t),
       viewportWidth: metadata?.width || exportCanvas.width,
-      viewportHeight: metadata?.height || exportCanvas.height
+      viewportHeight: metadata?.height || exportCanvas.height,
+      viewFraction: cameraViewFraction({
+        canvasW: exportCanvas.width,
+        canvasH: exportCanvas.height,
+        sourceW: mediaSourceSize(video).width,
+        sourceH: mediaSourceSize(video).height,
+        aspectRatio,
+        framingMode,
+        framePadding
+      })
     });
 
     try {

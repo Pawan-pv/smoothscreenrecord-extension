@@ -123,10 +123,17 @@ export function computeFrameLayout(options: FrameLayoutOptions): FrameLayout {
   }
 
   const cameraScale = Math.max(1, options.cameraScale ?? 1);
+  // The camera (x, y) is a point of the SOURCE (0..1). When the window shows only part of
+  // the source (smart-fill), that part follows the camera and stays inside the source;
+  // the camera is then clamped inside it. Fit shows the whole source: nothing moves.
+  const focusX = (options.cameraX ?? 0.5) * sourceW;
+  const focusY = (options.cameraY ?? 0.5) * sourceH;
+  sourceCrop.x = Math.max(0, Math.min(sourceW - sourceCrop.width, focusX - sourceCrop.width / 2));
+  sourceCrop.y = Math.max(0, Math.min(sourceH - sourceCrop.height, focusY - sourceCrop.height / 2));
   const halfViewX = 0.5 / cameraScale;
   const halfViewY = 0.5 / cameraScale;
-  const clampedCameraX = Math.max(halfViewX, Math.min(1 - halfViewX, options.cameraX ?? 0.5));
-  const clampedCameraY = Math.max(halfViewY, Math.min(1 - halfViewY, options.cameraY ?? 0.5));
+  const clampedCameraX = Math.max(halfViewX, Math.min(1 - halfViewX, (focusX - sourceCrop.x) / sourceCrop.width));
+  const clampedCameraY = Math.max(halfViewY, Math.min(1 - halfViewY, (focusY - sourceCrop.y) / sourceCrop.height));
 
   return {
     canvasW,
@@ -141,6 +148,28 @@ export function computeFrameLayout(options: FrameLayoutOptions): FrameLayout {
     introScale: Math.max(0.01, options.introScale ?? 1),
     canvasScale: Math.min(canvasW, canvasH) / 1080,
     framingMode
+  };
+}
+
+/**
+ * Share of the source's width and height the window shows at 1.0x: 1 x 1 in Fit, less
+ * on one axis in smart-fill. The camera path clamps against it, so a zoom target stays
+ * inside the part of the source that is really on screen.
+ */
+export function cameraViewFraction(options: Pick<FrameLayoutOptions, 'canvasW' | 'canvasH' | 'sourceW' | 'sourceH' | 'aspectRatio' | 'framingMode' | 'framePadding'>): { x: number; y: number } {
+  const padding = Number.isFinite(options.framePadding) ? options.framePadding : undefined;
+  const layout = computeFrameLayout({ ...options, framePadding: padding });
+  return {
+    x: Math.min(1, layout.sourceCrop.width / layout.sourceW),
+    y: Math.min(1, layout.sourceCrop.height / layout.sourceH)
+  };
+}
+
+/** Pixel size of a video / canvas source, with the renderer's fallback. */
+export function mediaSourceSize(source: HTMLVideoElement | HTMLCanvasElement | null | undefined): { width: number; height: number } {
+  return {
+    width: (source as HTMLVideoElement)?.videoWidth || (source as HTMLCanvasElement)?.width || 1920,
+    height: (source as HTMLVideoElement)?.videoHeight || (source as HTMLCanvasElement)?.height || 1080
   };
 }
 

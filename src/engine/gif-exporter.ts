@@ -13,6 +13,7 @@ import {
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
 import { buildCameraPath } from './camera-path';
+import { cameraViewFraction, mediaSourceSize } from './framing-math';
 import { CursorSplineEngine } from './cursor-spline';
 import { SequentialVideoFrameSource } from './sequential-frame-source';
 import {
@@ -395,7 +396,16 @@ export class HardwareGifExporter {
       followCursor,
       cursorAt: (t) => cursorEngine.getCameraCursorAt(t),
       viewportWidth: metadata?.width || fullW,
-      viewportHeight: metadata?.height || fullH
+      viewportHeight: metadata?.height || fullH,
+      viewFraction: cameraViewFraction({
+        canvasW: exportCanvas.width,
+        canvasH: exportCanvas.height,
+        sourceW: mediaSourceSize(renderVideo).width,
+        sourceH: mediaSourceSize(renderVideo).height,
+        aspectRatio,
+        framingMode,
+        framePadding: options.framePadding
+      })
     });
 
     // The frame source owns its VideoFrames; close() releases the current and

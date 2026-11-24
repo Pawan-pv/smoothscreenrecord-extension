@@ -14,7 +14,7 @@ import { StudioRenderer, RenderFrameOptions, getAspectDimensions } from '../engi
 import { CameraState } from '../engine/spring-physics';
 import { buildCameraPath } from '../engine/camera-path';
 import { CursorSplineEngine } from '../engine/cursor-spline';
-import { computeFrameLayout, projectSourceToCanvas, unprojectCanvasToSource, FrameLayout, FramingMode } from '../engine/framing-math';
+import { computeFrameLayout, projectSourceToCanvas, unprojectCanvasToSource, FrameLayout, FramingMode, cameraViewFraction, mediaSourceSize } from '../engine/framing-math';
 import { Play, Pause, RotateCcw } from 'lucide-react';
 
 function drawRoundedRect(
@@ -156,10 +156,19 @@ export function CanvasPreview({
       followCursor,
       cursorAt: (t) => cursorEngine.getCameraCursorAt(t),
       viewportWidth: metadata?.width || targetWidth,
-      viewportHeight: metadata?.height || targetHeight
+      viewportHeight: metadata?.height || targetHeight,
+      viewFraction: cameraViewFraction({
+        canvasW: targetWidth,
+        canvasH: targetHeight,
+        sourceW: mediaSourceSize(video).width,
+        sourceH: mediaSourceSize(video).height,
+        aspectRatio,
+        framingMode,
+        framePadding
+      })
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pills, followCursor, cursorEngine, cameraCursorKey, metadata?.width, metadata?.height, targetWidth, targetHeight]
+    [pills, followCursor, cursorEngine, cameraCursorKey, metadata?.width, metadata?.height, targetWidth, targetHeight, video, aspectRatio, framingMode, framePadding]
   );
 
   // Render preview frame whenever currentTimeMs, preset, or props change

@@ -51,6 +51,8 @@ let lastScrollTime = 0;
  */
 const SAMPLE_INTERVAL_MS = 16;
 const CURSOR_STYLE_READ_MS = 50;
+/** A pointer that has not moved is sampled this often (instead of every 16 ms). */
+const STILL_SAMPLE_MS = 100;
 /** No sample before the first real pointer position (never a made-up (0,0)). */
 let hasPointer = false;
 /**
@@ -406,6 +408,10 @@ function sampleCursor() {
   if (t < 0) return;
   const last = mousePoints[mousePoints.length - 1];
   if (last && last.t >= t) return;
+  // A still pointer is recorded every STILL_SAMPLE_MS only (enough to pin it in place):
+  // moving it is recorded at the full rate, without filling storage while it rests.
+  const still = last && last.x === lastMouseX && last.y === lastMouseY && last.c === lastCursor;
+  if (still && t - last.t < STILL_SAMPLE_MS) return;
   mousePoints.push({ t, x: lastMouseX, y: lastMouseY, c: lastCursor });
 }
 

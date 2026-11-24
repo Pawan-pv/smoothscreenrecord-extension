@@ -108,6 +108,11 @@ interface VibePresetsPanelProps {
   backgroundImageUrl?: string | null;
   onSelectBackgroundImage?: (url: string | null, img: HTMLImageElement | null) => void;
   onBackgroundImageError?: (url: string) => void;
+  /** Stores and selects an image file (picker, drag-drop, paste). */
+  onUploadBackgroundFile?: (file: File) => void;
+  recentUploads?: Array<{ id: string; name: string; url: string }>;
+  onSelectRecentUpload?: (id: string) => void;
+  onDeleteRecentUpload?: (id: string) => void;
 }
 
 export function VibePresetsPanel({
@@ -172,11 +177,20 @@ export function VibePresetsPanel({
   onSelectBackgroundColor,
   backgroundImageUrl,
   onSelectBackgroundImage,
-  onBackgroundImageError
+  onBackgroundImageError,
+  onUploadBackgroundFile,
+  recentUploads = [],
+  onSelectRecentUpload,
+  onDeleteRecentUpload
 }: VibePresetsPanelProps) {
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = ''; // the same file can be picked again
     if (!file) return;
+    if (onUploadBackgroundFile) {
+      onUploadBackgroundFile(file);
+      return;
+    }
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
@@ -189,7 +203,6 @@ export function VibePresetsPanel({
   };
 
   const handleResetBackground = () => {
-    onSelectBackgroundImage?.(null, null);
     onChangeBackground?.({ kind: 'backdrop' });
   };
 
@@ -808,12 +821,47 @@ export function VibePresetsPanel({
         )}
 
         {backgroundTab === 'image' && (
-          <div className="pt-1">
+          <div className="pt-1 space-y-2">
             <label className="w-full py-1.5 px-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs text-gray-300 cursor-pointer flex items-center justify-center gap-2 transition-colors">
               <Upload className="w-3.5 h-3.5 text-indigo-400" />
               <span>{backgroundImageUrl ? 'Replace Custom Image' : 'Upload Background Image'}</span>
               <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
             </label>
+            {recentUploads.length > 0 && (
+              <div className="space-y-1">
+                <div className="text-[10px] uppercase tracking-wider text-gray-500">Recent</div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {recentUploads.map((u) => {
+                    const selected = background.kind === 'image' && background.uploadId === u.id;
+                    return (
+                      <div key={u.id} className="relative group">
+                        <button
+                          type="button"
+                          onClick={() => onSelectRecentUpload?.(u.id)}
+                          className={`block w-full aspect-video rounded-md overflow-hidden border transition-all ${
+                            selected ? 'border-white ring-1 ring-white/60' : 'border-white/10 hover:border-white/40'
+                          }`}
+                          title={u.name}
+                          aria-label={`Use ${u.name}`}
+                          aria-pressed={selected}
+                        >
+                          <img src={u.url} alt="" className="w-full h-full object-cover" draggable={false} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteRecentUpload?.(u.id)}
+                          className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/80 border border-white/20 text-[10px] leading-none text-gray-300 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-red-300"
+                          title={`Remove ${u.name}`}
+                          aria-label={`Remove ${u.name}`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

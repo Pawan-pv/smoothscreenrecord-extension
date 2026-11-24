@@ -24,6 +24,14 @@ import { toCaptureSpace } from '../engine/capture-space';
 import { prepareVideo, studioLoadReducer, LoadStep, LOAD_STEPS } from './studio-load';
 import { nextRecordingPhase, RecordingPhase, RecordingEvent, ExportJob } from './studio-session';
 import { CursorSplineEngine, CursorMotionSettings, DEFAULT_CURSOR_MOTION } from '../engine/cursor-spline';
+import {
+  loadBackgroundChoice,
+  saveBackgroundChoice,
+  addUpload,
+  getUpload,
+  listUploads,
+  deleteUpload
+} from './background-store';
 import { AudioProcessor } from '../engine/audio-processor';
 import { SfxSynthesizer } from '../engine/sfx-synthesizer';
 import { HardwareMp4Exporter, ExportEncoderInfo } from '../engine/mp4-exporter';
@@ -223,8 +231,17 @@ export function EditorStudio() {
   const [outroCtaText, setOutroCtaText] = useState<string>('');
   const [framePadding, setFramePadding] = useState<number>(0.08);
   /** What fills the canvas behind the window (one source of truth for preview and exports). */
-  const [backgroundSpec, setBackgroundSpec] = useState<BackgroundSpec>({ kind: 'backdrop' });
-  const [backgroundEffects, setBackgroundEffects] = useState<BackgroundEffects>(DEFAULT_BACKGROUND_EFFECTS);
+  // The last background is remembered (background-store.ts). An image needs its stored
+  // file decoded first: it starts as the backdrop and is restored on mount.
+  const [savedBackground] = useState(() => loadBackgroundChoice());
+  const [backgroundSpec, setBackgroundSpec] = useState<BackgroundSpec>(
+    savedBackground.spec.kind === 'image' ? { kind: 'backdrop' } : savedBackground.spec
+  );
+  const [backgroundEffects, setBackgroundEffects] = useState<BackgroundEffects>(savedBackground.effects ?? DEFAULT_BACKGROUND_EFFECTS);
+  /** True while the remembered image is being restored: nothing is saved over it meanwhile. */
+  const restoringBackgroundRef = useRef(savedBackground.spec.kind === 'image');
+  const [recentUploads, setRecentUploads] = useState<Array<{ id: string; name: string; url: string }>>([]);
+  const recentUploadUrlsRef = useRef<string[]>([]);
   const [backgroundImageUrl, setBackgroundImageUrl] = useState<string | null>(null);
   const [backgroundImage, setBackgroundImage] = useState<HTMLImageElement | null>(null);
   const backgroundImageUrlRef = useRef<string | null>(null);
@@ -267,6 +284,7 @@ export function EditorStudio() {
 
   /** Any non-image background: a solid color, a gradient, a wallpaper or the preset backdrop. */
   const handleChangeBackground = useCallback((spec: BackgroundSpec) => {
+    restoringBackgroundRef.current = false; // the user's choice wins over a restore still loading
     if (spec.kind !== 'image') clearBackgroundImage();
     setBackgroundSpec(spec);
   }, [clearBackgroundImage]);
@@ -279,6 +297,107 @@ export function EditorStudio() {
   const handleSelectBackgroundColor = useCallback((color: string | null) => {
     handleChangeBackground(color ? { kind: 'solid', color } : { kind: 'backdrop' });
   }, [handleChangeBackground]);
+
+  /** Decodes an image blob into an <img> behind a fresh object URL (the caller owns the URL). */
+  const decodeImageBlob = (blob: Blob) => new Promise<{ url: string; image: HTMLImageElement }>((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const image = new Image();
+    image.onload = () => resolve({ url, image });
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('The image could not be read.'));
+    };
+    image.src = url;
+  });
+
+  const refreshRecentUploads = useCallback(async () => {
+    try {
+      const uploads = await listUploads();
+      recentUploadUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      const next = uploads.map((u) => ({ id: u.id, name: u.name, url: URL.createObjectURL(u.blob) }));
+      recentUploadUrlsRef.current = next.map((u) => u.url);
+      setRecentUploads(next);
+    } catch {
+      // Storage unavailable: no recent uploads to show.
+    }
+  }, []);
+
+  /** Picker, drag-drop and paste all end here. */
+  const handleUploadBackgroundFile = useCallback(async (file: File) => {
+    restoringBackgroundRef.current = false;
+    try {
+      const { upload, persisted } = await addUpload(file);
+      const { url, image } = await decodeImageBlob(upload.blob);
+      handleSelectBackgroundImage(url, image, upload.id);
+      if (persisted) {
+        void refreshRecentUploads();
+      } else {
+        showToast({ type: 'info', title: 'Background not saved', message: 'This browser blocked local storage: the image works now but will not be remembered.' });
+      }
+    } catch (err: any) {
+      showToast({ type: 'error', title: 'Background Image Failed', message: err?.message || 'The image could not be used.' });
+    }
+  }, [handleSelectBackgroundImage, refreshRecentUploads, showToast]);
+
+  const handleSelectRecentUpload = useCallback(async (id: string) => {
+    restoringBackgroundRef.current = false;
+    try {
+      const upload = await getUpload(id);
+      if (!upload) throw new Error('That image is no longer stored.');
+      const { url, image } = await decodeImageBlob(upload.blob);
+      handleSelectBackgroundImage(url, image, upload.id);
+    } catch (err: any) {
+      showToast({ type: 'error', title: 'Background Image Failed', message: err?.message || 'The image could not be used.' });
+      void refreshRecentUploads();
+    }
+  }, [handleSelectBackgroundImage, refreshRecentUploads, showToast]);
+
+  const handleDeleteRecentUpload = useCallback(async (id: string) => {
+    try {
+      await deleteUpload(id);
+    } catch {
+      // Already gone.
+    }
+    if (backgroundSpec.kind === 'image' && backgroundSpec.uploadId === id) handleChangeBackground({ kind: 'backdrop' });
+    void refreshRecentUploads();
+  }, [backgroundSpec, handleChangeBackground, refreshRecentUploads]);
+
+  // Restore the remembered image (if any) and list the recent uploads, once.
+  useEffect(() => {
+    void refreshRecentUploads();
+    if (savedBackground.spec.kind !== 'image') return;
+    const id = savedBackground.spec.uploadId;
+    let cancelled = false;
+    (async () => {
+      try {
+        const upload = await getUpload(id);
+        if (!upload) throw new Error('missing');
+        const { url, image } = await decodeImageBlob(upload.blob);
+        // Cancelled, or the user picked another background meanwhile: theirs wins.
+        if (cancelled || !restoringBackgroundRef.current) { URL.revokeObjectURL(url); return; }
+        handleSelectBackgroundImage(url, image, upload.id);
+      } catch {
+        if (cancelled || !restoringBackgroundRef.current) return;
+        saveBackgroundChoice({ kind: 'backdrop' }, savedBackground.effects);
+        showToast({ type: 'info', title: 'Background reset', message: 'The saved background image is no longer available.' });
+      } finally {
+        if (!cancelled) restoringBackgroundRef.current = false;
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => () => {
+    recentUploadUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    recentUploadUrlsRef.current = [];
+  }, []);
+
+  // Remember every change (not while the saved image is still being restored).
+  useEffect(() => {
+    if (restoringBackgroundRef.current) return;
+    saveBackgroundChoice(backgroundSpec, backgroundEffects);
+  }, [backgroundSpec, backgroundEffects]);
   const [followCursor, setFollowCursor] = useState<boolean>(true);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
 
@@ -917,6 +1036,7 @@ export function EditorStudio() {
   const handleSelectPreset = useCallback((newPreset: VibePreset) => {
     setPreset(newPreset);
     // The latest choice wins: picking a preset drops any custom background.
+    restoringBackgroundRef.current = false;
     clearBackgroundImage();
     setBackgroundSpec({ kind: 'backdrop' });
     if (newPreset.backdrop) {
@@ -1997,6 +2117,10 @@ export function EditorStudio() {
           backgroundImageUrl={backgroundImageUrl}
           onSelectBackgroundImage={handleSelectBackgroundImage}
           onBackgroundImageError={handleBackgroundImageError}
+          onUploadBackgroundFile={handleUploadBackgroundFile}
+          recentUploads={recentUploads}
+          onSelectRecentUpload={handleSelectRecentUpload}
+          onDeleteRecentUpload={handleDeleteRecentUpload}
         />
         {/* Center Canvas Preview Viewport */}
         <CanvasPreview

@@ -10,17 +10,30 @@ import {
 } from './snapshot-policy';
 import { CapturedNativeCursor } from '../types/telemetry';
 
+/**
+ * Default for the vector (smooth) cursor, derived from WHAT was captured and
+ * whether there is telemetry to draw it from, not from the track's cursor
+ * setting alone.
+ *
+ * Chromium reports `getSettings().cursor === 'motion'` for tab captures even
+ * when `cursor: 'never'` was requested, so 'motion' says nothing about whether
+ * a native cursor ended up in the picture and must not switch the smooth
+ * cursor off. Only an explicit 'always' does.
+ *
+ * - window / monitor: no page-coordinate relationship, the native cursor is the
+ *   cursor of the recording: off.
+ * - no DOM mouse telemetry: nothing to draw the cursor from: off.
+ * - browser tab with telemetry: on, unless the native cursor is explicitly
+ *   'always' captured. The editor toggle lets the user override either way.
+ */
 export function shouldEnableCustomCursor(
   capturedNativeCursor: CapturedNativeCursor,
   displaySurface: string | undefined,
   hasDomCursorTelemetry: boolean
 ): boolean {
-  // A window/monitor capture has no page-coordinate relationship. Keep the
-  // real native cursor and disable the DOM-derived vector cursor entirely.
   if (displaySurface === 'window' || displaySurface === 'monitor') return false;
-  if (capturedNativeCursor === 'always' || capturedNativeCursor === 'motion') return false;
-  if (capturedNativeCursor === 'never') return true;
-  return true;
+  if (!hasDomCursorTelemetry) return false;
+  return capturedNativeCursor !== 'always';
 }
 
 /**

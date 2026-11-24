@@ -823,13 +823,18 @@ export function VibePresetsPanel({
             checked={showCursor}
             onChange={(e) => onToggleCursor(e.target.checked)}
             className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
-            title={capturedNativeCursor === 'always' || capturedNativeCursor === 'motion' ? 'Native cursor was detected; enabling this may show both cursors.' : undefined}
+            title={capturedNativeCursor === 'always' ? 'The native cursor was captured; enabling this may show both cursors.' : undefined}
           />
         </label>
 
-        {(capturedNativeCursor === 'always' || capturedNativeCursor === 'motion') && (
+        {capturedNativeCursor === 'always' && (
           <p className="text-[11px] leading-relaxed text-amber-300/90">
-            Native cursor detected in this capture. The vector cursor starts off to prevent a double cursor; you can re-enable it manually.
+            The native cursor was captured in this recording. The vector cursor starts off to prevent a double cursor; you can re-enable it manually.
+          </p>
+        )}
+        {capturedNativeCursor === 'motion' && metadata?.displaySurface !== 'window' && metadata?.displaySurface !== 'monitor' && showCursor && (
+          <p id="cursor-motion-note" className="text-[11px] leading-relaxed text-gray-400">
+            Chrome may draw its own cursor while the mouse moves. If you see two cursors in the preview, switch the vector cursor off.
           </p>
         )}
 

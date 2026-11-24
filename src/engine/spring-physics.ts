@@ -195,7 +195,7 @@ export const AUTO_ZOOM_CONFIG = {
   /** A click farther than this (normalised 0..1 distance) from the shot's focus starts a new shot. */
   NEW_SHOT_DIST: 0.35,
   /** The camera starts moving this long before a click (zoom ramp-in and pan lead). */
-  LEAD_IN_MS: 400,
+  LEAD_IN_MS: 200,
   /** The shot holds this long after its last click before the zoom releases. */
   HOLD_OUT_MS: 900,
   /** A shot shorter than this (after lead-in and hold-out) is noise and dropped. */

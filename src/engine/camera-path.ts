@@ -19,6 +19,7 @@ import { createSpring, dampingFor, SPRING_STEP_MS } from './spring';
 export const CAMERA_EASE: readonly [number, number, number, number] = [0.22, 1, 0.36, 1];
 /** Camera speed presets: how long a zoom ramps in / out. */
 export const ZOOM_SPEEDS = [
+  { label: 'Snap', ms: 200 },
   { label: 'Rapid', ms: 250 },
   { label: 'Quick', ms: 400 },
   { label: 'Default', ms: 600 },

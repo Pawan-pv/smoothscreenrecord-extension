@@ -14,7 +14,7 @@ import { StudioRenderer, RenderFrameOptions, getAspectDimensions } from '../engi
 import { CameraState } from '../engine/spring-physics';
 import { buildCameraPath } from '../engine/camera-path';
 import { CursorSplineEngine } from '../engine/cursor-spline';
-import { computeFrameLayout, projectSourceToCanvas, unprojectCanvasToSource, FrameLayout, FramingMode } from '../engine/framing-math';
+import { computeFrameLayout, projectSourceToCanvas, unprojectCanvasToSource, FrameLayout, FramingMode, cameraViewFraction, mediaSourceSize } from '../engine/framing-math';
 import { Play, Pause, RotateCcw } from 'lucide-react';
 
 function drawRoundedRect(
@@ -154,12 +154,21 @@ export function CanvasPreview({
   const cameraPath = useMemo(
     () => buildCameraPath(pills, {
       followCursor,
-      cursorAt: (t) => cursorEngine.getCursorAt(t),
+      cursorAt: (t) => cursorEngine.getCameraCursorAt(t),
       viewportWidth: metadata?.width || targetWidth,
-      viewportHeight: metadata?.height || targetHeight
+      viewportHeight: metadata?.height || targetHeight,
+      viewFraction: cameraViewFraction({
+        canvasW: targetWidth,
+        canvasH: targetHeight,
+        sourceW: mediaSourceSize(video).width,
+        sourceH: mediaSourceSize(video).height,
+        aspectRatio,
+        framingMode,
+        framePadding
+      })
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pills, followCursor, cursorEngine, cameraCursorKey, metadata?.width, metadata?.height, targetWidth, targetHeight]
+    [pills, followCursor, cursorEngine, cameraCursorKey, metadata?.width, metadata?.height, targetWidth, targetHeight, video, aspectRatio, framingMode, framePadding]
   );
 
   // Render preview frame whenever currentTimeMs, preset, or props change
@@ -187,18 +196,24 @@ export function CanvasPreview({
       return;
     }
 
+    // The frame drawn below is the one the video shows right now. While it plays, the
+    // camera, cursor and overlays use that frame's time, not the playhead of the last
+    // render, so the zoom can never lag behind (or run ahead of) the picture.
+    const playingVideo = video instanceof HTMLVideoElement && !video.paused && !video.seeking && video.readyState >= 2;
+    const frameTimeMs = playingVideo ? (video as HTMLVideoElement).currentTime * 1000 : currentTimeMs;
+
     // Direct analytical cinematic camera evaluation: guarantees 100% identical camera
     // framing across 60Hz/120Hz preview, 60fps MP4, and 15fps GIF with zero drift.
-    const camera = cameraPath.at(currentTimeMs);
+    const camera = cameraPath.at(frameTimeMs);
     currentCameraRef.current = camera;
 
-    const activePill = pills.find((p) => currentTimeMs >= p.startTime && currentTimeMs <= p.endTime);
+    const activePill = pills.find((p) => frameTimeMs >= p.startTime && frameTimeMs <= p.endTime);
 
     // Reuse persistent options structure to maintain 0 allocation in 60fps render window
     const opts = renderOptionsRef.current;
     opts.canvas = canvas;
     opts.video = video;
-    opts.currentTimeMs = currentTimeMs;
+    opts.currentTimeMs = frameTimeMs;
     opts.camera = camera;
     opts.activePill = activePill;
     opts.cursorEngine = cursorEngine;
@@ -402,7 +417,9 @@ export function CanvasPreview({
     onUpdatePill({
       ...selectedPill,
       targetX: clampedX,
-      targetY: clampedY
+      targetY: clampedY,
+      // A target placed by hand is one fixed focus: the shot's click keyframes no longer apply.
+      keyframes: undefined
     });
   };
 

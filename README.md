@@ -33,15 +33,7 @@ This project is configured with **Bun** for ultra-fast installs and compilation.
 bun install
 ```
 
-### 2. Fast TDD Testing Loop (< 100ms)
-Run Vitest with our headless Chrome API mock harness (`happy-dom`):
-```bash
-bun run test         # Single headless pass (34/34 tests in ~320ms)
-bun run test:watch   # Red-Green-Refactor interactive watch mode
-bun run test:coverage # V8 branch/statement coverage report
-```
-
-### 3. Dual-Mode Development & Hot-Reloading
+### 2. Dual-Mode Development & Hot-Reloading
 - **Mode A: Instant Web HMR (React Fast Refresh)**
   ```bash
   bun run dev
@@ -54,11 +46,13 @@ bun run test:coverage # V8 branch/statement coverage report
   ```
   Rebuilds on file change, auto-compiles content script IIFEs, and broadcasts reload events to Chrome over WebSocket (`ws://localhost:8989`), automatically triggering `chrome.runtime.reload()` and `chrome.tabs.reload()`.
 
-### 4. Build & Autonomous Live Extension Audit
+### 3. Build
 ```bash
 bun run build        # Production package build (Vite + Bun standalone IIFEs)
-bun run test:live    # 16-stage Playwright autonomous Chromium audit
 ```
+
+### 4. Testing
+Testing is manual: load `dist/` in Chrome, record, and check the result in the editor.
 
 ---
 

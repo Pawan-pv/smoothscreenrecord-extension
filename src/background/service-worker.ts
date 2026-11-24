@@ -518,7 +518,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // A new recording starts with no telemetry from an earlier one and with
       // the provisional origin it was given (RECORDING_LIVE makes it exact).
       const provisionalOrigin = Number(message.originEpoch);
-      const resetContext = clearSegments().then(() => (
+      // A session that is still live (its editor died, or its stop never
+      // arrived) is ended first, on ITS tab: otherwise that tab keeps its HUD
+      // and keeps tracking forever, because the new session's stop only
+      // reaches the new recorded tab.
+      const endPrevious = loadSessionState()
+        .then((prev) => (prev.isRecording && (prev.activeSessionId || null) !== sessionId
+          ? endRecordingSession(prev.activeSessionId || null).then(() => undefined)
+          : undefined))
+        .catch(() => undefined);
+      const resetContext = endPrevious.then(() => clearSegments()).then(() => (
         Number.isFinite(provisionalOrigin) && provisionalOrigin > 0
           ? getStorageArea().set({ [CTX_ORIGIN_KEY]: provisionalOrigin })
           : getStorageArea().remove(CTX_ORIGIN_KEY)
@@ -530,12 +539,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         quality,
         activeSessionId: sessionId
       })).then(() => {
-        // Broadcast START_TELEMETRY to target tab and active web page tabs.
+        // START_TELEMETRY goes to the recorded tab only: the stop only ever
+        // reaches that tab, so any other tab started here would keep its HUD
+        // and keep tracking after the recording ended.
         // `originEpoch` is the wall-clock timestamp of the first captured video
         // frame: sharing it makes telemetry time and video time use ONE clock.
         const originEpoch = message.originEpoch;
         chrome.tabs.query({}, (tabs) => {
-          const targets = tabs.filter((tab) => tab.id && (tab.id === targetRecordingTabId || tab.active));
+          const targets = tabs.filter((tab) => typeof tab.id === 'number' && tab.id === targetRecordingTabId);
           Promise.all(targets.map((tab) => dispatchToTab(tab, { type: 'START_TELEMETRY', originEpoch, sessionId })))
             .then((results) => {
               for (const result of results) {
@@ -723,6 +734,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       sendResponse({ ok: await storeSegment(segment!) });
+    });
+    return true;
+  }
+
+  // 5c. A cross-origin iframe of the recorded tab: is the tab being recorded?
+  if (message.type === 'FRAME_TRACKING_STATUS') {
+    loadSessionState().then((curr) => {
+      sendResponse({ recording: curr.isRecording && typeof sender.tab?.id === 'number' && sender.tab.id === curr.activeRecordingTabId });
+    });
+    return true;
+  }
+
+  // 5d. Pointer events of a cross-origin iframe (the top page cannot see them):
+  // relayed to the top page of the same tab, which records them in its stream.
+  if (message.type === 'FRAME_TELEMETRY') {
+    const tabId = sender.tab?.id;
+    loadSessionState().then((curr) => {
+      if (!curr.isRecording || typeof tabId !== 'number' || tabId !== curr.activeRecordingTabId || !Array.isArray(message.events)) {
+        sendResponse({ ok: false });
+        return;
+      }
+      try {
+        chrome.tabs.sendMessage(tabId, { type: 'FRAME_TELEMETRY', events: message.events }, { frameId: 0 }, () => {
+          void chrome.runtime?.lastError;
+          sendResponse({ ok: true });
+        });
+      } catch {
+        sendResponse({ ok: false });
+      }
     });
     return true;
   }

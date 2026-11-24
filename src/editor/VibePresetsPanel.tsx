@@ -12,6 +12,7 @@ import {
   ShadowMode
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
+import type { CursorMotionSettings } from '../engine/cursor-spline';
 import {
   Palette,
   Volume2,
@@ -61,6 +62,8 @@ interface VibePresetsPanelProps {
   onChangeCursorScale: (scale: number) => void;
   cursorSmoothing: number;
   onChangeCursorSmoothing: (value: number) => void;
+  cursorMotion: CursorMotionSettings;
+  onChangeCursorMotion: (change: Partial<CursorMotionSettings>) => void;
   capturedNativeCursor?: CapturedNativeCursor;
   showCaptions: boolean;
   onToggleCaptions: (val: boolean) => void;
@@ -120,6 +123,8 @@ export function VibePresetsPanel({
   onChangeCursorScale,
   cursorSmoothing,
   onChangeCursorSmoothing,
+  cursorMotion,
+  onChangeCursorMotion,
   capturedNativeCursor,
   showCaptions,
   onToggleCaptions,
@@ -723,6 +728,87 @@ export function VibePresetsPanel({
             onChange={(e) => onChangeCursorSmoothing(parseFloat(e.target.value))}
             className="w-full accent-purple-500"
             aria-label="Cursor Smoothing"
+          />
+        </div>
+
+        {/* Cursor motion: sway spring, tilt, click press, hide when idle */}
+        <div className="space-y-1">
+          <div className="flex justify-between text-[11px] text-gray-400">
+            <span>Sway</span>
+            <span className="text-purple-300">{cursorMotion.sway < 34 ? 'Tight' : cursorMotion.sway < 67 ? 'Natural' : 'Languid'} · {Math.round(cursorMotion.sway)}</span>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value={cursorMotion.sway}
+            onChange={(e) => onChangeCursorMotion({ sway: parseFloat(e.target.value) })}
+            className="w-full accent-purple-500"
+            aria-label="Cursor Sway"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="flex justify-between items-center text-[11px] text-gray-400">
+            <span>Tilt with speed</span>
+            <input type="checkbox" checked={cursorMotion.tiltEnabled} onChange={(e) => onChangeCursorMotion({ tiltEnabled: e.target.checked })} />
+          </label>
+          <div className="flex justify-between text-[11px] text-gray-500">
+            <span>Max angle</span>
+            <span>{Math.round(cursorMotion.maxTiltDeg)}°</span>
+          </div>
+          <input
+            type="range"
+            min="2"
+            max="30"
+            step="1"
+            value={cursorMotion.maxTiltDeg}
+            disabled={!cursorMotion.tiltEnabled}
+            onChange={(e) => onChangeCursorMotion({ maxTiltDeg: parseFloat(e.target.value) })}
+            className="w-full accent-purple-500 disabled:opacity-40"
+            aria-label="Cursor Max Tilt"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="flex justify-between items-center text-[11px] text-gray-400">
+            <span>Click press</span>
+            <input type="checkbox" checked={cursorMotion.pressEnabled} onChange={(e) => onChangeCursorMotion({ pressEnabled: e.target.checked })} />
+          </label>
+          <div className="flex justify-between text-[11px] text-gray-500">
+            <span>Depth</span>
+            <span>{Math.round(cursorMotion.pressDepth * 100)}%</span>
+          </div>
+          <input
+            type="range"
+            min="0.05"
+            max="0.35"
+            step="0.01"
+            value={cursorMotion.pressDepth}
+            disabled={!cursorMotion.pressEnabled}
+            onChange={(e) => onChangeCursorMotion({ pressDepth: parseFloat(e.target.value) })}
+            className="w-full accent-purple-500 disabled:opacity-40"
+            aria-label="Cursor Press Depth"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="flex justify-between items-center text-[11px] text-gray-400">
+            <span>Hide when idle</span>
+            <input type="checkbox" checked={cursorMotion.hideWhenIdle} onChange={(e) => onChangeCursorMotion({ hideWhenIdle: e.target.checked })} />
+          </label>
+          <div className="flex justify-between text-[11px] text-gray-500">
+            <span>After</span>
+            <span>{(cursorMotion.idleDelayMs / 1000).toFixed(1)} s still</span>
+          </div>
+          <input
+            type="range"
+            min="500"
+            max="5000"
+            step="100"
+            value={cursorMotion.idleDelayMs}
+            disabled={!cursorMotion.hideWhenIdle}
+            onChange={(e) => onChangeCursorMotion({ idleDelayMs: parseFloat(e.target.value) })}
+            className="w-full accent-purple-500 disabled:opacity-40"
+            aria-label="Cursor Idle Delay"
           />
         </div>
       </div>

@@ -1,4 +1,5 @@
 import { MousePoint, ClickEvent, CursorTheme, PressEvent, CursorStyle } from '../types/telemetry';
+import { createSpring, dampingFor, SPRING_STEP_MS } from './spring';
 
 export interface InterpolatedCursor {
   x: number;
@@ -10,15 +11,62 @@ export interface InterpolatedCursor {
   opacity: number;
 }
 
+/** How the drawn cursor moves (user settings). */
+export interface CursorMotionSettings {
+  /** 0 = tight tracking, barely smoothed; 100 = long languid glides with more lag. */
+  sway: number;
+  /** Lean the cursor with its horizontal speed. */
+  tiltEnabled: boolean;
+  /** Largest lean, in degrees. */
+  maxTiltDeg: number;
+  /** Squash the cursor while the button is down (with a little overshoot on release). */
+  pressEnabled: boolean;
+  /** How deep the press squashes: 0.15 = scale 0.85. */
+  pressDepth: number;
+  /** Fade the cursor out when the real cursor has been still. */
+  hideWhenIdle: boolean;
+  /** Stillness before the fade-out starts. */
+  idleDelayMs: number;
+}
+
+export const DEFAULT_CURSOR_MOTION: CursorMotionSettings = {
+  sway: 50,
+  tiltEnabled: true,
+  maxTiltDeg: 12,
+  pressEnabled: true,
+  pressDepth: 0.15,
+  hideWhenIdle: true,
+  idleDelayMs: 1500
+};
+
+/** Cursor spring stiffness at sway 0 (tight) and sway 100 (loose). Always critically damped. */
+export const CURSOR_TIGHT_STIFFNESS = 6000;
+export const CURSOR_LOOSE_STIFFNESS = 100;
+/** Lean in degrees per px/s of horizontal speed (1500 px/s = 12 deg). */
+export const CURSOR_TILT_GAIN = 0.008;
+const CURSOR_TILT_STIFFNESS = 300;
+const CURSOR_PRESS_STIFFNESS = 900;
+/** Below 1: the press spring overshoots a little on release. */
+const CURSOR_PRESS_DAMPING_RATIO = 0.55;
+/** A click without press events counts as held this long around its time. */
+const CLICK_PRESS_BEFORE_MS = 40;
+const CLICK_PRESS_AFTER_MS = 60;
+/** Movement smaller than this (px of a 1920 frame) from where the cursor last moved is jitter, not activity: no flicker. */
+export const CURSOR_IDLE_EPS_PX = 6;
+export const CURSOR_IDLE_FADE_MS = 200;
+/** After the last sample the cursor springs keep running this long. */
+const CURSOR_SETTLE_MS = 1500;
+
 export interface CursorSplineOptions {
   smoothing?: number;
   cutRanges?: Array<{ startTime: number; endTime: number }>;
   trimStartMs?: number;
   trimEndMs?: number;
+  motion?: Partial<CursorMotionSettings>;
 }
 
-export const CURSOR_IDLE_TIMEOUT_MS = 1500;
-export const CURSOR_IDLE_FADE_MS = 300;
+/** Default stillness before the cursor fades out. */
+export const CURSOR_IDLE_TIMEOUT_MS = DEFAULT_CURSOR_MOTION.idleDelayMs;
 
 export function getPressScale(progress: number): number {
   const t = Math.max(0, Math.min(1, progress));
@@ -49,6 +97,13 @@ export class CursorSplineEngine {
    * so it is rebuilt only when one of those two changed.
    */
   private filterDirty = true;
+  private motion: CursorMotionSettings = { ...DEFAULT_CURSOR_MOTION };
+  /**
+   * The drawn cursor's springs (x, y, velocity, tilt, press), stepped once at a fixed
+   * 120 Hz over the recording and read by time. Rebuilt lazily when the data, the
+   * filter, the cuts or the motion settings change.
+   */
+  private motionTrack: { t0: number; steps: number; x: Float64Array; y: Float64Array; vx: Float64Array; vy: Float64Array; tilt: Float64Array; press: Float64Array } | null = null;
 
   constructor(mousePoints: MousePoint[] = [], clicks: ClickEvent[] = [], pressEvents: PressEvent[] = [], options: CursorSplineOptions = {}) {
     this.setData(mousePoints, clicks, pressEvents, options);
@@ -57,6 +112,7 @@ export class CursorSplineEngine {
   public setData(mousePoints: MousePoint[], clicks: ClickEvent[], pressEvents: PressEvent[] = [], options: CursorSplineOptions = {}) {
     this.mousePoints = [...mousePoints].sort((a, b) => a.t - b.t);
     this.filterDirty = true;
+    this.motionTrack = null;
     this.clicks = [...clicks].sort((a, b) => a.t - b.t);
     this.pressEvents = [...pressEvents].sort((a, b) => a.t - b.t);
     this.setOptions(options);
@@ -69,14 +125,24 @@ export class CursorSplineEngine {
     }
 
     if (this.mousePoints.length > 0) {
-      activities.push(this.mousePoints[0].t);
+      // Hysteresis: only a move of more than CURSOR_IDLE_EPS_PX from where the cursor
+      // last counted as moving is activity, so 1 px jitter neither keeps it shown nor flickers it.
+      // Normalised coordinates are measured in pixels of a 1920 x 1080 frame on each axis.
+      const normalized = this.mousePoints.every((p) => Math.abs(p.x) <= 1.01 && Math.abs(p.y) <= 1.01);
+      const sx = normalized ? 1920 : 1;
+      const sy = normalized ? 1080 : 1;
+      let anchor = this.mousePoints[0];
+      activities.push(anchor.t);
       for (let i = 1; i < this.mousePoints.length; i++) {
-        const prev = this.mousePoints[i - 1];
         const curr = this.mousePoints[i];
-        if (curr.x !== prev.x || curr.y !== prev.y) {
+        if (Math.hypot((curr.x - anchor.x) * sx, (curr.y - anchor.y) * sy) > CURSOR_IDLE_EPS_PX) {
           activities.push(curr.t);
+          anchor = curr;
         }
       }
+    }
+    for (const p of this.pressEvents) {
+      if (Number.isFinite(p.t)) activities.push(p.t);
     }
 
     activities.sort((a, b) => a - b);
@@ -94,14 +160,44 @@ export class CursorSplineEngine {
         .filter((range) => Number.isFinite(range.startTime) && Number.isFinite(range.endTime) && range.endTime > range.startTime)
         .map((range) => ({ startTime: range.startTime, endTime: range.endTime }))
         .sort((a, b) => a.startTime - b.startTime);
+      this.motionTrack = null;
+    }
+    if (options.motion) {
+      const m = { ...this.motion, ...options.motion };
+      const num = (v: number, lo: number, hi: number, fallback: number) => (Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fallback);
+      const next: CursorMotionSettings = {
+        sway: num(m.sway, 0, 100, DEFAULT_CURSOR_MOTION.sway),
+        tiltEnabled: Boolean(m.tiltEnabled),
+        maxTiltDeg: num(m.maxTiltDeg, 0, 45, DEFAULT_CURSOR_MOTION.maxTiltDeg),
+        pressEnabled: Boolean(m.pressEnabled),
+        pressDepth: num(m.pressDepth, 0, 0.5, DEFAULT_CURSOR_MOTION.pressDepth),
+        hideWhenIdle: Boolean(m.hideWhenIdle),
+        idleDelayMs: num(m.idleDelayMs, 0, 60000, DEFAULT_CURSOR_MOTION.idleDelayMs)
+      };
+      if (JSON.stringify(next) !== JSON.stringify(this.motion)) {
+        this.motion = next;
+        this.motionTrack = null;
+      }
     }
     if (this.filterDirty) {
       this.rebuildFilteredMousePoints();
       this.filterDirty = false;
+      this.motionTrack = null;
     }
   }
 
-  /** Build a centred, zero-phase trajectory before Catmull-Rom interpolation. */
+  public getMotionSettings(): CursorMotionSettings {
+    return { ...this.motion };
+  }
+
+  /**
+   * Build a centred, zero-phase trajectory before Catmull-Rom interpolation.
+   *
+   * Adaptive: where the cursor moves fast it is smoothed lightly (sigma from the
+   * Smoothing setting), where it is slow or still it is averaged over a much wider
+   * window, so hand tremor and sensor jitter never reach the drawn cursor while real
+   * moves keep their shape. Both passes are centred, so neither adds lag.
+   */
   private rebuildFilteredMousePoints(): void {
     if (this.mousePoints.length === 0 || this.smoothing <= 0) {
       this.filteredMousePoints = this.mousePoints.map((point) => ({ ...point }));
@@ -109,57 +205,71 @@ export class CursorSplineEngine {
     }
 
     const maxCoordinate = this.mousePoints.reduce((max, point) => Math.max(max, Math.abs(point.x), Math.abs(point.y)), 0);
-    const coordinateScale = maxCoordinate <= 1.01 ? 1 / 1920 : 1;
-    const deadband = 2 * coordinateScale;
-    const sigmaMs = 18 + this.smoothing * 55;
-    const radiusMs = sigmaMs * 3;
-    const filtered: MousePoint[] = [];
+    const pxPerUnit = maxCoordinate <= 1.01 ? 1920 : 1;
     const points = this.mousePoints;
+    const narrowSigma = 18 + this.smoothing * 55;
+    const wideSigma = Math.max(150, narrowSigma * 3);
 
-    // Telemetry timestamps are whole milliseconds, so the Gaussian weight of a
-    // candidate is a lookup by its integer distance. (A fractional distance
-    // falls back to the exact formula, so the result never differs.)
-    const weightAt = new Float64Array(Math.floor(radiusMs) + 1);
-    for (let d = 0; d < weightAt.length; d++) weightAt[d] = Math.exp(-0.5 * (d / sigmaMs) ** 2);
+    // Gaussian pass. The points are sorted by time, so the window [t - radius,
+    // t + radius] only ever slides forward: O(N * window).
+    const pass = (sigmaMs: number) => {
+      const radiusMs = sigmaMs * 3;
+      const weightAt = new Float64Array(Math.floor(radiusMs) + 1);
+      for (let d = 0; d < weightAt.length; d++) weightAt[d] = Math.exp(-0.5 * (d / sigmaMs) ** 2);
+      const xs = new Float64Array(points.length);
+      const ys = new Float64Array(points.length);
+      let windowStart = 0;
+      for (let i = 0; i < points.length; i++) {
+        const point = points[i];
+        while (windowStart < i && point.t - points[windowStart].t > radiusMs) windowStart++;
+        let weightSum = 0;
+        let x = 0;
+        let y = 0;
+        for (let j = windowStart; j < points.length; j++) {
+          const candidate = points[j];
+          const distance = Math.abs(candidate.t - point.t);
+          if (distance > radiusMs) {
+            if (candidate.t > point.t) break;
+            continue;
+          }
+          const weight = Number.isInteger(distance) ? weightAt[distance] : Math.exp(-0.5 * (distance / sigmaMs) ** 2);
+          weightSum += weight;
+          x += candidate.x * weight;
+          y += candidate.y * weight;
+        }
+        xs[i] = weightSum > 0 ? x / weightSum : point.x;
+        ys[i] = weightSum > 0 ? y / weightSum : point.y;
+      }
+      return { xs, ys };
+    };
 
-    // The points are sorted by time, so the window [t - radius, t + radius] only
-    // ever slides forward: each point looks at the ~2*radius/dt samples around
-    // it (about 55 at 120 Hz), never at the whole recording. O(N).
-    let windowStart = 0;
+    const narrow = pass(narrowSigma);
+    const mid = pass(narrowSigma * 1.6);
+    const wide = pass(wideSigma);
+    // Speed bands (px/s): still/slow -> wide, medium -> mid, fast -> narrow, blended smoothly.
+    const SLOW = 60;
+    const MEDIUM = 300;
+    const FAST = 900;
+    const smooth = (v: number) => { const c = Math.max(0, Math.min(1, v)); return c * c * (3 - 2 * c); };
+    const filtered: MousePoint[] = [];
     for (let i = 0; i < points.length; i++) {
-      const point = points[i];
-      while (windowStart < i && point.t - points[windowStart].t > radiusMs) windowStart++;
-      let weightSum = 0;
-      let x = 0;
-      let y = 0;
-      for (let j = windowStart; j < points.length; j++) {
-        const candidate = points[j];
-        const distance = Math.abs(candidate.t - point.t);
-        if (distance > radiusMs) {
-          if (candidate.t > point.t) break;
-          continue;
-        }
-        const weight = Number.isInteger(distance) ? weightAt[distance] : Math.exp(-0.5 * (distance / sigmaMs) ** 2);
-        weightSum += weight;
-        x += candidate.x * weight;
-        y += candidate.y * weight;
+      const a = Math.max(0, i - 1);
+      const b = Math.min(points.length - 1, i + 1);
+      const dt = Math.max(1, points[b].t - points[a].t) / 1000;
+      const speed = Math.hypot(wide.xs[b] - wide.xs[a], wide.ys[b] - wide.ys[a]) * pxPerUnit / dt;
+      let x: number;
+      let y: number;
+      if (speed < MEDIUM) {
+        const w = smooth((speed - SLOW) / (MEDIUM - SLOW));
+        x = wide.xs[i] + (mid.xs[i] - wide.xs[i]) * w;
+        y = wide.ys[i] + (mid.ys[i] - wide.ys[i]) * w;
+      } else {
+        const w = smooth((speed - MEDIUM) / (FAST - MEDIUM));
+        x = mid.xs[i] + (narrow.xs[i] - mid.xs[i]) * w;
+        y = mid.ys[i] + (narrow.ys[i] - mid.ys[i]) * w;
       }
-      const previous = filtered[i - 1];
-      let nextX = weightSum > 0 ? x / weightSum : point.x;
-      let nextY = weightSum > 0 ? y / weightSum : point.y;
-      if (previous) {
-        const dt = Math.max(1, point.t - this.mousePoints[i - 1].t);
-        const rawDistance = Math.hypot(point.x - this.mousePoints[i - 1].x, point.y - this.mousePoints[i - 1].y);
-        const filteredDistance = Math.hypot(nextX - previous.x, nextY - previous.y);
-        if (filteredDistance < deadband && rawDistance / dt * 1000 < 120 * coordinateScale) {
-          nextX = previous.x;
-          nextY = previous.y;
-        }
-      }
-      filtered.push({ ...point, x: nextX, y: nextY });
+      filtered.push({ ...points[i], x, y });
     }
-    if (filtered.length > 0) filtered[0] = { ...this.mousePoints[0] };
-    if (filtered.length > 1) filtered[filtered.length - 1] = { ...this.mousePoints[this.mousePoints.length - 1] };
     this.filteredMousePoints = filtered;
   }
 
@@ -175,9 +285,10 @@ export class CursorSplineEngine {
   }
 
   public getCursorOpacityAt(timeMs: number): number {
-    if (this.activityTimestamps.length === 0) {
+    if (!this.motion.hideWhenIdle || this.activityTimestamps.length === 0) {
       return 1.0;
     }
+    const delay = this.motion.idleDelayMs;
 
     let low = 0;
     let high = this.activityTimestamps.length - 1;
@@ -200,18 +311,134 @@ export class CursorSplineEngine {
       idleMs = Math.max(0, timeMs - lastActivity);
     }
 
-    if (idleMs <= CURSOR_IDLE_TIMEOUT_MS) {
+    // Any real movement shows the cursor at once; stillness fades it out after the delay.
+    if (idleMs <= delay) {
       return 1.0;
     }
-    if (idleMs >= CURSOR_IDLE_TIMEOUT_MS + CURSOR_IDLE_FADE_MS) {
+    if (idleMs >= delay + CURSOR_IDLE_FADE_MS) {
       return 0.0;
     }
 
-    const progress = (idleMs - CURSOR_IDLE_TIMEOUT_MS) / CURSOR_IDLE_FADE_MS;
+    const progress = (idleMs - delay) / CURSOR_IDLE_FADE_MS;
     return 0.5 * (1 + Math.cos(Math.PI * progress));
   }
 
+  /**
+   * The DRAWN cursor: the tracked path chased by the sway spring (it lags the real
+   * path slightly, so movements smaller than the spring's response never show),
+   * pinned onto a click as it lands.
+   */
   public getCursorAt(timeMs: number): InterpolatedCursor {
+    const tracked = this.getTrackedCursorAt(timeMs);
+    const track = this.ensureMotionTrack();
+    if (!track || !Number.isFinite(timeMs)) return tracked;
+    const f = (timeMs - track.t0) / SPRING_STEP_MS;
+    if (f <= 0 || f >= track.steps) return tracked;
+    const i = Math.floor(f);
+    const r = f - i;
+    const read = (a: Float64Array) => a[i] + (a[i + 1] - a[i]) * r;
+    const pinned = this.pinToClick(timeMs, read(track.x), read(track.y));
+    const vx = read(track.vx);
+    const vy = read(track.vy);
+    return { ...tracked, x: pinned.x, y: pinned.y, vx, vy, speed: Math.hypot(vx, vy) };
+  }
+
+  /** Lean of the drawn cursor in degrees (0 when tilt is off). */
+  public getTiltAt(timeMs: number): number {
+    return this.readMotion(timeMs, 'tilt');
+  }
+
+  private readMotion(timeMs: number, channel: 'tilt' | 'press'): number {
+    const track = this.ensureMotionTrack();
+    if (!track || !Number.isFinite(timeMs)) return 0;
+    const f = (timeMs - track.t0) / SPRING_STEP_MS;
+    if (f <= 0 || f >= track.steps) return 0;
+    const i = Math.floor(f);
+    const a = track[channel];
+    return a[i] + (a[i + 1] - a[i]) * (f - i);
+  }
+
+  /**
+   * Is the button down at this time (press events; a bare click counts briefly)?
+   * Must be asked with times that never go backwards (the track build).
+   */
+  private buildPressedLookup(): (t: number) => boolean {
+    const intervals: Array<[number, number]> = [];
+    const presses = this.pressEvents.filter((p) => Number.isFinite(p.t));
+    if (presses.length > 0) {
+      let down: number | null = null;
+      for (const p of presses) {
+        if (p.type === 'down') { if (down === null) down = p.t; }
+        else if (down !== null) { intervals.push([down, Math.max(p.t, down + 1)]); down = null; }
+      }
+      if (down !== null) intervals.push([down, down + 200]);
+    } else {
+      for (const c of this.clicks) {
+        if (Number.isFinite(c.t)) intervals.push([c.t - CLICK_PRESS_BEFORE_MS, c.t + CLICK_PRESS_AFTER_MS]);
+      }
+    }
+    intervals.sort((a, b) => a[0] - b[0]);
+    let i = 0;
+    return (t) => {
+      while (i < intervals.length && intervals[i][1] <= t) i++;
+      for (let j = i; j < intervals.length && intervals[j][0] <= t; j++) {
+        if (t < intervals[j][1]) return true;
+      }
+      return false;
+    };
+  }
+
+  private ensureMotionTrack() {
+    if (this.motionTrack) return this.motionTrack;
+    if (this.mousePoints.length === 0) return null;
+    const m = this.motion;
+    const t0 = this.mousePoints[0].t;
+    const t1 = this.mousePoints[this.mousePoints.length - 1].t + CURSOR_SETTLE_MS;
+    const steps = Math.max(1, Math.ceil((t1 - t0) / SPRING_STEP_MS));
+    const x = new Float64Array(steps + 1);
+    const y = new Float64Array(steps + 1);
+    const vx = new Float64Array(steps + 1);
+    const vy = new Float64Array(steps + 1);
+    const tilt = new Float64Array(steps + 1);
+    const press = new Float64Array(steps + 1);
+
+    const k = CURSOR_TIGHT_STIFFNESS + (CURSOR_LOOSE_STIFFNESS - CURSOR_TIGHT_STIFFNESS) * (m.sway / 100);
+    const start = this.getTrackedCursorAt(t0);
+    const sx = createSpring(k, dampingFor(k), start.x);
+    const sy = createSpring(k, dampingFor(k), start.y);
+    const st = createSpring(CURSOR_TILT_STIFFNESS, dampingFor(CURSOR_TILT_STIFFNESS), 0);
+    const sp = createSpring(CURSOR_PRESS_STIFFNESS, dampingFor(CURSOR_PRESS_STIFFNESS, CURSOR_PRESS_DAMPING_RATIO), 0);
+    const pxPerUnit = this.mousePoints.every((p) => Math.abs(p.x) <= 1.01 && Math.abs(p.y) <= 1.01) ? 1920 : 1;
+    const pressed = this.buildPressedLookup();
+    const dt = SPRING_STEP_MS / 1000;
+
+    for (let s = 0; s <= steps; s++) {
+      const t = t0 + s * SPRING_STEP_MS;
+      const target = this.getTrackedCursorAt(t);
+      // A cut is a jump of the playhead: the cursor is there at once, it does not fly across.
+      if (this.cutRanges.some((range) => t >= range.startTime && t <= range.endTime + 80)) {
+        sx.snap(target.x);
+        sy.snap(target.y);
+      }
+      x[s] = sx.value;
+      y[s] = sy.value;
+      vx[s] = sx.velocity;
+      vy[s] = sy.velocity;
+      tilt[s] = st.value;
+      press[s] = sp.value;
+      sx.step(target.x, dt);
+      sy.step(target.y, dt);
+      // Velocity-driven lean: speed to the right leans right, clamped to the user's angle.
+      const lean = m.tiltEnabled ? Math.max(-m.maxTiltDeg, Math.min(m.maxTiltDeg, sx.velocity * pxPerUnit * CURSOR_TILT_GAIN)) : 0;
+      st.step(lean, dt);
+      sp.step(m.pressEnabled && pressed(t) ? m.pressDepth : 0, dt);
+    }
+    this.motionTrack = { t0, steps, x, y, vx, vy, tilt, press };
+    return this.motionTrack;
+  }
+
+  /** The tracked (filtered, unsprung) cursor path: what the drawn cursor and the camera chase. */
+  public getTrackedCursorAt(timeMs: number): InterpolatedCursor {
     const opacity = this.getCursorOpacityAt(timeMs);
 
     if (this.mousePoints.length === 0) {
@@ -332,12 +559,17 @@ export class CursorSplineEngine {
     return this.clicks;
   }
 
+  /**
+   * The cursor position for the camera to follow, or null when the recording has no
+   * cursor samples (getCursorAt then reports (0,0), which is not a real position).
+   */
+  public getCameraCursorAt(timeMs: number): InterpolatedCursor | null {
+    return this.mousePoints.length > 0 ? this.getTrackedCursorAt(timeMs) : null;
+  }
+
+  /** Scale of the drawn cursor from the press spring (1 = not pressed; slightly above 1 on the release overshoot). */
   public getPressScaleAt(timeMs: number): number {
-    const latestDown = [...this.pressEvents].reverse().find((event) => event.t <= timeMs && event.type === 'down');
-    const latestUp = [...this.pressEvents].reverse().find((event) => event.t <= timeMs && event.type === 'up');
-    if (latestDown && (!latestUp || latestDown.t > latestUp.t)) return 0.85;
-    const latestClick = [...this.clicks].reverse().find((click) => click.t <= timeMs && timeMs - click.t <= 140);
-    return latestClick ? getPressScale((timeMs - latestClick.t) / 140) : 1;
+    return 1 - this.readMotion(timeMs, 'press');
   }
 
   public getTrailAt(timeMs: number, maxSamples = 4, outputFps = 60): InterpolatedCursor[] {
@@ -446,9 +678,11 @@ export class CursorSplineEngine {
       ctx.restore();
     }
 
-    // 3. Render High-Resolution Vector Cursor
+    // 3. Render High-Resolution Vector Cursor (screen space: its size never follows the zoom)
     ctx.translate(screenX, screenY);
-    if (pressScale < 0.999) {
+    const tiltDeg = this.getTiltAt(currentTimeMs);
+    if (Math.abs(tiltDeg) > 0.01) ctx.rotate((tiltDeg * Math.PI) / 180); // leans about its hotspot
+    if (pressScale < 0.985) {
       ctx.beginPath();
       ctx.arc(0, 0, 18 * cursorScale * outputScale, 0, Math.PI * 2);
       ctx.strokeStyle = theme === 'neon-glow' ? 'rgba(192, 132, 252, 0.30)' : 'rgba(255, 255, 255, 0.18)';

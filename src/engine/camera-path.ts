@@ -1,40 +1,43 @@
 import type { ZoomPill } from '../types/telemetry';
 import type { CameraState } from './spring-physics';
+import { createSpring, dampingFor, SPRING_STEP_MS } from './spring';
 
 /**
  * Deterministic camera schedule.
  *
- * The camera is NOT simulated while rendering. `buildCameraPath` turns the zoom
- * pills (and, for Dead-Zone Smart Pan, the smoothed cursor path) into a
- * schedule once; `path.at(t)` is then a pure function of time. The preview, the
- * MP4 export and the GIF export all evaluate the same schedule, so scrubbing is
- * instant and every output shows the identical camera at the identical time.
- *
- * Behaviours:
- *   idle (1.0x) -> zoom-in -> hold with dead-zone pan -> zoom-out (to 1.0x)
- *   and, between two pills that follow each other closely, a direct move that
- *   dips the scale when the targets are a medium distance apart (camera hop).
+ * `targetAt(t)` is where the camera WANTS to be: the active zoom's depth (ramped in
+ * and out over its transition), its focus interpolated between the shot's click
+ * keyframes and, with Follow Cursor on, pushed so the cursor stays in the view.
+ * `at(t)` is that target chased by stateful springs (zoomScale, focusX, focusY,
+ * tilt). The springs are stepped ONCE, at a fixed 120 Hz, over the timeline when
+ * the path is built, and read by time afterwards: the preview, scrubbing, the MP4
+ * and the GIF export all show the identical camera at the identical time, and a
+ * seek lands on exactly what playback shows there.
  */
 
-/** Front-loaded ease-out: zoom-ins launch crisply and settle softly. */
+/** Front-loaded ease-out (kept for callers that ease their own UI motion). */
 export const CAMERA_EASE: readonly [number, number, number, number] = [0.22, 1, 0.36, 1];
-/** Length of a camera move when a pill does not set its own. */
-export const DEFAULT_TRANSITION_MS = 450;
-/** A move may take at most this share of a (short) pill. */
+/** Camera speed presets: how long a zoom ramps in / out. */
+export const ZOOM_SPEEDS = [
+  { label: 'Rapid', ms: 250 },
+  { label: 'Quick', ms: 400 },
+  { label: 'Default', ms: 600 },
+  { label: 'Slow', ms: 900 }
+] as const;
+/** Length of a zoom ramp when a pill does not set its own ("Default"). */
+export const DEFAULT_TRANSITION_MS = 600;
+/** A ramp may take at most this share of a (short) pill. */
 export const TRANSITION_MAX_FRACTION = 0.35;
 /** Pills closer than this follow each other without a trip back to 1.0x. */
 export const CHAIN_GAP_MS = 800;
-/** The still region of the zoomed view, as a share of the view's width/height. */
+/** Follow Cursor keeps the cursor inside this share of the zoomed view (its central box). */
 export const DEAD_ZONE_FRACTION = 0.5;
-/** Camera hop: only for targets this far apart (normalized). */
-export const HOP_MIN_DISTANCE = 0.25;
-export const HOP_MAX_DISTANCE = 0.55;
-export const HOP_MIN_SCALE = 1.25;
-export const HOP_DIP_FACTOR = 0.72;
-
-const PAN_STEP_MS = 1000 / 120;
-/** Natural frequency of the pan follow (rad/s): critically damped, settles in ~0.5 s. */
-const PAN_OMEGA = 9;
+/** Spring stiffness of the zoom depth: critically damped, follows its ramp ~80 ms behind. */
+export const ZOOM_SPRING_STIFFNESS = 625;
+/** Spring stiffness of the focus (pan): critically damped, a little calmer than the zoom. */
+export const FOCUS_SPRING_STIFFNESS = 400;
+/** After the last zoom the springs run this long more, then the camera is at rest. */
+const SETTLE_MS = 2500;
 
 /** CSS cubic-bezier(x1, y1, x2, y2) as a function progress -> eased progress. */
 export function cubicBezier(x1: number, y1: number, x2: number, y2: number): (p: number) => number {
@@ -71,24 +74,38 @@ export function cubicBezier(x1: number, y1: number, x2: number, y2: number): (p:
   };
 }
 
-const ease = cubicBezier(...CAMERA_EASE);
-
 export interface CursorSample {
   x: number;
   y: number;
 }
 
 export interface CameraPathOptions {
-  /** ON = Dead-Zone Smart Pan, OFF = fixed focus only. Default ON. */
+  /** ON = the camera also keeps the cursor inside the zoomed view. Default ON. */
   followCursor?: boolean;
   /** The SMOOTHED cursor position at a time (normalized 0..1; legacy pixels are divided by the viewport). */
   cursorAt?: (timeMs: number) => CursorSample | null | undefined;
   viewportWidth?: number;
   viewportHeight?: number;
+  /**
+   * Share of the source's width / height the output window shows at 1.0x
+   * (cameraViewFraction). Default 1 x 1 (Fit). Smart-fill shows less on one axis.
+   */
+  viewFraction?: { x: number; y: number };
+}
+
+export interface CameraTarget {
+  scale: number;
+  x: number;
+  y: number;
+  tiltX: number;
+  tiltY: number;
 }
 
 export interface CameraPath {
+  /** The sprung camera at a time: what is rendered. */
   at(timeMs: number): CameraState;
+  /** Where the camera wants to be at a time, before the springs. */
+  targetAt(timeMs: number): CameraTarget;
 }
 
 const NEUTRAL: CameraState = { x: 0.5, y: 0.5, scale: 1, tiltX: 0, tiltY: 0 };
@@ -96,100 +113,28 @@ const NEUTRAL: CameraState = { x: 0.5, y: 0.5, scale: 1, tiltX: 0, tiltY: 0 };
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
-/** Keeps the cropped view inside the frame: no empty space at the edges. */
-function clampCenter(v: number, scale: number): number {
-  const half = 0.5 / Math.max(1, scale);
+/**
+ * Keeps the cropped view inside the frame: no empty space at the edges. `fraction` is the
+ * share of the source the window shows at 1.0x on this axis, so the view's half-size is
+ * `0.5 * fraction / scale` and a clamped target is always inside the view.
+ */
+function clampCenter(v: number, scale: number, fraction = 1): number {
+  const half = (0.5 * fraction) / Math.max(1, scale);
   return Math.max(half, Math.min(1 - half, v));
 }
 
-interface PanTrack {
-  at(timeMs: number): { x: number; y: number };
+function sanitizeFraction(v: number | undefined): number {
+  return Number.isFinite(v) && (v as number) > 0 ? Math.min(1, v as number) : 1;
 }
 
 interface Zoom {
   start: number;
   end: number;
-  transition: number;
+  ramp: number;
   scale: number;
-  targetX: number;
-  targetY: number;
+  keyframes: Array<{ t: number; x: number; y: number }>;
   tiltX: number;
   tiltY: number;
-  pan: PanTrack;
-}
-
-/**
- * Dead-Zone Smart Pan for one zoom, precomputed over the smoothed cursor path.
- *
- * `focus` is where the camera WANTS to look. It only moves when the cursor
- * leaves the central DEAD_ZONE_FRACTION of the zoomed view (around the focus),
- * and then only by the distance needed to put the cursor back on the box edge.
- * The camera follows `focus` with a critically damped spring, so a still cursor
- * means a perfectly still camera and a push past the boundary is a smooth pan.
- * Sampled at 120 Hz into a table: reading it is a pure function of time.
- */
-function buildPanTrack(
-  zoom: Pick<Zoom, 'start' | 'end' | 'scale' | 'targetX' | 'targetY'>,
-  follow: boolean,
-  cursorAt: CameraPathOptions['cursorAt'],
-  viewportWidth: number,
-  viewportHeight: number
-): PanTrack {
-  const startX = clampCenter(zoom.targetX, zoom.scale);
-  const startY = clampCenter(zoom.targetY, zoom.scale);
-  if (!follow || !cursorAt) {
-    const fixed = { x: startX, y: startY };
-    return { at: () => fixed };
-  }
-
-  const half = 0.5 / Math.max(1, zoom.scale);
-  const safe = DEAD_ZONE_FRACTION * half;
-  const steps = Math.max(1, Math.ceil((zoom.end - zoom.start) / PAN_STEP_MS));
-  const xs = new Float64Array(steps + 2);
-  const ys = new Float64Array(steps + 2);
-
-  let focusX = startX;
-  let focusY = startY;
-  let camX = startX;
-  let camY = startY;
-  let velX = 0;
-  let velY = 0;
-  const dt = PAN_STEP_MS / 1000;
-
-  for (let i = 0; i <= steps + 1; i++) {
-    const t = zoom.start + i * PAN_STEP_MS;
-    const raw = cursorAt(t);
-    if (raw && Number.isFinite(raw.x) && Number.isFinite(raw.y)) {
-      const px = clamp01(raw.x <= 1 ? raw.x : raw.x / viewportWidth);
-      const py = clamp01(raw.y <= 1 ? raw.y : raw.y / viewportHeight);
-      const dx = px - focusX;
-      const dy = py - focusY;
-      if (dx > safe) focusX = px - safe; else if (dx < -safe) focusX = px + safe;
-      if (dy > safe) focusY = py - safe; else if (dy < -safe) focusY = py + safe;
-      focusX = Math.max(half, Math.min(1 - half, focusX));
-      focusY = Math.max(half, Math.min(1 - half, focusY));
-    }
-    xs[i] = camX;
-    ys[i] = camY;
-    // Critically damped spring toward the focus (semi-implicit Euler, fixed step).
-    velX += (-2 * PAN_OMEGA * velX - PAN_OMEGA * PAN_OMEGA * (camX - focusX)) * dt;
-    velY += (-2 * PAN_OMEGA * velY - PAN_OMEGA * PAN_OMEGA * (camY - focusY)) * dt;
-    camX += velX * dt;
-    camY += velY * dt;
-    // The spring only approaches its focus asymptotically: once it is within 2e-5 (a
-    // fraction of a pixel) and has stopped, it IS there. A still cursor means a still camera.
-    if (Math.abs(camX - focusX) < 2e-5 && Math.abs(velX) < 1e-3) { camX = focusX; velX = 0; }
-    if (Math.abs(camY - focusY) < 2e-5 && Math.abs(velY) < 1e-3) { camY = focusY; velY = 0; }
-  }
-
-  return {
-    at(timeMs: number) {
-      const f = Math.max(0, Math.min(steps, (timeMs - zoom.start) / PAN_STEP_MS));
-      const i = Math.floor(f);
-      const r = f - i;
-      return { x: lerp(xs[i], xs[i + 1], r), y: lerp(ys[i], ys[i + 1], r) };
-    }
-  };
 }
 
 /** Cleans the pills into non-overlapping, time-ordered zooms. */
@@ -209,118 +154,149 @@ function normalizeZooms(pills: ZoomPill[]): Array<{ pill: ZoomPill; start: numbe
   return out;
 }
 
+/** The focus of a zoom at a time: its keyframes, linearly interpolated (held before the first / after the last). */
+function focusOf(z: Zoom, t: number): { x: number; y: number } {
+  const k = z.keyframes;
+  if (t <= k[0].t) return { x: k[0].x, y: k[0].y };
+  const last = k[k.length - 1];
+  if (t >= last.t) return { x: last.x, y: last.y };
+  let i = 0;
+  while (i < k.length - 2 && k[i + 1].t <= t) i++;
+  const a = k[i];
+  const b = k[i + 1];
+  const p = b.t > a.t ? (t - a.t) / (b.t - a.t) : 1;
+  return { x: lerp(a.x, b.x, p), y: lerp(a.y, b.y, p) };
+}
+
 export function buildCameraPath(pills: ZoomPill[], options: CameraPathOptions = {}): CameraPath {
-  const follow = options.followCursor !== false;
+  const follow = options.followCursor !== false && typeof options.cursorAt === 'function';
   const vw = options.viewportWidth && options.viewportWidth > 0 ? options.viewportWidth : 1920;
   const vh = options.viewportHeight && options.viewportHeight > 0 ? options.viewportHeight : 1080;
+  const view = { x: sanitizeFraction(options.viewFraction?.x), y: sanitizeFraction(options.viewFraction?.y) };
 
   const zooms: Zoom[] = normalizeZooms(pills).map(({ pill, start, end }) => {
     const duration = end - start;
     const requested = Number.isFinite(pill.transitionDuration) && (pill.transitionDuration as number) > 0
       ? (pill.transitionDuration as number)
       : DEFAULT_TRANSITION_MS;
-    const scale = Math.max(1, Number.isFinite(pill.targetScale) ? pill.targetScale : 1);
-    const zoom = {
+    const tx = Number.isFinite(pill.targetX) ? clamp01(pill.targetX) : 0.5;
+    const ty = Number.isFinite(pill.targetY) ? clamp01(pill.targetY) : 0.5;
+    const keyframes = (pill.keyframes || [])
+      .filter((k) => k && Number.isFinite(k.t) && Number.isFinite(k.x) && Number.isFinite(k.y))
+      .map((k) => ({ t: k.t, x: clamp01(k.x), y: clamp01(k.y) }))
+      .sort((a, b) => a.t - b.t);
+    return {
       start,
       end,
-      transition: Math.max(1, Math.min(requested, duration * TRANSITION_MAX_FRACTION)),
-      scale,
-      targetX: Number.isFinite(pill.targetX) ? pill.targetX : 0.5,
-      targetY: Number.isFinite(pill.targetY) ? pill.targetY : 0.5,
+      ramp: Math.max(1, Math.min(requested, duration * TRANSITION_MAX_FRACTION)),
+      scale: Math.max(1, Number.isFinite(pill.targetScale) ? pill.targetScale : 1),
+      keyframes: keyframes.length > 0 ? keyframes : [{ t: start, x: tx, y: ty }],
       tiltX: pill.tiltX || 0,
       tiltY: pill.tiltY || 0
     };
-    return { ...zoom, pan: buildPanTrack(zoom, follow, options.cursorAt, vw, vh) };
   });
 
-  if (zooms.length === 0) return { at: () => ({ ...NEUTRAL }) };
+  if (zooms.length === 0) {
+    return { at: () => ({ ...NEUTRAL }), targetAt: () => ({ ...NEUTRAL }) };
+  }
 
   const starts = zooms.map((z) => z.start);
   const chained = (a: Zoom, b: Zoom) => b.start - a.end <= CHAIN_GAP_MS;
 
-  const finish = (x: number, y: number, scale: number, tiltX: number, tiltY: number): CameraState => ({
-    x: clampCenter(x, scale),
-    y: clampCenter(y, scale),
-    scale,
-    tiltX,
-    tiltY
-  });
-
-  const holdState = (z: Zoom, t: number): CameraState => {
-    const c = z.pan.at(t);
-    return finish(c.x, c.y, z.scale, z.tiltX, z.tiltY);
+  /** Follow Cursor: push the focus just enough that the cursor stays in the zoom's central box. */
+  const followed = (z: Zoom, t: number, f: { x: number; y: number }) => {
+    if (!follow) return f;
+    const raw = options.cursorAt!(t);
+    if (!raw || !Number.isFinite(raw.x) || !Number.isFinite(raw.y)) return f;
+    const cx = clamp01(raw.x <= 1 ? raw.x : raw.x / vw);
+    const cy = clamp01(raw.y <= 1 ? raw.y : raw.y / vh);
+    const safeX = (DEAD_ZONE_FRACTION * 0.5 * view.x) / z.scale;
+    const safeY = (DEAD_ZONE_FRACTION * 0.5 * view.y) / z.scale;
+    return {
+      x: Math.max(cx - safeX, Math.min(cx + safeX, f.x)),
+      y: Math.max(cy - safeY, Math.min(cy + safeY, f.y))
+    };
   };
 
-  const enterState = (z: Zoom, t: number): CameraState => {
-    const e = ease((t - z.start) / z.transition);
-    const c = z.pan.at(t);
-    return finish(lerp(0.5, c.x, e), lerp(0.5, c.y, e), lerp(1, z.scale, e), z.tiltX * e, z.tiltY * e);
-  };
-
-  const exitState = (z: Zoom, t: number): CameraState => {
-    const e = ease((t - (z.end - z.transition)) / z.transition);
-    const c = z.pan.at(t);
-    return finish(lerp(c.x, 0.5, e), lerp(c.y, 0.5, e), lerp(z.scale, 1, e), lerp(z.tiltX, 0, e), lerp(z.tiltY, 0, e));
-  };
-
-  /** Length of the direct move from zoom a to zoom b, starting where a ends. */
-  const chainLength = (a: Zoom, b: Zoom) => Math.max(b.transition, b.start - a.end);
-
-  const chainState = (a: Zoom, b: Zoom, t: number): CameraState => {
-    const p = clamp01((t - a.end) / chainLength(a, b));
-    const e = ease(p);
-    const from = a.pan.at(a.end);
-    const to = b.pan.at(t);
-    let scale = lerp(a.scale, b.scale, e);
-    const distance = Math.hypot(b.targetX - a.targetX, b.targetY - a.targetY);
-    if (distance >= HOP_MIN_DISTANCE && distance <= HOP_MAX_DISTANCE) {
-      // Camera hop: pull back while panning, then settle into the next zoom.
-      const dip = Math.max(HOP_MIN_SCALE, Math.min(a.scale, b.scale) * HOP_DIP_FACTOR);
-      const depth = lerp(a.scale, b.scale, ease(0.5)) - dip;
-      scale -= depth * Math.sin(Math.PI * p) ** 2;
+  const targetAt = (t: number): CameraTarget => {
+    if (!Number.isFinite(t)) return { ...NEUTRAL };
+    // Last zoom that has started.
+    let lo = 0;
+    let hi = zooms.length - 1;
+    let i = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (starts[mid] <= t) { i = mid; lo = mid + 1; } else { hi = mid - 1; }
     }
-    return finish(
-      lerp(from.x, to.x, e),
-      lerp(from.y, to.y, e),
-      scale,
-      lerp(a.tiltX, b.tiltX, e),
-      lerp(a.tiltY, b.tiltY, e)
-    );
-  };
-
-  const insideZoom = (i: number, t: number): CameraState => {
+    if (i < 0) return { ...NEUTRAL };
     const z = zooms[i];
     const prev = i > 0 ? zooms[i - 1] : null;
     const next = i < zooms.length - 1 ? zooms[i + 1] : null;
-    if (prev && chained(prev, z)) {
-      if (t < prev.end + chainLength(prev, z)) return chainState(prev, z, t);
-    } else if (t < z.start + z.transition) {
-      return enterState(z, t);
+    if (t <= z.end) {
+      // Linear ramps; a zoom that follows another closely takes over without zooming out.
+      const wIn = prev && chained(prev, z) ? 1 : clamp01((t - z.start) / z.ramp);
+      const wOut = next && chained(z, next) ? 1 : clamp01((z.end - t) / z.ramp);
+      const w = Math.min(wIn, wOut);
+      const f = followed(z, t, focusOf(z, t));
+      return { scale: 1 + (z.scale - 1) * w, x: f.x, y: f.y, tiltX: z.tiltX * w, tiltY: z.tiltY * w };
     }
-    if (!(next && chained(z, next)) && t > z.end - z.transition) return exitState(z, t);
-    return holdState(z, t);
+    if (next && chained(z, next)) {
+      // Short gap between two zooms: hold the zoom and pan straight across.
+      const p = clamp01((t - z.end) / Math.max(1, next.start - z.end));
+      const a = focusOf(z, z.end);
+      const b = focusOf(next, next.start);
+      return {
+        scale: lerp(z.scale, next.scale, p),
+        x: lerp(a.x, b.x, p),
+        y: lerp(a.y, b.y, p),
+        tiltX: lerp(z.tiltX, next.tiltX, p),
+        tiltY: lerp(z.tiltY, next.tiltY, p)
+      };
+    }
+    return { ...NEUTRAL };
   };
 
+  // Step the springs once, at a fixed rate, over the whole camera timeline.
+  const t0 = zooms[0].start;
+  const tEnd = Math.max(...zooms.map((z) => z.end)) + SETTLE_MS;
+  const steps = Math.max(1, Math.ceil((tEnd - t0) / SPRING_STEP_MS));
+  const table = Array.from({ length: 5 }, () => new Float64Array(steps + 1));
+  const springs = [
+    createSpring(ZOOM_SPRING_STIFFNESS, dampingFor(ZOOM_SPRING_STIFFNESS), NEUTRAL.scale),
+    createSpring(FOCUS_SPRING_STIFFNESS, dampingFor(FOCUS_SPRING_STIFFNESS), NEUTRAL.x),
+    createSpring(FOCUS_SPRING_STIFFNESS, dampingFor(FOCUS_SPRING_STIFFNESS), NEUTRAL.y),
+    createSpring(ZOOM_SPRING_STIFFNESS, dampingFor(ZOOM_SPRING_STIFFNESS), 0),
+    createSpring(ZOOM_SPRING_STIFFNESS, dampingFor(ZOOM_SPRING_STIFFNESS), 0)
+  ];
+  const dt = SPRING_STEP_MS / 1000;
+  for (let s = 0; s <= steps; s++) {
+    const target = targetAt(t0 + s * SPRING_STEP_MS);
+    const goals = [target.scale, target.x, target.y, target.tiltX, target.tiltY];
+    for (let c = 0; c < 5; c++) {
+      table[c][s] = springs[c].value;
+      springs[c].step(goals[c], dt);
+      // A spring only approaches its target asymptotically: within a fraction of a
+      // pixel and at rest, it IS there. A still target means a perfectly still camera.
+      if (Math.abs(springs[c].value - goals[c]) < 2e-5 && Math.abs(springs[c].velocity) < 1e-3) springs[c].snap(goals[c]);
+    }
+  }
+
   return {
+    targetAt,
     at(timeMs: number): CameraState {
-      if (!Number.isFinite(timeMs)) return { ...NEUTRAL };
-      // Last zoom that has started.
-      let lo = 0;
-      let hi = zooms.length - 1;
-      let i = -1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (starts[mid] <= timeMs) { i = mid; lo = mid + 1; } else { hi = mid - 1; }
-      }
-      if (i < 0) {
-        // Before the first zoom, or inside the move into the first one when it chains from nothing: idle.
-        return { ...NEUTRAL };
-      }
-      const z = zooms[i];
-      if (timeMs <= z.end) return insideZoom(i, timeMs);
-      const next = zooms[i + 1];
-      if (next && chained(z, next) && timeMs < z.end + chainLength(z, next)) return chainState(z, next, timeMs);
-      return { ...NEUTRAL };
+      if (!Number.isFinite(timeMs) || timeMs <= t0 || timeMs >= tEnd) return { ...NEUTRAL };
+      const f = Math.min(steps, (timeMs - t0) / SPRING_STEP_MS);
+      const i = Math.min(steps - 1, Math.floor(f));
+      const r = f - i;
+      const read = (c: number) => lerp(table[c][i], table[c][i + 1], r);
+      const scale = Math.max(1, read(0));
+      return {
+        x: clampCenter(read(1), scale, view.x),
+        y: clampCenter(read(2), scale, view.y),
+        scale,
+        tiltX: read(3),
+        tiltY: read(4)
+      };
     }
   };
 }

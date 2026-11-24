@@ -2,11 +2,6 @@ node_modules/
 dist/
 .DS_Store
 *.local
-.playwright-extension-profile/
-tests/run-audit.mjs
-tests/artifacts/
-coverage/
-test-results/
 
 # Binaries and generated artifacts (never commit)
 ffmpeg.exe
@@ -16,24 +11,6 @@ ffprobe.exe
 *.webm
 *.gif
 *.zip
-test-results/
-playwright-report/
-coverage/
-tests/artifacts/
-tests/**/artifacts/
-.playwright-extension-profile/
 *.log
-tests/legacy/run-*.mjs
-tests/strict-exports/
 .agents/
-tests/fixtures/*.wav
-tests/fixtures/*.webm
-!tests/fixtures/tier1-c2.webm
-!tests/fixtures/c2-mic-audio.webm
-tests/fixtures/audio/*.wav
-tests/round4/out/
-tests/verify/out/
-tests/e2e/out/
 
-# Tier-1 harness bundle: generated from src/ by npm run build:tier1-harness (never commit a stale copy)
-tests/fixtures/tier1-harness.bundle.js

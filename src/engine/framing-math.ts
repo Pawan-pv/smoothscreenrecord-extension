@@ -95,6 +95,22 @@ function isPortraitOrSquare(aspect: AspectRatioType): boolean {
   return aspect === '9:16' || aspect === '4:5' || aspect === '1:1';
 }
 
+/**
+ * The visible sub-rectangle of a srcW x srcH source at this zoom, centred on the focus
+ * (fx, fy, normalised 0..1) and CLAMPED inside the source: the rect is moved, never
+ * shrunk, so the focus point is always inside it.
+ */
+export function cropRect(zoom: number, fx: number, fy: number, srcW: number, srcH: number): { x: number; y: number; w: number; h: number } {
+  const z = Math.max(1, Number.isFinite(zoom) ? zoom : 1);
+  const w = srcW / z;
+  const h = srcH / z;
+  const cx = Number.isFinite(fx) ? fx : 0.5;
+  const cy = Number.isFinite(fy) ? fy : 0.5;
+  const x = Math.max(0, Math.min(srcW - w, cx * srcW - w / 2));
+  const y = Math.max(0, Math.min(srcH - h, cy * srcH - h / 2));
+  return { x, y, w, h };
+}
+
 export function computeFrameLayout(options: FrameLayoutOptions): FrameLayout {
   const canvasW = Math.max(2, options.canvasW);
   const canvasH = Math.max(2, options.canvasH);
@@ -123,10 +139,23 @@ export function computeFrameLayout(options: FrameLayoutOptions): FrameLayout {
   }
 
   const cameraScale = Math.max(1, options.cameraScale ?? 1);
-  const halfViewX = 0.5 / cameraScale;
-  const halfViewY = 0.5 / cameraScale;
-  const clampedCameraX = Math.max(halfViewX, Math.min(1 - halfViewX, options.cameraX ?? 0.5));
-  const clampedCameraY = Math.max(halfViewY, Math.min(1 - halfViewY, options.cameraY ?? 0.5));
+  // The camera (x, y) is a point of the SOURCE (0..1). When the window shows only part of
+  // the source (smart-fill), that part follows the camera and stays inside the source;
+  // the camera is then clamped inside it. Fit shows the whole source: nothing moves.
+  const focusX = (options.cameraX ?? 0.5) * sourceW;
+  const focusY = (options.cameraY ?? 0.5) * sourceH;
+  sourceCrop.x = Math.max(0, Math.min(sourceW - sourceCrop.width, focusX - sourceCrop.width / 2));
+  sourceCrop.y = Math.max(0, Math.min(sourceH - sourceCrop.height, focusY - sourceCrop.height / 2));
+  // The zoomed view inside the window's part of the source, clamped (moved, never shrunk).
+  const view = cropRect(
+    cameraScale,
+    (focusX - sourceCrop.x) / sourceCrop.width,
+    (focusY - sourceCrop.y) / sourceCrop.height,
+    1,
+    1
+  );
+  const clampedCameraX = view.x + view.w / 2;
+  const clampedCameraY = view.y + view.h / 2;
 
   return {
     canvasW,
@@ -141,6 +170,28 @@ export function computeFrameLayout(options: FrameLayoutOptions): FrameLayout {
     introScale: Math.max(0.01, options.introScale ?? 1),
     canvasScale: Math.min(canvasW, canvasH) / 1080,
     framingMode
+  };
+}
+
+/**
+ * Share of the source's width and height the window shows at 1.0x: 1 x 1 in Fit, less
+ * on one axis in smart-fill. The camera path clamps against it, so a zoom target stays
+ * inside the part of the source that is really on screen.
+ */
+export function cameraViewFraction(options: Pick<FrameLayoutOptions, 'canvasW' | 'canvasH' | 'sourceW' | 'sourceH' | 'aspectRatio' | 'framingMode' | 'framePadding'>): { x: number; y: number } {
+  const padding = Number.isFinite(options.framePadding) ? options.framePadding : undefined;
+  const layout = computeFrameLayout({ ...options, framePadding: padding });
+  return {
+    x: Math.min(1, layout.sourceCrop.width / layout.sourceW),
+    y: Math.min(1, layout.sourceCrop.height / layout.sourceH)
+  };
+}
+
+/** Pixel size of a video / canvas source, with the renderer's fallback. */
+export function mediaSourceSize(source: HTMLVideoElement | HTMLCanvasElement | null | undefined): { width: number; height: number } {
+  return {
+    width: (source as HTMLVideoElement)?.videoWidth || (source as HTMLCanvasElement)?.width || 1920,
+    height: (source as HTMLVideoElement)?.videoHeight || (source as HTMLCanvasElement)?.height || 1080
   };
 }
 

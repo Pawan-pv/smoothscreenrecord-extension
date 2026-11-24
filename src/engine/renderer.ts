@@ -649,11 +649,17 @@ export class StudioRenderer {
           cursorTheme || 'mac-obsidian',
           cursorScale || 1.0,
           Math.max(0.75, Math.min(2, Math.max(canvasW, canvasH) / 1920)),
-          cursorEngine.getTrailAt(currentTimeMs, 4, options.outputFps || 60).map((trailCursor) => ({
-            x: (windowW * 0.5) + (Math.max(0.01, Math.min(0.99, trailCursor.x)) - clampedCamX) * windowW * S,
-            y: (windowH * 0.5) + (Math.max(0.01, Math.min(0.99, trailCursor.y)) - clampedCamY) * windowH * S,
-            opacity: trailCursor.opacity
-          }))
+          // The trail goes through the same projection as the cursor (smart-fill crops the source).
+          cursorEngine.getTrailAt(currentTimeMs, 4, options.outputFps || 60).map((trailCursor) => {
+            const trailX = trailCursor.x <= 1.0 ? trailCursor.x : (metaW > 0 ? trailCursor.x / metaW : trailCursor.x);
+            const trailY = trailCursor.y <= 1.0 ? trailCursor.y : (metaH > 0 ? trailCursor.y / metaH : trailCursor.y);
+            const projected = projectSourceToCanvas(
+              Math.max(0.01, Math.min(0.99, trailX)),
+              Math.max(0.01, Math.min(0.99, trailY)),
+              frameLayout
+            );
+            return { x: projected.x - windowX, y: projected.y - windowY, opacity: trailCursor.opacity };
+          })
         );
       }
 

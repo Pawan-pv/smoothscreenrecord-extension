@@ -2,9 +2,7 @@
 
 Operating rules for every human and every agent working on this repository.
 
-`TEST_PLAN.md` describes the journeys, `BUGS.md` is the bug log, `PROGRESS.md` is the
-running log of the QA loop, `HUMAN_CHECKS.md` lists everything a person must verify
-by hand, and `CODE_REVIEW.md` holds the static-review leads.
+Testing is manual: the owner tests every change by hand in Chrome. There is no automated test suite.
 
 ---
 
@@ -73,50 +71,18 @@ no remote assets, no fonts, no CDNs. `$0 server cost, $0 API cost`. Any `fetch`/
 ## 3. Rules for everybody
 
 ### 3.1 The product code lives in `src/`
-`src/` is the product. Tests live in `tests/`. A fix that only changes a test is not a fix.
+`src/` is the product. There are no automated tests and no test hooks: do not add a test suite,
+test files, mocks or `window.__*` hooks.
 
-### 3.2 Test hooks stay behind `import.meta.env.DEV`
-Every `window.__*` hook in `src/` must be inside `if (import.meta.env.DEV)`.
-After a build, `grep dist/ -r "__captureEngine\|__setSilences\|__startLiveRecording\|__lastLoadedTelemetry\|__smoothstudio_pills\|__HardwareMp4Exporter"` must return **0 hits**.
+### 3.2 Manual testing by the owner
+The owner verifies every change by hand with the built extension in real Chrome. After a change,
+say exactly what to try (which page, which clicks, what should happen) so it can be checked by hand.
 
-### 3.3 No mocks in e2e content journeys
-The e2e journeys drive the **real** built extension (`dist/`) in **real** Chrome, with real
-clicks, real typing and a real capture surface. `tests/mocks/chrome-mock.ts` and the
-`--use-fake-device-for-media-stream` flag may only ever replace the **microphone**, never
-the picture. No test may assert on a value the product invented.
-
-### 3.4 Never weaken an existing test or fixture
-If an existing test or fixture looks wrong, **stop and say so** — do not edit it. The
-orchestrator decides. A test change needs its own commit and its own justification.
-
-### 3.5 Evidence, not assertions
-A bug report carries the raw output (test runner output, `ffprobe` output, file sizes,
-pixel measurements). "It looked wrong" is not evidence.
-
-### 3.6 Smallest correct change
+### 3.3 Smallest correct change
 No unrelated refactors, no drive-by formatting, no dependency bumps in a bug fix.
 
-### 3.7 Build must stay clean
+### 3.4 Build must stay clean
 `npm run build` (tsc + vite build) must exit 0 and `npx tsc --noEmit` must be clean.
-
-### 3.8 Screen-capture safety: the capture marker
-Screen-capture journeys record the REAL screen, so they can capture whatever else is on the
-desktop. Therefore:
-- **Every page of the test browser shows a unique marker**: coloured strips along the left,
-  right and bottom edges in a colour chosen at random per run, plus a random token in large
-  text (`tests/e2e/helpers/marker.ts`, installed by `launchApp` / `launchExtension` on every
-  page: fixtures, editor, popup).
-- **After capture, the frames are checked for the marker BEFORE anything views or saves
-  them.** The check decodes every frame in memory (ffmpeg via stdin, nothing written)
-  — `guardRecording()`, called by `recordPage`, `recordSession`, `saveRawRecording`,
-  `writeScratch` and the M1 journey's own save points.
-- **If the marker is missing, the wrong content was captured**: the bytes are dropped
-  without being viewed or written, `tests/e2e/out/MARKER_ABORT.json` (counts only, no frame
-  data) aborts the run — every later journey refuses to launch — and it is reported.
-  **Never view or save frames that do not contain the marker.** Delete the abort file only
-  after the desktop is free again.
-- **Before each screen test the test browser window is brought to the foreground and
-  maximised** (`raise-window.ps1 -Mode top`, called at launch and again before each recording).
 
 ---
 
@@ -130,17 +96,8 @@ src/                       product code
   engine/                  recorder, renderer, exporters, audio
   popup/                   popup UI
   offscreen/               offscreen document worker
-tests/
-  unit/                    vitest unit tests
-  e2e/                     Playwright real-browser journeys (tests/e2e/*.spec.ts)
-  e2e/helpers/harness.ts   shared real-browser harness
-  e2e/helpers/extension.ts shared harness (newer style)
-  e2e/helpers/session.ts   shared harness (newer style)
-  fixtures/                local fixture pages + the test WAV
-  e2e/out/                 generated artifacts (git-ignored)
-  legacy/ round4/ verify/ older scripts, not part of the suite
-test-results/              Playwright output (git-ignored)
-.locks/                    cross-process locks (screen.lock)
+plugins/                   Vite plugins (dev extension reloader)
+public/                    icons and static files copied into dist/
 ```
 
 ---
@@ -150,24 +107,8 @@ test-results/              Playwright output (git-ignored)
 ```bash
 npm install                 # or: bun install
 npm run build               # tsc + vite build  -> dist/
-npm run build:test          # same but NODE_ENV=development
-npm test                    # vitest run (tests/unit)
-npm run test:e2e            # playwright (tests/e2e) - needs dist/ built
-npx playwright test tests/e2e/j9-privacy.spec.ts     # one journey
-npx playwright test --reporter=list --workers=1     # the whole suite
+npm run dev:extension       # rebuild on change and reload the extension
 ```
 
-`ffmpeg.exe` / `ffprobe.exe` live in the repo root (git-ignored) and are used by the
-harness to inspect the recorded media.
-
----
-
-## 6. Concurrency
-
-- At most **3** fixers at a time, at most **2** browser instances at a time.
-- `[SERIAL]` journeys take `.locks/screen.lock` for the whole run and must never run
-  next to another browser test.
-- Every run uses its **own** temporary Chrome profile (the harness creates one) and its
-  own port (the fixture server binds port 0 and reports the real port).
-- Fixers work in their own git worktree (`../ss-wt-<ID>`, branch `fix/<ID>`); they never
-  touch `main` and never push.
+Load `dist/` with "Load unpacked" at `chrome://extensions`, then reload the extension and
+refresh the page you record after every build.

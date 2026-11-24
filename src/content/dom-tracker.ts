@@ -9,7 +9,8 @@ import {
   ScrollEvent,
   VisibilityEvent,
   CursorStyle,
-  PressEvent
+  PressEvent,
+  ScreenLayout
 } from '../types/telemetry';
 import {
   applyAutoRedaction,
@@ -40,9 +41,25 @@ let pressEvents: PressEvent[] = [];
 let lastMouseX = 0;
 let lastMouseY = 0;
 let lastCursor: CursorStyle = 'default';
+/** performance.now() of the last cursor-style read (elementFromPoint is not free). */
 let lastSampleTime = 0;
 let lastScrollTime = 0;
-const SAMPLE_INTERVAL_MS = 8.33; // ~120Hz sampling
+/**
+ * The cursor path is sampled on a FIXED clock (every 16 ms, 60 Hz), not on every
+ * mousemove: raw mousemove is bursty and its rate depends on the device. Mousemove
+ * only updates the latest pointer position; the sampler records it.
+ */
+const SAMPLE_INTERVAL_MS = 16;
+const CURSOR_STYLE_READ_MS = 50;
+/** No sample before the first real pointer position (never a made-up (0,0)). */
+let hasPointer = false;
+/**
+ * The pointer is over an iframe this page cannot see into: its moves arrive later,
+ * forwarded by the frame (ingestFrameEvents). The sampler pauses meanwhile so it
+ * never records the stale position in between.
+ */
+let pointerInOpaqueFrame = false;
+let sampleTimer: ReturnType<typeof setInterval> | null = null;
 
 export function normalizeCursorStyle(raw: string): CursorStyle {
   const value = (raw || '').trim().toLowerCase();
@@ -252,57 +269,75 @@ export function isInteractiveTarget(target: Element | null, cursor: CursorStyle)
   return false;
 }
 
-// Track mouse position and cursor style at up to 120Hz
-function handleMouseMove(e: MouseEvent) {
-  if (!isRecording) return;
-  if ((e.target as HTMLElement)?.closest('#smoothstudio-floating-hud')) return;
+// ---------------------------------------------------------------------------
+// Where the page sits on the screen. Screen coordinates (event.screenX/Y) are
+// shared by every frame of the window, so they place a click made inside a
+// cross-origin iframe on the page, and a page click on a window / entire-screen
+// recording.
+// ---------------------------------------------------------------------------
+const CHROME_ZOOM_LEVELS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
+/** Browser zoom of the page: screen pixels per page CSS pixel, measured from real pointer motion. */
+let pageZoom = 1;
+/** Last pointer event of the top page: screen position and top-viewport position of the same instant. */
+let lastPointer: { screenX: number; screenY: number; rawX: number; rawY: number } | null = null;
+let zoomRef: { screenX: number; screenY: number; rawX: number; rawY: number; at: number } | null = null;
 
-  const coords = normalizeCaptureCoordinates(e);
-  lastMouseX = coords.x;
-  lastMouseY = coords.y;
-
+function notePointer(e: MouseEvent, rawX: number, rawY: number): void {
+  if (!Number.isFinite(e.screenX) || !Number.isFinite(e.screenY) || !Number.isFinite(rawX) || !Number.isFinite(rawY)) return;
   const now = performance.now();
-  if (now - lastSampleTime >= SAMPLE_INTERVAL_MS) {
-    lastSampleTime = now;
+  lastPointer = { screenX: e.screenX, screenY: e.screenY, rawX, rawY };
+  if (!zoomRef || now - zoomRef.at > 400) {
+    zoomRef = { ...lastPointer, at: now };
+    return;
+  }
+  const dx = rawX - zoomRef.rawX;
+  const dy = rawY - zoomRef.rawY;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < 60) return;
+  const ratio = Math.abs(dx) >= Math.abs(dy) ? (e.screenX - zoomRef.screenX) / dx : (e.screenY - zoomRef.screenY) / dy;
+  if (ratio > 0.2 && ratio < 6) {
+    pageZoom = CHROME_ZOOM_LEVELS.reduce((best, z) => (Math.abs(z - ratio) < Math.abs(best - ratio) ? z : best), 1);
+  }
+  zoomRef = { ...lastPointer, at: now };
+}
 
-    const cursorStyle = readCursorStyle(e);
-    lastCursor = cursorStyle;
+/** Top-left corner of the top page's viewport on the screen. */
+function viewportScreenOrigin(): { left: number; top: number } {
+  if (lastPointer) {
+    return { left: lastPointer.screenX - lastPointer.rawX * pageZoom, top: lastPointer.screenY - lastPointer.rawY * pageZoom };
+  }
+  // No pointer event yet: the viewport sits at the bottom of the window, centred between its side borders.
+  const side = Math.max(0, (window.outerWidth - window.innerWidth * pageZoom) / 2);
+  return {
+    left: window.screenX + side,
+    top: window.screenY + Math.max(0, window.outerHeight - window.innerHeight * pageZoom - side)
+  };
+}
 
-    mousePoints.push({
-      t: Math.round(getRelativeTime()),
-      x: coords.x,
-      y: coords.y,
-      c: cursorStyle
-    });
+function currentScreenLayout(): ScreenLayout | undefined {
+  try {
+    const origin = viewportScreenOrigin();
+    const s = window.screen as Screen & { availLeft?: number; availTop?: number };
+    const layout: ScreenLayout = {
+      viewportLeft: origin.left,
+      viewportTop: origin.top,
+      zoom: pageZoom,
+      screenLeft: Number(s.availLeft) || 0,
+      screenTop: Number(s.availTop) || 0,
+      screenWidth: s.width,
+      screenHeight: s.height,
+      windowLeft: window.screenX,
+      windowTop: window.screenY,
+      windowWidth: window.outerWidth,
+      windowHeight: window.outerHeight
+    };
+    return Object.values(layout).every((v) => Number.isFinite(v)) ? layout : undefined;
+  } catch {
+    return undefined;
   }
 }
 
-function handlePress(e: MouseEvent, type: 'down' | 'up') {
-  if (!isRecording) return;
-  if ((e.target as HTMLElement)?.closest('#smoothstudio-floating-hud')) return;
-  const coords = normalizeCaptureCoordinates(e);
-  lastCursor = readCursorStyle(e);
-  mousePoints.push({ t: Math.round(getRelativeTime()), x: coords.x, y: coords.y, c: lastCursor });
-  pressEvents.push({ t: Math.round(getRelativeTime()), type, x: coords.x, y: coords.y, button: e.button });
-}
-
-function handlePointerDown(e: PointerEvent) { handlePress(e, 'down'); }
-function handlePointerUp(e: PointerEvent) { handlePress(e, 'up'); }
-function handleMouseDown(e: MouseEvent) {
-  if (typeof PointerEvent !== 'undefined') return;
-  handlePress(e, 'down');
-}
-function handleMouseUp(e: MouseEvent) {
-  if (typeof PointerEvent !== 'undefined') return;
-  handlePress(e, 'up');
-}
-
-// Track clicks with smart bounding box lock
-function handleClick(e: MouseEvent) {
-  if (!isRecording) return;
-  if ((e.target as HTMLElement)?.closest('#smoothstudio-floating-hud')) return;
-
-  const coords = normalizeCaptureCoordinates(e);
+/** What a click hit, without its position. The privacy shield's rules apply. */
+function clickDetails(e: MouseEvent, cursor: CursorStyle): Pick<ClickEvent, 'button' | 'targetTag' | 'targetText' | 'targetLabel' | 'clickCount' | 'interactive'> {
   const target = e.target as Element | null;
   const tag = target?.tagName.toLowerCase() || 'unknown';
   const fullText = (target?.textContent?.trim() || '').slice(0, 2000);
@@ -325,19 +360,106 @@ function handleClick(e: MouseEvent) {
   if (sensitive) {
     text = '[hidden input]';
   }
+  return {
+    button: e.button,
+    targetTag: tag,
+    targetText: text,
+    targetLabel: sensitive ? '[hidden input]' : describeElement(target as HTMLElement | null),
+    clickCount: Math.max(1, Math.round(e.detail || 1)),
+    interactive: isInteractiveTarget(target, cursor)
+  };
+}
+
+// Mousemove only updates the latest pointer position (and, throttled, its CSS cursor).
+function handleMouseMove(e: MouseEvent) {
+  if (!isRecording) return;
+  if ((e.target as HTMLElement)?.closest('#smoothstudio-floating-hud')) return;
+
+  const coords = normalizeCaptureCoordinates(e);
+  notePointer(e, coords.rawX, coords.rawY);
+  lastMouseX = coords.x;
+  lastMouseY = coords.y;
+  hasPointer = true;
+  pointerInOpaqueFrame = isOpaqueIframe(e.target);
+
+  const now = performance.now();
+  if (now - lastSampleTime >= CURSOR_STYLE_READ_MS) {
+    lastSampleTime = now;
+    lastCursor = readCursorStyle(e);
+  }
+}
+
+/** An <iframe> whose document this page cannot reach (cross-origin). */
+function isOpaqueIframe(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLIFrameElement)) return false;
+  try {
+    return !target.contentDocument;
+  } catch {
+    return true;
+  }
+}
+
+/** Fixed-rate sampler: records the latest pointer position every SAMPLE_INTERVAL_MS. */
+function sampleCursor() {
+  if (!isRecording || !hasPointer || !originEpoch || pointerInOpaqueFrame) return;
+  const t = Math.round(getRelativeTime());
+  if (t < 0) return;
+  const last = mousePoints[mousePoints.length - 1];
+  if (last && last.t >= t) return;
+  mousePoints.push({ t, x: lastMouseX, y: lastMouseY, c: lastCursor });
+}
+
+function startCursorSampler() {
+  if (sampleTimer !== null) clearInterval(sampleTimer);
+  sampleTimer = setInterval(sampleCursor, SAMPLE_INTERVAL_MS);
+}
+
+function stopCursorSampler() {
+  if (sampleTimer !== null) clearInterval(sampleTimer);
+  sampleTimer = null;
+}
+
+function handlePress(e: MouseEvent, type: 'down' | 'up') {
+  if (!isRecording) return;
+  if ((e.target as HTMLElement)?.closest('#smoothstudio-floating-hud')) return;
+  const coords = normalizeCaptureCoordinates(e);
+  notePointer(e, coords.rawX, coords.rawY);
+  lastMouseX = coords.x;
+  lastMouseY = coords.y;
+  hasPointer = true;
+  lastCursor = readCursorStyle(e);
+  // A press is an exact event: its position is recorded at its own time, besides the fixed-rate samples.
+  mousePoints.push({ t: Math.round(getRelativeTime()), x: coords.x, y: coords.y, c: lastCursor });
+  pressEvents.push({ t: Math.round(getRelativeTime()), type, x: coords.x, y: coords.y, button: e.button });
+}
+
+function handlePointerDown(e: PointerEvent) { handlePress(e, 'down'); }
+function handlePointerUp(e: PointerEvent) { handlePress(e, 'up'); }
+function handleMouseDown(e: MouseEvent) {
+  if (typeof PointerEvent !== 'undefined') return;
+  handlePress(e, 'down');
+}
+function handleMouseUp(e: MouseEvent) {
+  if (typeof PointerEvent !== 'undefined') return;
+  handlePress(e, 'up');
+}
+
+// Track clicks with smart bounding box lock
+function handleClick(e: MouseEvent) {
+  if (!isRecording) return;
+  if ((e.target as HTMLElement)?.closest('#smoothstudio-floating-hud')) return;
+
+  const coords = normalizeCaptureCoordinates(e);
+  notePointer(e, coords.rawX, coords.rawY);
+  const target = e.target as Element | null;
   const containerBounds = findParentContainer(target, coords.offsetX, coords.offsetY);
 
   clicks.push({
     t: Math.round(getRelativeTime()),
     x: coords.x,
     y: coords.y,
-    button: e.button,
-    targetTag: tag,
-    targetText: text,
-    targetLabel: sensitive ? '[hidden input]' : describeElement(target as HTMLElement | null),
-    containerBounds,
-    clickCount: Math.max(1, Math.round(e.detail || 1)),
-    interactive: isInteractiveTarget(target, lastCursor)
+    ...clickDetails(e, lastCursor),
+    containerBounds
   });
 
   // Ensure an immediate mouse point is also captured on click
@@ -347,6 +469,179 @@ function handleClick(e: MouseEvent) {
     y: coords.y,
     c: lastCursor
   });
+}
+
+// ---------------------------------------------------------------------------
+// Cross-origin iframes (Word for the web, embedded editors, ...). The top page
+// cannot see their events, so the tracker in the iframe hands its pointer
+// events to the service worker, which relays them to the top page. The top page
+// places them on its own viewport via screen coordinates and records them in
+// its ONE telemetry stream.
+// ---------------------------------------------------------------------------
+interface FrameEvent {
+  kind: 'move' | 'down' | 'up' | 'click';
+  /** Wall-clock time of the event (ms since epoch). */
+  epoch: number;
+  screenX: number;
+  screenY: number;
+  c: CursorStyle;
+  button?: number;
+  click?: ReturnType<typeof clickDetails> & {
+    /** The container box, relative to the click point (page CSS pixels). */
+    container?: { dx: number; dy: number; width: number; height: number };
+  };
+}
+
+function insertByTime<T extends { t: number }>(list: T[], item: T): void {
+  let i = list.length;
+  while (i > 0 && list[i - 1].t > item.t) i--;
+  list.splice(i, 0, item);
+}
+
+/** Top page: records the pointer events an iframe handed over. */
+function ingestFrameEvents(events: unknown): void {
+  if (!isRecording || !Array.isArray(events)) return;
+  const vpW = window.innerWidth || document.documentElement?.clientWidth || 1920;
+  const vpH = window.innerHeight || document.documentElement?.clientHeight || 1080;
+  const origin = viewportScreenOrigin();
+  const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+  const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+  for (const ev of events as FrameEvent[]) {
+    if (!ev || !finite(ev.epoch) || !finite(ev.screenX) || !finite(ev.screenY)) continue;
+    const t = Math.round(ev.epoch - originEpoch);
+    if (t < 0) continue;
+    const rawX = (ev.screenX - origin.left) / pageZoom;
+    const rawY = (ev.screenY - origin.top) / pageZoom;
+    const x = clamp01(rawX / vpW);
+    const y = clamp01(rawY / vpH);
+    const c = normalizeCursorStyle(String(ev.c || 'default'));
+    const button = finite(ev.button) ? ev.button : 0;
+
+    if (ev.kind === 'move' || ev.kind === 'down' || ev.kind === 'up') {
+      lastCursor = c;
+      insertByTime(mousePoints, { t, x, y, c });
+      if (ev.kind !== 'move') insertByTime(pressEvents, { t, type: ev.kind, x, y, button });
+      continue;
+    }
+    if (ev.kind !== 'click' || !ev.click) continue;
+    const d = ev.click;
+    const box = d.container;
+    const containerBounds = box && finite(box.dx) && finite(box.dy) && finite(box.width) && finite(box.height)
+      ? { x: rawX + box.dx, y: rawY + box.dy, width: box.width, height: box.height }
+      : undefined;
+    const hidden = d.targetLabel === '[hidden input]';
+    insertByTime(clicks, {
+      t,
+      x,
+      y,
+      button,
+      targetTag: String(d.targetTag || 'unknown').slice(0, 40),
+      targetText: hidden ? '[hidden input]' : (d.targetText ? String(d.targetText).slice(0, 80) : undefined),
+      targetLabel: hidden ? '[hidden input]' : String(d.targetLabel || '').slice(0, 80),
+      containerBounds,
+      clickCount: finite(d.clickCount) ? Math.max(1, Math.round(d.clickCount)) : 1,
+      interactive: d.interactive !== false
+    });
+    insertByTime(mousePoints, { t, x, y, c });
+  }
+}
+
+/** True in an iframe the top page cannot reach: its events are lost unless handed over. */
+function isUnreachableFrame(): boolean {
+  if (typeof window === 'undefined' || window.self === window.top) return false;
+  try {
+    void window.top!.document.documentElement;
+    return false; // same origin: the top page listens to this document itself
+  } catch {
+    return true;
+  }
+}
+
+let frameForwarding = false;
+let frameQueue: FrameEvent[] = [];
+let frameFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let frameLastMoveAt = 0;
+let frameCursor: CursorStyle = 'default';
+const FRAME_MOVE_INTERVAL_MS = 16;
+const FRAME_FLUSH_MS = 50;
+
+function flushFrameEvents(): void {
+  if (frameFlushTimer !== null) {
+    clearTimeout(frameFlushTimer);
+    frameFlushTimer = null;
+  }
+  if (frameQueue.length === 0) return;
+  const events = frameQueue;
+  frameQueue = [];
+  try {
+    chrome.runtime.sendMessage({ type: 'FRAME_TELEMETRY', events }, () => { void chrome.runtime?.lastError; });
+  } catch { /* extension context gone */ }
+}
+
+function queueFrameEvent(ev: FrameEvent, immediately = false): void {
+  frameQueue.push(ev);
+  if (immediately) {
+    flushFrameEvents();
+  } else if (frameFlushTimer === null) {
+    frameFlushTimer = setTimeout(flushFrameEvents, FRAME_FLUSH_MS);
+  }
+}
+
+function frameEvent(e: MouseEvent, kind: FrameEvent['kind']): FrameEvent | null {
+  if (!Number.isFinite(e.screenX) || !Number.isFinite(e.screenY)) return null;
+  return { kind, epoch: epochNow(), screenX: e.screenX, screenY: e.screenY, c: frameCursor };
+}
+
+function handleFrameMouseMove(e: MouseEvent): void {
+  const now = performance.now();
+  if (now - frameLastMoveAt < FRAME_MOVE_INTERVAL_MS) return;
+  frameLastMoveAt = now;
+  frameCursor = readCursorStyle(e);
+  const ev = frameEvent(e, 'move');
+  if (ev) queueFrameEvent(ev);
+}
+
+function handleFramePress(e: PointerEvent): void {
+  frameCursor = readCursorStyle(e);
+  const ev = frameEvent(e, e.type === 'pointerdown' ? 'down' : 'up');
+  if (!ev) return;
+  ev.button = e.button;
+  queueFrameEvent(ev);
+}
+
+function handleFrameClick(e: MouseEvent): void {
+  const ev = frameEvent(e, 'click');
+  if (!ev) return;
+  const box = findParentContainer(e.target as Element | null);
+  ev.button = e.button;
+  ev.click = {
+    ...clickDetails(e, frameCursor),
+    ...(box ? { container: { dx: box.x - e.clientX, dy: box.y - e.clientY, width: box.width, height: box.height } } : {})
+  };
+  queueFrameEvent(ev, true);
+}
+
+function startFrameForwarding(): void {
+  if (frameForwarding || !isUnreachableFrame()) return;
+  frameForwarding = true;
+  frameLastMoveAt = 0;
+  window.addEventListener('mousemove', handleFrameMouseMove, { passive: true, capture: true });
+  window.addEventListener('pointerdown', handleFramePress, { passive: true, capture: true });
+  window.addEventListener('pointerup', handleFramePress, { passive: true, capture: true });
+  window.addEventListener('click', handleFrameClick, { passive: true, capture: true });
+}
+
+function stopFrameForwarding(): void {
+  if (!frameForwarding) return;
+  frameForwarding = false;
+  window.removeEventListener('mousemove', handleFrameMouseMove, { capture: true });
+  window.removeEventListener('pointerdown', handleFramePress, { capture: true });
+  window.removeEventListener('pointerup', handleFramePress, { capture: true });
+  window.removeEventListener('click', handleFrameClick, { capture: true });
+  if (frameFlushTimer !== null) clearTimeout(frameFlushTimer);
+  frameFlushTimer = null;
+  frameQueue = [];
 }
 
 // Track keyboard shortcuts for the 3D HUD (e.g. Cmd+K, Ctrl+C, Enter)
@@ -555,12 +850,14 @@ function takeBatch(): TelemetryBatch {
 }
 
 function pageInfo(withBrandColors: boolean) {
+  const screenLayout = currentScreenLayout();
   return {
     url: window.location.href,
     title: document.title || 'Screen Recording',
     width: window.innerWidth,
     height: window.innerHeight,
     devicePixelRatio: window.devicePixelRatio || 1,
+    ...(screenLayout ? { screenLayout } : {}),
     ...(withBrandColors ? { brandColors: extractBrandColors() } : {})
   };
 }
@@ -908,6 +1205,9 @@ export function startTracking(
   attachSameOriginIframes();
   if (flushTimer !== null) clearInterval(flushTimer);
   flushTimer = setInterval(() => flushTelemetry('interval'), FLUSH_INTERVAL_MS);
+  hasPointer = false;
+  pointerInOpaqueFrame = false;
+  startCursorSampler();
 
   if (options.resume) {
     console.log('[SmoothStudio DOM-Tracker] Tracking resumed after navigation. Session:', nextSessionId);
@@ -955,11 +1255,13 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
     clearInterval(flushTimer);
     flushTimer = null;
   }
+  stopCursorSampler();
   detachSameOriginIframes();
 
   const durationMs = Math.round(getRelativeTime());
   const stoppedSessionId = sessionId;
   sessionId = null;
+  const screenLayout = currentScreenLayout();
 
   const telemetry: TelemetryData = {
     metadata: {
@@ -973,6 +1275,7 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
       devicePixelRatio: window.devicePixelRatio || 1,
       title: document.title || 'Screen Recording',
       url: window.location.href,
+      ...(screenLayout ? { screenLayout } : {}),
       brandColors: extractBrandColors()
     },
     mousePoints,
@@ -1020,10 +1323,32 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage 
       unackedSegments = [];
       sendResponse({ status: 'stopped', data, originEpoch: origin, unacked });
       return true;
+    } else if (message.type === 'FRAME_TELEMETRY') {
+      ingestFrameEvents(message.events);
+      sendResponse({ ok: true });
+      return true;
     } else if (message.type === 'GET_BRAND_COLORS') {
       sendResponse({ brandColors: extractBrandColors() });
       return true;
     }
     return false;
   });
+}
+
+// Cross-origin iframes: hand pointer events to the top page while it records.
+// They never answer a message (the top page does), and never keep telemetry of their own.
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage && isUnreachableFrame() && !(window as any).__smoothstudio_frame_listener_registered) {
+  (window as any).__smoothstudio_frame_listener_registered = true;
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type === 'START_TELEMETRY') startFrameForwarding();
+    else if (message?.type === 'STOP_TELEMETRY') stopFrameForwarding();
+    return false;
+  });
+  // An iframe that loads while its tab is being recorded joins the recording.
+  try {
+    chrome.runtime.sendMessage({ type: 'FRAME_TRACKING_STATUS' }, (response) => {
+      if (chrome.runtime?.lastError) return;
+      if (response?.recording === true) startFrameForwarding();
+    });
+  } catch { /* extension context gone */ }
 }

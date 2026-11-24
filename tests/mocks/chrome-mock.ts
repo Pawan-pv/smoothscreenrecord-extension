@@ -152,6 +152,7 @@ export function createMockChrome() {
     },
     tabs: {
       _tabs: tabsList,
+      onUpdated: new MockChromeEvent(),
       query: vi.fn((queryInfo: any, callback?: (tabs: MockTab[]) => void) => {
         const matched = tabsList.filter((tab) => {
           if (queryInfo.active !== undefined && tab.active !== queryInfo.active) return false;

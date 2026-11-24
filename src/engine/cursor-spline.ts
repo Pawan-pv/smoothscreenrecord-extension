@@ -56,6 +56,12 @@ export const CURSOR_IDLE_EPS_PX = 6;
 export const CURSOR_IDLE_FADE_MS = 200;
 /** After the last sample the cursor springs keep running this long. */
 const CURSOR_SETTLE_MS = 1500;
+/** No sample for this long = the pointer was not on the page: smoothing never bridges it. */
+export const CURSOR_BREAK_MS = 250;
+/** The cursor fades out this fast after the pointer leaves the page. */
+export const CURSOR_LEAVE_FADE_MS = 120;
+/** The smoothing evaluates the recorded path on an even grid of this step (ms). */
+const FILTER_GRID_MS = 4;
 
 export interface CursorSplineOptions {
   smoothing?: number;
@@ -74,13 +80,27 @@ export function getPressScale(progress: number): number {
   return 0.85 + 0.15 * eased;
 }
 
-// Catmull-Rom spline interpolation between 4 points
-function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): number {
-  const v0 = (p2 - p0) * 0.5;
-  const v1 = (p3 - p1) * 0.5;
-  const t2 = t * t;
-  const t3 = t * t2;
-  return (2 * p1 - 2 * p2 + v0 + v1) * t3 + (-3 * p1 + 3 * p2 - 2 * v0 - v1) * t2 + v0 * t + p1;
+/**
+ * Time-aware cubic Hermite between p1 (t1) and p2 (t2). The tangent at each point is
+ * its neighbours' slope PER MILLISECOND (a non-uniform Catmull-Rom), so the speed is
+ * continuous across samples however unevenly they are spaced in time. (A uniform
+ * Catmull-Rom assumes equal spacing: with real event timing it kinked the speed at
+ * every sample, which shows as micro-stutter on a smooth sweep.)
+ */
+function hermiteTime(
+  p0: number, t0: number,
+  p1: number, t1: number,
+  p2: number, t2: number,
+  p3: number, t3: number,
+  s: number
+): number {
+  const h = t2 - t1;
+  if (!(h > 0)) return p1;
+  const m1 = (p2 - p0) / Math.max(1e-6, t2 - t0);
+  const m2 = (p3 - p1) / Math.max(1e-6, t3 - t1);
+  const s2 = s * s;
+  const s3 = s2 * s;
+  return (2 * s3 - 3 * s2 + 1) * p1 + (s3 - 2 * s2 + s) * h * m1 + (-2 * s3 + 3 * s2) * p2 + (s3 - s2) * h * m2;
 }
 
 export class CursorSplineEngine {
@@ -97,6 +117,8 @@ export class CursorSplineEngine {
    * so it is rebuilt only when one of those two changed.
    */
   private filterDirty = true;
+  /** Times at which the pointer came back onto the page (after a leave or a gap): the cursor jumps there. */
+  private reentryTimes: number[] = [];
   private motion: CursorMotionSettings = { ...DEFAULT_CURSOR_MOTION };
   /**
    * The drawn cursor's springs (x, y, velocity, tilt, press), stepped once at a fixed
@@ -113,6 +135,10 @@ export class CursorSplineEngine {
     this.mousePoints = [...mousePoints].sort((a, b) => a.t - b.t);
     this.filterDirty = true;
     this.motionTrack = null;
+    this.reentryTimes = [];
+    for (let i = 1; i < this.mousePoints.length; i++) {
+      if (this.isBreakBefore(i)) this.reentryTimes.push(this.mousePoints[i].t);
+    }
     this.clicks = [...clicks].sort((a, b) => a.t - b.t);
     this.pressEvents = [...pressEvents].sort((a, b) => a.t - b.t);
     this.setOptions(options);
@@ -190,13 +216,27 @@ export class CursorSplineEngine {
     return { ...this.motion };
   }
 
+  /** True when the pointer was off the page between sample i-1 and sample i. */
+  private isBreakBefore(i: number): boolean {
+    const prev = this.mousePoints[i - 1];
+    const curr = this.mousePoints[i];
+    return Boolean(prev && curr) && (prev.l === 1 || curr.t - prev.t > CURSOR_BREAK_MS);
+  }
+
   /**
-   * Build a centred, zero-phase trajectory before Catmull-Rom interpolation.
+   * Build a centred, zero-phase trajectory before the spline.
    *
    * Adaptive: where the cursor moves fast it is smoothed lightly (sigma from the
    * Smoothing setting), where it is slow or still it is averaged over a much wider
    * window, so hand tremor and sensor jitter never reach the drawn cursor while real
-   * moves keep their shape. Both passes are centred, so neither adds lag.
+   * moves keep their shape. Every pass is centred, so none adds lag.
+   *
+   * The average is taken over TIME, not over samples: the recorded path (linear
+   * between samples) is evaluated on an even FILTER_GRID_MS grid inside the window.
+   * Real events are unevenly spaced; averaging the samples themselves leaned towards
+   * wherever they were denser, a random shift on every moving sample (wobble).
+   * A window never reaches across a moment the pointer was off the page: each
+   * on-page stretch is smoothed on its own and held at its ends.
    */
   private rebuildFilteredMousePoints(): void {
     if (this.mousePoints.length === 0 || this.smoothing <= 0) {
@@ -207,38 +247,66 @@ export class CursorSplineEngine {
     const maxCoordinate = this.mousePoints.reduce((max, point) => Math.max(max, Math.abs(point.x), Math.abs(point.y)), 0);
     const pxPerUnit = maxCoordinate <= 1.01 ? 1920 : 1;
     const points = this.mousePoints;
+    const n = points.length;
     const narrowSigma = 18 + this.smoothing * 55;
-    const wideSigma = Math.max(150, narrowSigma * 3);
+    const wideSigma = Math.max(100, narrowSigma * 1.9);
 
-    // Gaussian pass. The points are sorted by time, so the window [t - radius,
-    // t + radius] only ever slides forward: O(N * window).
+    // On-page stretches: [segFirst[i], segLast[i]] is the stretch sample i belongs to.
+    const segFirst = new Int32Array(n);
+    const segLast = new Int32Array(n);
+    let first = 0;
+    for (let i = 0; i <= n; i++) {
+      if (i === n || (i > 0 && this.isBreakBefore(i))) {
+        for (let k = first; k < i; k++) { segFirst[k] = first; segLast[k] = i - 1; }
+        first = i;
+      }
+    }
+
     const pass = (sigmaMs: number) => {
-      const radiusMs = sigmaMs * 3;
-      const weightAt = new Float64Array(Math.floor(radiusMs) + 1);
-      for (let d = 0; d < weightAt.length; d++) weightAt[d] = Math.exp(-0.5 * (d / sigmaMs) ** 2);
-      const xs = new Float64Array(points.length);
-      const ys = new Float64Array(points.length);
-      let windowStart = 0;
-      for (let i = 0; i < points.length; i++) {
-        const point = points[i];
-        while (windowStart < i && point.t - points[windowStart].t > radiusMs) windowStart++;
-        let weightSum = 0;
+      const K = Math.max(1, Math.ceil((sigmaMs * 3) / FILTER_GRID_MS));
+      const weights = new Float64Array(K * 2 + 1);
+      let total = 0;
+      for (let k = -K; k <= K; k++) {
+        const w = Math.exp(-0.5 * ((k * FILTER_GRID_MS) / sigmaMs) ** 2);
+        weights[k + K] = w;
+        total += w;
+      }
+      for (let k = 0; k < weights.length; k++) weights[k] /= total;
+      const xs = new Float64Array(n);
+      const ys = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        const a = segFirst[i];
+        const b = segLast[i];
+        const ti = points[i].t;
+        const startT = ti - K * FILTER_GRID_MS;
+        // j: the last sample of the stretch at or before the window's start.
+        let j = i;
+        while (j > a && points[j].t > startT) j--;
         let x = 0;
         let y = 0;
-        for (let j = windowStart; j < points.length; j++) {
-          const candidate = points[j];
-          const distance = Math.abs(candidate.t - point.t);
-          if (distance > radiusMs) {
-            if (candidate.t > point.t) break;
-            continue;
+        for (let k = -K; k <= K; k++) {
+          const tq = ti + k * FILTER_GRID_MS;
+          let vx: number;
+          let vy: number;
+          if (tq <= points[a].t) {
+            vx = points[a].x; vy = points[a].y;
+          } else if (tq >= points[b].t) {
+            vx = points[b].x; vy = points[b].y;
+          } else {
+            while (j < b && points[j + 1].t <= tq) j++;
+            const p = points[j];
+            const q = points[Math.min(b, j + 1)];
+            const span = q.t - p.t;
+            const r = span > 0 ? (tq - p.t) / span : 0;
+            vx = p.x + (q.x - p.x) * r;
+            vy = p.y + (q.y - p.y) * r;
           }
-          const weight = Number.isInteger(distance) ? weightAt[distance] : Math.exp(-0.5 * (distance / sigmaMs) ** 2);
-          weightSum += weight;
-          x += candidate.x * weight;
-          y += candidate.y * weight;
+          const w = weights[k + K];
+          x += vx * w;
+          y += vy * w;
         }
-        xs[i] = weightSum > 0 ? x / weightSum : point.x;
-        ys[i] = weightSum > 0 ? y / weightSum : point.y;
+        xs[i] = x;
+        ys[i] = y;
       }
       return { xs, ys };
     };
@@ -252,11 +320,11 @@ export class CursorSplineEngine {
     const FAST = 900;
     const smooth = (v: number) => { const c = Math.max(0, Math.min(1, v)); return c * c * (3 - 2 * c); };
     const filtered: MousePoint[] = [];
-    for (let i = 0; i < points.length; i++) {
-      const a = Math.max(0, i - 1);
-      const b = Math.min(points.length - 1, i + 1);
+    for (let i = 0; i < n; i++) {
+      const a = Math.max(segFirst[i], i - 1);
+      const b = Math.min(segLast[i], i + 1);
       const dt = Math.max(1, points[b].t - points[a].t) / 1000;
-      const speed = Math.hypot(wide.xs[b] - wide.xs[a], wide.ys[b] - wide.ys[a]) * pxPerUnit / dt;
+      const speed = a === b ? 0 : Math.hypot(wide.xs[b] - wide.xs[a], wide.ys[b] - wide.ys[a]) * pxPerUnit / dt;
       let x: number;
       let y: number;
       if (speed < MEDIUM) {
@@ -273,6 +341,25 @@ export class CursorSplineEngine {
     this.filteredMousePoints = filtered;
   }
 
+  /**
+   * 0..1: is the pointer on the page at this time? After a leave marker the cursor fades
+   * out over CURSOR_LEAVE_FADE_MS and stays hidden until the next sample (it came back).
+   */
+  private presenceAt(timeMs: number): number {
+    const pts = this.mousePoints;
+    if (pts.length === 0) return 1;
+    let lo = 0;
+    let hi = pts.length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (pts[mid].t <= timeMs) { found = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    if (found < 0 || pts[found].l !== 1) return 1;
+    const since = timeMs - pts[found].t;
+    return Math.max(0, 1 - since / CURSOR_LEAVE_FADE_MS);
+  }
+
   private pinToClick(timeMs: number, x: number, y: number): { x: number; y: number } {
     const click = this.clicks.reduce<ClickEvent | null>((nearest, candidate) => {
       if (Math.abs(candidate.t - timeMs) > 60) return nearest;
@@ -285,6 +372,10 @@ export class CursorSplineEngine {
   }
 
   public getCursorOpacityAt(timeMs: number): number {
+    return this.idleOpacityAt(timeMs) * this.presenceAt(timeMs);
+  }
+
+  private idleOpacityAt(timeMs: number): number {
     if (!this.motion.hideWhenIdle || this.activityTimestamps.length === 0) {
       return 1.0;
     }
@@ -412,9 +503,20 @@ export class CursorSplineEngine {
     const pressed = this.buildPressedLookup();
     const dt = SPRING_STEP_MS / 1000;
 
+    let nextReentry = 0;
     for (let s = 0; s <= steps; s++) {
       const t = t0 + s * SPRING_STEP_MS;
       const target = this.getTrackedCursorAt(t);
+      // The pointer came back onto the page: the cursor is there at once, it does not glide in.
+      let reentered = false;
+      while (nextReentry < this.reentryTimes.length && this.reentryTimes[nextReentry] <= t) {
+        nextReentry++;
+        reentered = true;
+      }
+      if (reentered) {
+        sx.snap(target.x);
+        sy.snap(target.y);
+      }
       // A cut is a jump of the playhead: the cursor is there at once, it does not fly across.
       if (this.cutRanges.some((range) => t >= range.startTime && t <= range.endTime + 80)) {
         sx.snap(target.x);
@@ -522,17 +624,27 @@ export class CursorSplineEngine {
     const t = segmentDuration > 0 ? (timeMs - p1.t) / segmentDuration : 0;
     const clampedT = Math.max(0, Math.min(1, t));
 
-    // Use Catmull-Rom for rapid 120Hz micro-movements (< 120ms), linear blend for pauses to prevent spline overshooting
+    // Off the page (left, or no sample for CURSOR_BREAK_MS): the cursor stays where it was
+    // last seen until it is back, instead of sliding towards where it reappears.
+    const offPage = p1.l === 1 || segmentDuration > CURSOR_BREAK_MS;
+
+    // A time-aware spline for continuous motion; a straight line across a pause (> 120 ms
+    // between samples) so the spline never overshoots into the stillness.
     let x: number;
     let y: number;
-    const linearX = p1.x + (p2.x - p1.x) * clampedT;
-    const linearY = p1.y + (p2.y - p1.y) * clampedT;
-    if (segmentDuration > 120) {
+    const linearX = offPage ? p1.x : p1.x + (p2.x - p1.x) * clampedT;
+    const linearY = offPage ? p1.y : p1.y + (p2.y - p1.y) * clampedT;
+    if (offPage || segmentDuration > 120) {
       x = linearX;
       y = linearY;
     } else {
-      const splineX = catmullRom(p0.x, p1.x, p2.x, p3.x, clampedT);
-      const splineY = catmullRom(p0.y, p1.y, p2.y, p3.y, clampedT);
+      // Neighbours across a pause do not shape this segment: use the segment's own end instead.
+      const q0 = p1.t - p0.t > 120 || i0 === i1 ? p1 : p0;
+      const q3 = p3.t - p2.t > 120 || i3 === i2 ? p2 : p3;
+      const t0 = q0 === p1 ? p1.t - segmentDuration : q0.t;
+      const t3 = q3 === p2 ? p2.t + segmentDuration : q3.t;
+      const splineX = hermiteTime(q0.x, t0, p1.x, p1.t, p2.x, p2.t, q3.x, t3, clampedT);
+      const splineY = hermiteTime(q0.y, t0, p1.y, p1.t, p2.y, p2.t, q3.y, t3, clampedT);
       x = linearX + (splineX - linearX) * this.smoothing;
       y = linearY + (splineY - linearY) * this.smoothing;
     }
@@ -581,6 +693,8 @@ export class CursorSplineEngine {
     for (let i = 1; i <= maxSamples; i++) {
       const sampleTime = timeMs - sampleMs * i;
       if (this.cutRanges.some((range) => sampleTime <= range.endTime + 120 && timeMs >= range.startTime)) return [];
+      // No streak across a jump back onto the page.
+      if (this.reentryTimes.some((r) => r > sampleTime && r <= timeMs)) return trail;
       const sample = this.getCursorAt(sampleTime);
       trail.push({ ...sample, opacity: current.opacity * (1 - i / (maxSamples + 1)) * 0.24 });
     }

@@ -15,15 +15,17 @@ import {
 import { VIBE_PRESETS } from '../engine/renderer';
 import type { CursorMotionSettings } from '../engine/cursor-spline';
 import { GRADIENT_PRESETS, gradientCss } from '../engine/background-painter';
+import { WALLPAPERS, getWallpaperThumbnail } from '../engine/wallpapers';
 
-type BackgroundTab = 'gradient' | 'color' | 'image';
+type BackgroundTab = 'wallpaper' | 'gradient' | 'color' | 'image';
 const BACKGROUND_TABS: ReadonlyArray<readonly [BackgroundTab, string]> = [
+  ['wallpaper', 'Wallpaper'],
   ['gradient', 'Gradient'],
   ['color', 'Color'],
   ['image', 'Image']
 ];
 const tabOf = (spec: BackgroundSpec): BackgroundTab =>
-  spec.kind === 'solid' ? 'color' : spec.kind === 'image' ? 'image' : 'gradient';
+  spec.kind === 'solid' ? 'color' : spec.kind === 'image' ? 'image' : spec.kind === 'gradient' ? 'gradient' : 'wallpaper';
 import {
   Palette,
   Volume2,
@@ -649,7 +651,7 @@ export function VibePresetsPanel({
         </div>
 
         {/* Tabs */}
-        <div className="grid grid-cols-3 gap-1 text-[11px]" role="tablist">
+        <div className="grid grid-cols-4 gap-1 text-[11px]" role="tablist">
           {BACKGROUND_TABS.map(([id, label]) => (
             <button
               key={id}
@@ -665,6 +667,29 @@ export function VibePresetsPanel({
             </button>
           ))}
         </div>
+
+        {backgroundTab === 'wallpaper' && (
+          <div className="grid grid-cols-3 gap-1.5">
+            {WALLPAPERS.map((wp) => {
+              const selected = background.kind === 'wallpaper' && background.id === wp.id;
+              return (
+                <button
+                  key={wp.id}
+                  type="button"
+                  onClick={() => onChangeBackground?.({ kind: 'wallpaper', id: wp.id })}
+                  className={`relative aspect-video rounded-lg overflow-hidden border transition-all ${
+                    selected ? 'border-white ring-1 ring-white/60' : 'border-white/10 hover:border-white/40'
+                  }`}
+                  title={wp.name}
+                  aria-label={`${wp.name} wallpaper`}
+                  aria-pressed={selected}
+                >
+                  <img src={getWallpaperThumbnail(wp.id)} alt="" className="w-full h-full object-cover" draggable={false} />
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {backgroundTab === 'gradient' && (
           <div className="space-y-2">

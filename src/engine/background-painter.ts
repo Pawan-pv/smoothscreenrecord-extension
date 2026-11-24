@@ -1,4 +1,5 @@
 import type { BackgroundLayer } from '../types/telemetry';
+import { drawWallpaper } from './wallpapers';
 
 /**
  * Static backgrounds (solid, image, ...) are painted ONCE per renderer into an
@@ -67,6 +68,7 @@ export function backgroundMode(layer: BackgroundLayer | null | undefined): 'back
   const spec = layer.spec;
   if (spec.kind === 'solid') return spec.color ? 'static' : 'backdrop';
   if (spec.kind === 'gradient') return spec.colors.length > 0 ? 'static' : 'backdrop';
+  if (spec.kind === 'wallpaper') return 'static';
   if (spec.kind === 'image') return layer.image ? 'static' : 'backdrop';
   return 'backdrop';
 }
@@ -122,6 +124,8 @@ export function paintBackground(ctx: CanvasRenderingContext2D, w: number, h: num
     ctx.fillRect(0, 0, w, h);
   } else if (spec.kind === 'gradient') {
     paintGradient(ctx, w, h, spec.colors, spec.angle, spec.shape);
+  } else if (spec.kind === 'wallpaper') {
+    drawWallpaper(ctx, w, h, spec.id);
   } else if (spec.kind === 'image' && layer.image) {
     const size = imageSize(layer.image, w, h);
     const fit = computeCoverFit(size.w, size.h, w, h);

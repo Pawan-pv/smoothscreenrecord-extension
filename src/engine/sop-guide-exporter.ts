@@ -3,8 +3,10 @@ import {
   findNearestSnapshot,
   scheduleObjectUrlRevoke,
   maskIfSensitive,
+  redactUrlForExport,
   BlurOptions
 } from './export-safety';
+import { createExportTimelineFilter, ExportTimelineWindow } from './export-timeline';
 
 interface Snapshot {
   timestamp: number;
@@ -22,7 +24,9 @@ export class SopGuideExporter {
   public static generateMarkdownGuide(
     telemetry: TelemetryData,
     snapshots: Snapshot[] = [],
-    autoBlur: boolean | { blurEmails?: boolean; blurRevenue?: boolean; blurApiKeys?: boolean } = true
+    autoBlur: boolean | { blurEmails?: boolean; blurRevenue?: boolean; blurApiKeys?: boolean } = true,
+    /** What the user kept: steps outside the trim window or inside a cut are left out. */
+    timeline?: ExportTimelineWindow | null
   ): string {
     // `autoBlur` only controls which patterns are redacted. It NEVER blanks out
     // ordinary content: masking is driven by the sensitivity of the value.
@@ -34,9 +38,16 @@ export class SopGuideExporter {
           blurApiKeys: Boolean(autoBlur?.blurApiKeys)
         };
 
-    const { metadata, clicks, keystrokes } = telemetry;
-    const typingSessions: TypingSession[] = telemetry.typingSessions || [];
-    const durationSec = (metadata.durationMs / 1000).toFixed(1);
+    const kept = createExportTimelineFilter(timeline);
+    const { metadata } = telemetry;
+    // Trimmed-out or cut-out actions never reach the guide: not the step, not
+    // its screenshot, not the typed text.
+    const clicks = telemetry.clicks.filter((c) => kept.keeps(c.t));
+    const keystrokes = telemetry.keystrokes.filter((k) => kept.keeps(k.t));
+    const typingSessions: TypingSession[] = (telemetry.typingSessions || []).filter((s) => kept.keeps(s.t));
+    snapshots = snapshots.filter((s) => kept.keeps(s.timestamp));
+    const durationSec = ((kept.exportedDurationMs ?? metadata.durationMs) / 1000).toFixed(1);
+    const safeUrl = redactUrlForExport(metadata.url, blurOptions);
     // QA: the title is page-controlled text too; a revenue figure or an email
     // in the document title must not become the SOP heading.
     const safeTitle = maskIfSensitive(metadata.title, false, blurOptions).text
@@ -48,7 +59,7 @@ export class SopGuideExporter {
     });
 
     let md = `# Standard Operating Procedure (SOP): ${safeTitle}\n\n`;
-    md += `> **Source URL**: [${metadata.url || 'Web Application'}](${metadata.url || '#'})\n`;
+    md += `> **Source URL**: [${safeUrl || 'Web Application'}](${safeUrl || '#'})\n`;
     md += `> **Recorded On**: ${dateStr} | **Duration**: ${durationSec}s | **Actions**: ${clicks.length} clicks, ${keystrokes.length} keystrokes\n\n`;
     md += `---\n\n`;
     md += `## 📋 Overview\n`;
@@ -121,7 +132,8 @@ export class SopGuideExporter {
 
     let stepNumber = 1;
     for (const step of filteredSteps) {
-      const timeStr = (step.t / 1000).toFixed(1) + 's';
+      // Steps are timed against the exported video, which starts at 0:00.
+      const timeStr = (kept.toExportTime(step.t) / 1000).toFixed(1) + 's';
 
       if (step.kind === 'click') {
         const masked = maskIfSensitive(step.text, false, blurOptions);

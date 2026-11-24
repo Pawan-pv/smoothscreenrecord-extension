@@ -56,11 +56,11 @@ describe('Auto-Zoom Polish & Parity (Plan Items 1, 2, 3)', () => {
       }
     });
 
-    it('settles >= 90% of zoom scale when the click lands (at primary.t - 320ms lead-in)', () => {
+    it('settles >= 90% of zoom scale when the click lands (at primary.t - 300ms lead-in)', () => {
       const pills: ZoomPill[] = [
         {
           id: 'click-zoom',
-          startTime: 680, // Click lands at 1000ms -> lead-in 320ms starts at 680ms
+          startTime: 700, // Click lands at 1000ms -> lead-in 300ms starts at 700ms
           endTime: 3500,
           targetX: 0.8,
           targetY: 0.3,
@@ -71,7 +71,7 @@ describe('Auto-Zoom Polish & Parity (Plan Items 1, 2, 3)', () => {
         }
       ];
 
-      // At t = 1000ms (click landing instant, 320ms into 380ms transition)
+      // At t = 1000ms (click landing instant, 300ms into the 450ms front-loaded ease-out)
       const stateAtClick = computeCinematicCameraState(1000, pills, undefined, VIEWPORT_W, VIEWPORT_H, false);
       const totalScaleDelta = 2.0 - 1.0;
       const settledScaleDelta = stateAtClick.scale - 1.0;
@@ -79,7 +79,7 @@ describe('Auto-Zoom Polish & Parity (Plan Items 1, 2, 3)', () => {
 
       // Settlement percentage must be >= 90% as the click lands
       expect(settlementPercent).toBeGreaterThanOrEqual(0.90);
-      expect(settlementPercent).toBeCloseTo(0.969, 2);
+      expect(settlementPercent).toBeCloseTo(0.995, 2);
     });
   });
 
@@ -292,7 +292,7 @@ describe('Auto-Zoom Polish & Parity (Plan Items 1, 2, 3)', () => {
       // Must produce exactly 1 continuous, stable pill instead of 15 overlapping pills
       expect(pills.length).toBe(1);
       expect(pills[0].label).toBe('Typing Focus');
-      expect(pills[0].startTime).toBe(600); // 1000 - 400
+      expect(pills[0].startTime).toBe(650); // 1000 - 350 typing pre-roll
       expect(pills[0].endTime).toBeGreaterThanOrEqual(3000); // Holds past the last character
     });
 
@@ -328,7 +328,7 @@ describe('Auto-Zoom Polish & Parity (Plan Items 1, 2, 3)', () => {
 
       expect(pills.length).toBe(1);
       expect(pills[0].label).toBe('Type "Workspace Search"');
-      expect(pills[0].startTime).toBe(800); // 1200 - 400
+      expect(pills[0].startTime).toBe(850); // 1200 - 350 typing pre-roll
       expect(pills[0].endTime).toBe(3500 + 1800); // 5300
     });
   });

@@ -10,15 +10,30 @@ import {
 } from './snapshot-policy';
 import { CapturedNativeCursor } from '../types/telemetry';
 
+/**
+ * Default for the vector (smooth) cursor, derived from WHAT was captured and
+ * whether there is telemetry to draw it from, not from the track's cursor
+ * setting alone.
+ *
+ * Chromium reports `getSettings().cursor === 'motion'` for tab captures even
+ * when `cursor: 'never'` was requested, so 'motion' says nothing about whether
+ * a native cursor ended up in the picture and must not switch the smooth
+ * cursor off. Only an explicit 'always' does.
+ *
+ * - window / monitor: no page-coordinate relationship, the native cursor is the
+ *   cursor of the recording: off.
+ * - no DOM mouse telemetry: nothing to draw the cursor from: off.
+ * - browser tab with telemetry: on, unless the native cursor is explicitly
+ *   'always' captured. The editor toggle lets the user override either way.
+ */
 export function shouldEnableCustomCursor(
   capturedNativeCursor: CapturedNativeCursor,
   displaySurface: string | undefined,
   hasDomCursorTelemetry: boolean
 ): boolean {
-  if (capturedNativeCursor === 'always' || capturedNativeCursor === 'motion') return false;
-  if (capturedNativeCursor === 'never') return true;
-  if ((displaySurface === 'window' || displaySurface === 'monitor') && !hasDomCursorTelemetry) return false;
-  return true;
+  if (displaySurface === 'window' || displaySurface === 'monitor') return false;
+  if (!hasDomCursorTelemetry) return false;
+  return capturedNativeCursor !== 'always';
 }
 
 /**
@@ -254,10 +269,29 @@ export class ScreenCaptureEngine {
     const vTrack = this.mediaStream.getVideoTracks()[0];
     if (vTrack) {
       this.lastTrackSettings = vTrack.getSettings ? vTrack.getSettings() : null;
+      const displaySurface = (this.lastTrackSettings as any)?.displaySurface;
+      // getDisplayMedia cannot know the selected surface until the picker
+      // resolves. Start with cursor:"never" for clean tab recordings, then
+      // explicitly restore the native cursor for a window/monitor capture.
+      // This keeps the captured cursor aligned with the real screen instead
+      // of drawing a DOM cursor at unrelated page coordinates.
+      if (displaySurface === 'window' || displaySurface === 'monitor') {
+        try {
+          await vTrack.applyConstraints({ cursor: 'always' } as any);
+        } catch (error) {
+          console.warn('[SmoothStudio CaptureEngine] Could not request the native cursor for non-tab capture:', error);
+        }
+        this.lastTrackSettings = vTrack.getSettings ? vTrack.getSettings() : this.lastTrackSettings;
+      }
       const nativeCursor = (this.lastTrackSettings as any)?.cursor;
       this.capturedNativeCursor = nativeCursor === 'never' || nativeCursor === 'motion' || nativeCursor === 'always'
         ? nativeCursor
         : 'unknown';
+      if ((displaySurface === 'window' || displaySurface === 'monitor') && this.capturedNativeCursor === 'unknown') {
+        // Chromium may omit cursor from getSettings even after accepting the
+        // constraint. The request still explicitly selected the native path.
+        this.capturedNativeCursor = 'always';
+      }
       console.log('[SmoothStudio CaptureEngine] Capture track settings:', JSON.stringify(this.lastTrackSettings));
     }
 

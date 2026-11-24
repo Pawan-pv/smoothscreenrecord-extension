@@ -1,4 +1,5 @@
-import { ClickEvent, InputFocusEvent, ZoomPill, BoundingBox, ScrollEvent, TypingSession } from '../types/telemetry';
+import { ClickEvent, InputFocusEvent, ZoomPill, BoundingBox, ScrollEvent, TypingSession, MousePoint, KeystrokeEvent, VisibilityEvent } from '../types/telemetry';
+import { buildCameraPath, CameraPath, DEFAULT_TRANSITION_MS } from './camera-path';
 
 export interface SpringConfig {
   stiffness: number; // Spring tension (e.g. 180)
@@ -121,7 +122,13 @@ export class SpringCameraSolver {
 }
 
 // Analytical Cinematic Camera State Solver
-// Evaluates continuous, deterministic, and silky-smooth camera framing for any timestamp
+// A pure function of time: it evaluates the deterministic schedule built by
+// buildCameraPath (camera-path.ts). The exporters and the preview build the path
+// ONCE per render session with the real smoothed cursor path; this convenience
+// form takes a single cursor position (used as a constant) and remembers the
+// last path it built, so repeated calls with the same pills stay cheap.
+let lastWrapperPath: { pills: ZoomPill[]; key: string; path: CameraPath } | null = null;
+
 export function computeCinematicCameraState(
   timeMs: number,
   pills: ZoomPill[],
@@ -130,147 +137,22 @@ export function computeCinematicCameraState(
   viewportHeight = 1080,
   followCursor = true
 ): CameraState {
-  const TRANSITION_MS = 380; // 380ms smooth spring-like ease (>= 90% settled by 320ms)
-
-  // Ken Perlin's quintic smootherstep curve: 6t^5 - 15t^4 + 10t^3 (zero 1st & 2nd derivative)
-  const smootherStep = (t: number) => {
-    const c = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
-    return c * c * c * (c * (c * 6 - 15) + 10);
-  };
-
-  // Find active pill
-  let activePill: ZoomPill | undefined;
-  let activePillIndex = -1;
-  for (let i = 0; i < pills.length; i++) {
-    if (timeMs >= pills[i].startTime && timeMs <= pills[i].endTime) {
-      activePill = pills[i];
-      activePillIndex = i;
-      break;
-    }
-  }
-
-  // Normalized cursor coordinates: support both normalized (0..1) and legacy pixel coordinates
-  let normCursorX = 0.5;
-  let normCursorY = 0.5;
-  const hasCursor = Boolean(cursor && viewportWidth > 0 && viewportHeight > 0);
-  if (hasCursor && cursor) {
-    const rawX = cursor.x <= 1.0 ? cursor.x : cursor.x / viewportWidth;
-    const rawY = cursor.y <= 1.0 ? cursor.y : cursor.y / viewportHeight;
-    normCursorX = Math.max(0.05, Math.min(0.95, rawX));
-    normCursorY = Math.max(0.05, Math.min(0.95, rawY));
-  }
-
-  // Check if timeMs is in an inter-pill gap between chained pills (<= 800ms)
-  if (!activePill && pills.length > 1) {
-    for (let i = 0; i < pills.length - 1; i++) {
-      const p1 = pills[i];
-      const p2 = pills[i + 1];
-      const gap = p2.startTime - p1.endTime;
-      if (gap >= 0 && gap <= 800 && timeMs >= p1.endTime && timeMs <= p2.startTime) {
-        // Smoothly glide across inter-pill gap without dipping to neutral scale 1.0
-        const p = gap > 0 ? (timeMs - p1.endTime) / gap : 0;
-        const ease = smootherStep(p);
-        return {
-          x: p1.targetX + (p2.targetX - p1.targetX) * ease,
-          y: p1.targetY + (p2.targetY - p1.targetY) * ease,
-          scale: p1.targetScale + (p2.targetScale - p1.targetScale) * ease,
-          tiltX: p1.tiltX + (p2.tiltX - p1.tiltX) * ease,
-          tiltY: p1.tiltY + (p2.tiltY - p1.tiltY) * ease
-        };
-      }
-    }
-  }
-
-  if (activePill) {
-    const start = activePill.startTime;
-    const end = activePill.endTime;
-    const totalPillDuration = Math.max(1, end - start);
-    const actualTransition = Math.max(1, Math.min(TRANSITION_MS, totalPillDuration * 0.35));
-
-    // Check if next pill starts soon (within 800ms of this pill ending)
-    const nextPill = activePillIndex >= 0 && activePillIndex < pills.length - 1 ? pills[activePillIndex + 1] : undefined;
-    const isChainedToNext = nextPill && (nextPill.startTime - end <= 800);
-
-    // Check if previous pill ended soon (within 800ms before this pill starting)
-    const prevPill = activePillIndex > 0 ? pills[activePillIndex - 1] : undefined;
-    const isChainedFromPrev = prevPill && (start - prevPill.endTime <= 800);
-
-    // Compute cursor tracking bias for active pill (30% dynamic follow keeps target centered while gliding)
-    let targetX = activePill.targetX;
-    let targetY = activePill.targetY;
-    if (hasCursor && followCursor) {
-      targetX = targetX + (normCursorX - targetX) * 0.32;
-      targetY = targetY + (normCursorY - targetY) * 0.32;
-    }
-
-    if (timeMs < start + actualTransition && !isChainedFromPrev) {
-      // Transitioning in from neutral full frame (0.5, 0.5, 1.0)
-      const p = Math.max(0, Math.min(1, (timeMs - start) / actualTransition));
-      const ease = smootherStep(p);
-      return {
-        x: 0.5 + (targetX - 0.5) * ease,
-        y: 0.5 + (targetY - 0.5) * ease,
-        scale: 1.0 + (activePill.targetScale - 1.0) * ease,
-        tiltX: activePill.tiltX * ease,
-        tiltY: activePill.tiltY * ease
-      };
-    } else if (timeMs < start + actualTransition && isChainedFromPrev && prevPill) {
-      // Already arrived at active pill target from prevPill's transition / gap glide;
-      // hold firmly at active target without re-transitioning or snapping
-      return {
-        x: targetX,
-        y: targetY,
-        scale: activePill.targetScale,
-        tiltX: activePill.tiltX,
-        tiltY: activePill.tiltY
-      };
-    } else if (timeMs > end - actualTransition && isChainedToNext && nextPill) {
-      // Chained transition directly towards next pill
-      const p = Math.max(0, Math.min(1, (timeMs - (end - actualTransition)) / actualTransition));
-      const ease = smootherStep(p);
-      return {
-        x: targetX + (nextPill.targetX - targetX) * ease,
-        y: targetY + (nextPill.targetY - targetY) * ease,
-        scale: activePill.targetScale + (nextPill.targetScale - activePill.targetScale) * ease,
-        tiltX: activePill.tiltX + (nextPill.tiltX - activePill.tiltX) * ease,
-        tiltY: activePill.tiltY + (nextPill.tiltY - activePill.tiltY) * ease
-      };
-    } else if (timeMs > end - actualTransition && !isChainedToNext) {
-      // Transitioning out towards neutral full frame
-      const p = Math.max(0, Math.min(1, (end - timeMs) / actualTransition));
-      const ease = smootherStep(p);
-      return {
-        x: 0.5 + (targetX - 0.5) * ease,
-        y: 0.5 + (targetY - 0.5) * ease,
-        scale: 1.0 + (activePill.targetScale - 1.0) * ease,
-        tiltX: activePill.tiltX * ease,
-        tiltY: activePill.tiltY * ease
-      };
-    }
-
-    // Fully inside active pill
-    return {
-      x: targetX,
-      y: targetY,
-      scale: activePill.targetScale,
-      tiltX: activePill.tiltX,
-      tiltY: activePill.tiltY
+  const key = `${followCursor}|${cursor?.x}|${cursor?.y}|${viewportWidth}|${viewportHeight}`;
+  if (!lastWrapperPath || lastWrapperPath.pills !== pills || lastWrapperPath.key !== key) {
+    lastWrapperPath = {
+      pills,
+      key,
+      path: buildCameraPath(pills, {
+        followCursor,
+        cursorAt: cursor ? () => cursor : undefined,
+        viewportWidth,
+        viewportHeight
+      })
     };
   }
-
-  // Outside zoom pills: smooth gentle breathing pan towards cursor if enabled
-  if (hasCursor && followCursor) {
-    return {
-      x: 0.5 + (normCursorX - 0.5) * 0.12,
-      y: 0.5 + (normCursorY - 0.5) * 0.12,
-      scale: 1.0,
-      tiltX: 0,
-      tiltY: 0
-    };
-  }
-
-  return { x: 0.5, y: 0.5, scale: 1.0, tiltX: 0, tiltY: 0 };
+  return lastWrapperPath.path.at(timeMs);
 }
+
 export function calculateIsometricTilt(targetX: number, targetY: number, scale: number): { tiltX: number; tiltY: number } {
   if (scale <= 1.15) {
     return { tiltX: 0, tiltY: 0 };
@@ -290,8 +172,76 @@ export function calculateIsometricTilt(targetX: number, targetY: number, scale: 
   };
 }
 
+// ---------------------------------------------------------------------------
+// Auto-zoom policy (locked parameters)
+// ---------------------------------------------------------------------------
+export const AUTO_ZOOM = {
+  /** The camera should be on target as the click lands. */
+  PRE_ROLL_CLICK_MS: 300,
+  PRE_ROLL_TYPING_MS: 350,
+  /** Hold after the last click / typing before zooming out. */
+  COOLDOWN_MS: 1800,
+  MIN_PILL_MS: 1600,
+  /** Default scale of a typing zoom (before the resolution cap). */
+  TYPING_SCALE: 1.8,
+  /** Extra zoom for a double-click. */
+  DOUBLE_CLICK_BOOST: 0.15,
+  /** Typing within this normalized distance of an active zoom extends it instead of starting another. */
+  TYPING_EXTEND_DISTANCE: 0.25,
+  /** ...and this long after the zoom ends still counts as "near". */
+  TYPING_EXTEND_GRACE_MS: 600,
+  /** Misclick filter: all three must hold. */
+  MISCLICK_MOVE_PX: 120,
+  MISCLICK_MOVE_WINDOW_MS: 250,
+  MISCLICK_KEY_WINDOW_MS: 500,
+  /** Rapid cursor jump away from the zoom focus releases the zoom. */
+  JUMP_DISTANCE: 0.45,
+  JUMP_TRAVEL: 0.3,
+  JUMP_TRAVEL_WINDOW_MS: 300,
+  JUMP_STAY_MS: 400
+} as const;
+
+/**
+ * Largest scale an AUTO-generated zoom may use for a recording of this real pixel
+ * width: zooming further than the source resolution allows only shows blur.
+ * Manual zooms are not limited. Unknown width = no cap.
+ */
+export function autoZoomScaleCap(sourcePixelWidth?: number): number {
+  if (!Number.isFinite(sourcePixelWidth) || (sourcePixelWidth as number) <= 0) return Infinity;
+  const w = sourcePixelWidth as number;
+  if (w <= 1280) return 1.5;
+  if (w <= 1920) return 1.75;
+  if (w <= 2560) return 2.1;
+  return 2.5;
+}
+
+/**
+ * The real pixel width of the recorded picture: the capture track's width, else the
+ * decoded video's, else the page's CSS width times its pixel ratio. Undefined when
+ * nothing is known (no cap is applied then).
+ */
+export function resolveSourcePixelWidth(
+  trackWidth?: number,
+  videoWidth?: number,
+  metadata?: { width?: number; devicePixelRatio?: number }
+): number | undefined {
+  const positive = (v?: number) => (Number.isFinite(v) && (v as number) > 0 ? (v as number) : undefined);
+  const css = positive(metadata?.width);
+  return positive(trackWidth) ?? positive(videoWidth) ?? (css ? Math.round(css * (positive(metadata?.devicePixelRatio) ?? 1)) : undefined);
+}
+
+export interface AutoZoomOptions {
+  /** The cursor path (normalized, or legacy pixels): misclick filter and the rapid-jump release. */
+  mousePoints?: MousePoint[];
+  keystrokes?: KeystrokeEvent[];
+  /** The recorded tab hidden / visible: a hold is closed when the user leaves it. */
+  visibilityEvents?: VisibilityEvent[];
+  /** Real pixel width of the recorded video; caps auto-generated zoom scales. */
+  sourcePixelWidth?: number;
+}
+
 // Smart Click Clustering & Auto-Zoom Pills Generator
-// Clusters clicks within 300px radius and 4 seconds into a single continuous zoom pill
+// Clusters clicks within 320px and 3.8 seconds into a single continuous zoom pill
 export function generateAutoZoomPills(
   clicks: ClickEvent[],
   inputEvents: InputFocusEvent[],
@@ -299,12 +249,13 @@ export function generateAutoZoomPills(
   viewportWidth: number,
   viewportHeight: number,
   scrollEvents?: ScrollEvent[],
-  typingSessions?: TypingSession[]
+  typingSessions?: TypingSession[],
+  options: AutoZoomOptions = {}
 ): ZoomPill[] {
   const pills: ZoomPill[] = [];
   const CLUSTER_DISTANCE_PX = 320;
   const CLUSTER_TIME_WINDOW_MS = 3800;
-  const MIN_HOLD_DURATION_MS = 2400;
+  const scaleCap = autoZoomScaleCap(options.sourcePixelWidth);
 
   // A pill is a seek target in the exporter: it must live inside the
   // recording. Without a real timeline (and a real viewport to normalize
@@ -317,10 +268,52 @@ export function generateAutoZoomPills(
   const clampNorm = (v: number) => (Number.isFinite(v) ? Math.max(0.12, Math.min(0.88, v)) : 0.5);
   const finiteBounds = (b?: BoundingBox) =>
     Boolean(b && Number.isFinite(b.x) && Number.isFinite(b.y) && Number.isFinite(b.width) && Number.isFinite(b.height));
+  const toNormX = (v: number) => (v <= 1.0 ? v : v / viewportWidth);
+  const toNormY = (v: number) => (v <= 1.0 ? v : v / viewportHeight);
+
+  const path = [...(options.mousePoints || [])]
+    .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.x) && Number.isFinite(p.y))
+    .sort((a, b) => a.t - b.t);
+  /** Index of the last cursor sample at or before t (-1 when none). */
+  const sampleIndexAt = (t: number) => {
+    let lo = 0;
+    let hi = path.length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (path[mid].t <= t) { found = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return found;
+  };
+
+  /**
+   * A click that is noise: ONLY when all three hold - the target is plain page
+   * content (not something a user operates), the cursor leaves by more than
+   * 120 px within 250 ms, and nothing was typed around it. Clicks recorded
+   * without the interactive flag (older recordings) are never dropped.
+   */
+  const isMisclick = (c: ClickEvent): boolean => {
+    if (c.interactive !== false) return false;
+    if (path.length === 0) return false;
+    const typedAround =
+      (options.keystrokes || []).some((k) => Math.abs(k.t - c.t) <= AUTO_ZOOM.MISCLICK_KEY_WINDOW_MS) ||
+      (typingSessions || []).some((s) => s.t <= c.t + AUTO_ZOOM.MISCLICK_KEY_WINDOW_MS && s.endT >= c.t - AUTO_ZOOM.MISCLICK_KEY_WINDOW_MS) ||
+      inputEvents.some((ev) => ev.type === 'type' && Math.abs(ev.t - c.t) <= AUTO_ZOOM.MISCLICK_KEY_WINDOW_MS);
+    if (typedAround) return false;
+    const cx = toNormX(c.x) * viewportWidth;
+    const cy = toNormY(c.y) * viewportHeight;
+    for (let i = sampleIndexAt(c.t) + 1; i < path.length && path[i].t <= c.t + AUTO_ZOOM.MISCLICK_MOVE_WINDOW_MS; i++) {
+      const px = toNormX(path[i].x) * viewportWidth;
+      const py = toNormY(path[i].y) * viewportHeight;
+      if (Math.hypot(px - cx, py - cy) > AUTO_ZOOM.MISCLICK_MOVE_PX) return true;
+    }
+    return false;
+  };
 
   // Filter clicks that have coordinates and happened inside the recording
   const sortedClicks = clicks
     .filter((c) => fitsRecording(c.t) && Number.isFinite(c.x) && Number.isFinite(c.y))
+    .filter((c) => !isMisclick(c))
     .sort((a, b) => a.t - b.t);
 
   let currentCluster: ClickEvent[] = [];
@@ -359,7 +352,17 @@ export function generateAutoZoomPills(
     flushClusterToPill(currentCluster);
   }
 
-  // Coalesce typing zooms cleanly from typingSessions / grouped input spans
+  // ---- Typing: extend the zoom you are already in, or start a clean typing zoom ----
+  interface TypingSpan { t: number; endT: number; x: number; y: number; known: boolean; label: string }
+  const spans: TypingSpan[] = [];
+  const boundsCenter = (b: BoundingBox) => {
+    const bX = b.x <= 1.0 ? b.x * viewportWidth : b.x;
+    const bY = b.y <= 1.0 ? b.y * viewportHeight : b.y;
+    const bW = b.width <= 1.0 ? b.width * viewportWidth : b.width;
+    const bH = b.height <= 1.0 ? b.height * viewportHeight : b.height;
+    return { x: clampNorm((bX + bW / 2) / viewportWidth), y: clampNorm((bY + bH / 2) / viewportHeight) };
+  };
+
   if (typingSessions && typingSessions.length > 0) {
     for (const ts of typingSessions) {
       if (!fitsRecording(ts.t)) continue;
@@ -367,37 +370,14 @@ export function generateAutoZoomPills(
       const matchingEv = inputEvents.find(
         (ev) => ev.t >= ts.t - 500 && ev.t <= ts.endT + 500 && finiteBounds(ev.bounds)
       ) || inputEvents.find((ev) => finiteBounds(ev.bounds));
-
-      let normX = 0.5;
-      let normY = 0.5;
-      if (matchingEv && matchingEv.bounds) {
-        const b = matchingEv.bounds;
-        const bX = b.x <= 1.0 ? b.x * viewportWidth : b.x;
-        const bY = b.y <= 1.0 ? b.y * viewportHeight : b.y;
-        const bW = b.width <= 1.0 ? b.width * viewportWidth : b.width;
-        const bH = b.height <= 1.0 ? b.height * viewportHeight : b.height;
-        normX = clampNorm((bX + bW / 2) / viewportWidth);
-        normY = clampNorm((bY + bH / 2) / viewportHeight);
-      }
-
-      const startTime = Math.max(0, ts.t - 400);
-      const endTime = Math.min(videoDurationMs, Math.max(startTime + 600, ts.endT + 1800));
-      const tilt = calculateIsometricTilt(normX, normY, 1.8);
-
-      pills.push({
-        id: 'zoom_input_' + Math.round(startTime),
-        startTime,
-        endTime,
-        targetX: normX,
-        targetY: normY,
-        targetScale: 1.8,
-        tiltX: tilt.tiltX,
-        tiltY: tilt.tiltY,
-        spotlight: true,
-        label: ts.targetLabel && ts.targetLabel !== '[hidden input]'
-          ? `Type "${ts.targetLabel.slice(0, 20)}"`
-          : 'Typing Focus',
-        autoGenerated: true
+      const c = matchingEv && matchingEv.bounds ? boundsCenter(matchingEv.bounds) : { x: 0.5, y: 0.5 };
+      spans.push({
+        t: ts.t,
+        endT: ts.endT,
+        x: c.x,
+        y: c.y,
+        known: Boolean(matchingEv && matchingEv.bounds),
+        label: ts.targetLabel && ts.targetLabel !== '[hidden input]' ? `Type "${ts.targetLabel.slice(0, 20)}"` : 'Typing Focus'
       });
     }
   } else {
@@ -420,41 +400,42 @@ export function generateAutoZoomPills(
         inputGroups.push([ev]);
       }
     }
-
     for (const group of inputGroups) {
-      const firstEv = group[0];
-      const lastEv = group[group.length - 1];
-      const b = firstEv.bounds;
-      const bX = b.x <= 1.0 ? b.x * viewportWidth : b.x;
-      const bY = b.y <= 1.0 ? b.y * viewportHeight : b.y;
-      const bW = b.width <= 1.0 ? b.width * viewportWidth : b.width;
-      const bH = b.height <= 1.0 ? b.height * viewportHeight : b.height;
-
-      const centerX = (bX + bW / 2) / viewportWidth;
-      const centerY = (bY + bH / 2) / viewportHeight;
-
-      const normX = clampNorm(centerX);
-      const normY = clampNorm(centerY);
-
-      const startTime = Math.max(0, firstEv.t - 400);
-      const holdMargin = group.length > 1 ? 1800 : 2200;
-      const endTime = Math.min(videoDurationMs, Math.max(startTime + (group.length > 1 ? 600 : 400), lastEv.t + holdMargin));
-
-      const tilt = calculateIsometricTilt(normX, normY, 1.8);
-      pills.push({
-        id: 'zoom_input_' + Math.round(startTime),
-        startTime,
-        endTime,
-        targetX: normX,
-        targetY: normY,
-        targetScale: 1.8,
-        tiltX: tilt.tiltX,
-        tiltY: tilt.tiltY,
-        spotlight: true,
-        label: 'Typing Focus',
-        autoGenerated: true
-      });
+      const c = boundsCenter(group[0].bounds);
+      spans.push({ t: group[0].t, endT: group[group.length - 1].t, x: c.x, y: c.y, known: true, label: 'Typing Focus' });
     }
+  }
+
+  for (const span of spans.sort((a, b) => a.t - b.t)) {
+    // A zoom that is on screen when the typing starts (or just ended) and is
+    // looking at the same part of the screen: keep it, and hold it for the typing.
+    const host = pills.find((p) =>
+      span.t >= p.startTime &&
+      span.t <= p.endTime + AUTO_ZOOM.TYPING_EXTEND_GRACE_MS &&
+      (!span.known || Math.hypot(span.x - p.targetX, span.y - p.targetY) <= AUTO_ZOOM.TYPING_EXTEND_DISTANCE)
+    );
+    if (host) {
+      host.endTime = Math.min(videoDurationMs, Math.max(host.endTime, span.endT + AUTO_ZOOM.COOLDOWN_MS));
+      continue;
+    }
+
+    const scale = Math.min(AUTO_ZOOM.TYPING_SCALE, scaleCap);
+    const startTime = Math.max(0, span.t - AUTO_ZOOM.PRE_ROLL_TYPING_MS);
+    const endTime = Math.min(videoDurationMs, Math.max(startTime + AUTO_ZOOM.MIN_PILL_MS, span.endT + AUTO_ZOOM.COOLDOWN_MS));
+    const tilt = calculateIsometricTilt(span.x, span.y, scale);
+    pills.push({
+      id: 'zoom_input_' + Math.round(startTime),
+      startTime,
+      endTime,
+      targetX: span.x,
+      targetY: span.y,
+      targetScale: scale,
+      tiltX: tilt.tiltX,
+      tiltY: tilt.tiltY,
+      spotlight: true,
+      label: span.label,
+      autoGenerated: true
+    });
   }
 
   function flushClusterToPill(cluster: ClickEvent[]) {
@@ -510,15 +491,20 @@ export function generateAutoZoomPills(
       focalY = avgY;
     }
 
+    // A double-click is a deliberate emphasis: a touch tighter.
+    if (cluster.some((c) => (c.clickCount ?? 1) >= 2)) scale += AUTO_ZOOM.DOUBLE_CLICK_BOOST;
+    // Never zoom past what the source resolution can show sharply.
+    scale = Math.min(scale, scaleCap);
+
     const normX = clampNorm(focalX / viewportWidth);
     const normY = clampNorm(focalY / viewportHeight);
 
-    // Lead-in: primary.t - 320 ms (>= 90% zoom settled as the click lands)
-    const startTime = Math.max(0, primary.t - 320);
+    // Pre-roll: the camera is on target as the click lands.
+    const startTime = Math.max(0, primary.t - AUTO_ZOOM.PRE_ROLL_CLICK_MS);
     const lastClickTime = cluster[cluster.length - 1].t;
     // The pill must never outlive the recording, but it also must never be
     // collapsed by a bogus duration: clamp against the real video duration.
-    const hold = Math.max(lastClickTime + 1600, startTime + MIN_HOLD_DURATION_MS);
+    const hold = Math.max(lastClickTime + AUTO_ZOOM.COOLDOWN_MS, startTime + AUTO_ZOOM.MIN_PILL_MS);
     const endTime = Math.min(videoDurationMs, Math.max(hold, startTime + 400));
 
     const tilt = calculateIsometricTilt(normX, normY, scale);
@@ -538,7 +524,56 @@ export function generateAutoZoomPills(
     });
   }
 
-  return settleAndMergePills(pills, videoDurationMs, scrollEvents);
+  // ---- Early release: leaving the tab, or a rapid jump of the cursor away ----
+  const hidden = (options.visibilityEvents || [])
+    .filter((v) => Number.isFinite(v.t))
+    .sort((a, b) => a.t - b.t);
+  const hiddenIntervals: Array<{ from: number; to: number }> = [];
+  for (let i = 0; i < hidden.length; i++) {
+    if (hidden[i].state !== 'hidden') continue;
+    const back = hidden.slice(i + 1).find((v) => v.state === 'visible');
+    hiddenIntervals.push({ from: hidden[i].t, to: back ? back.t : Infinity });
+  }
+
+  const releaseOnJump = (p: ZoomPill): number | null => {
+    if (path.length === 0) return null;
+    const arrive = p.startTime + DEFAULT_TRANSITION_MS;
+    const dist = (i: number) => Math.hypot(toNormX(path[i].x) - p.targetX, toNormY(path[i].y) - p.targetY);
+    for (let i = Math.max(0, sampleIndexAt(arrive)); i < path.length && path[i].t <= p.endTime; i++) {
+      if (path[i].t < arrive || dist(i) <= AUTO_ZOOM.JUMP_DISTANCE) continue;
+      // Rapid: it travelled a long way in the last 300 ms.
+      const before = sampleIndexAt(path[i].t - AUTO_ZOOM.JUMP_TRAVEL_WINDOW_MS);
+      if (before < 0) continue;
+      const travel = Math.hypot(toNormX(path[i].x) - toNormX(path[before].x), toNormY(path[i].y) - toNormY(path[before].y));
+      if (travel < AUTO_ZOOM.JUMP_TRAVEL) continue;
+      // And it stays away.
+      let stays = true;
+      for (let j = i; j < path.length && path[j].t <= path[i].t + AUTO_ZOOM.JUMP_STAY_MS; j++) {
+        if (dist(j) <= AUTO_ZOOM.JUMP_DISTANCE) { stays = false; break; }
+      }
+      const lastSampleT = path[path.length - 1].t;
+      if (stays && lastSampleT >= path[i].t + AUTO_ZOOM.JUMP_STAY_MS) return path[i].t + AUTO_ZOOM.JUMP_STAY_MS;
+    }
+    return null;
+  };
+
+  const kept: ZoomPill[] = [];
+  for (const p of pills) {
+    // A zoom that would start while the tab is hidden never happened on screen.
+    if (hiddenIntervals.some((h) => p.startTime >= h.from && p.startTime < h.to)) continue;
+
+    const jump = releaseOnJump(p);
+    if (jump !== null && jump < p.endTime) {
+      p.endTime = Math.max(jump, p.startTime + AUTO_ZOOM.MIN_PILL_MS);
+    }
+    for (const h of hiddenIntervals) {
+      if (h.from > p.startTime && h.from < p.endTime) p.endTime = Math.max(p.startTime + 400, h.from);
+    }
+    p.endTime = Math.min(p.endTime, videoDurationMs);
+    if (p.endTime > p.startTime) kept.push(p);
+  }
+
+  return settleAndMergePills(kept, videoDurationMs, scrollEvents);
 }
 
 /**

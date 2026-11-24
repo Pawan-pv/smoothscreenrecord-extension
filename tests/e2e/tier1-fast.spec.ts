@@ -1,5 +1,14 @@
 /**
- * Tier 1 Fast Verification Suite (< 2 min, headless Chromium, NO live screen capture)
+ * Tier 1 Fast Verification Suite (headless Chromium, NO live screen capture)
+ *
+ * The harness bundle is built from the CURRENT src/ before the suite runs
+ * (npm run build:tier1-harness) and the suite refuses to run against a bundle
+ * older than the source, so a green run always describes this checkout.
+ *
+ * Time: the MP4 exports use the software H.264 encoder on machines without a
+ * hardware one (~1.6-3.4 fps at 1080p), so a1-a3 render the 20 s recording at
+ * 960 px wide (same duration, audio, cuts and trim; only the picture is smaller).
+ * Expect a few minutes in total.
  *
  * Verifies:
  *   a) MP4 Export + QA-009 + Cut Silences (WebCodecs H.264 + AAC, A/V sync, silence cuts)
@@ -13,11 +22,34 @@ import fs from 'fs';
 import os from 'os';
 import http from 'http';
 import { AddressInfo } from 'net';
+import { execSync } from 'child_process';
 import { FFPROBE, mediaInfo, countFrames, ffprobeJson, CHROME_CFT } from './helpers/harness';
 
 const REPO = process.cwd();
 const FIXTURES_DIR = path.join(REPO, 'tests', 'fixtures');
 const ARTIFACTS_DIR = path.join(os.tmpdir(), 'ss-tier1-artifacts');
+
+const HARNESS_BUNDLE = path.join(FIXTURES_DIR, 'tier1-harness.bundle.js');
+
+/** Newest modification time of any file under dir (recursive). */
+function newestMtimeMs(dir: string): number {
+  let newest = 0;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    newest = Math.max(newest, entry.isDirectory() ? newestMtimeMs(full) : fs.statSync(full).mtimeMs);
+  }
+  return newest;
+}
+
+/** Builds the harness from src/ and proves it is not older than the source it bundles. */
+function buildAndVerifyHarness(): void {
+  execSync('npm run build:tier1-harness', { cwd: REPO, stdio: 'inherit' });
+  const bundleMs = fs.statSync(HARNESS_BUNDLE).mtimeMs;
+  const sourceMs = Math.max(newestMtimeMs(path.join(REPO, 'src')), fs.statSync(path.join(FIXTURES_DIR, 'tier1-harness.ts')).mtimeMs);
+  if (bundleMs < sourceMs) {
+    throw new Error('tier1-harness.bundle.js is older than src/: refusing to test stale code.');
+  }
+}
 
 interface FixtureServer {
   base: string;
@@ -64,7 +96,9 @@ test.describe('Tier 1 Fast Verification Suite', () => {
   let harnessPage: Page;
 
   test.beforeAll(async () => {
+    test.setTimeout(240_000);
     fs.mkdirSync(ARTIFACTS_DIR, { recursive: true });
+    buildAndVerifyHarness();
     server = await startFixtureServer();
 
     browser = await chromium.launch({
@@ -83,7 +117,7 @@ test.describe('Tier 1 Fast Verification Suite', () => {
   });
 
   test('a1) MP4 Export uncut (~20.2s, no repeated tail, A/V sync)', async () => {
-    test.setTimeout(180_000);
+    test.setTimeout(240_000);
     const t0 = Date.now();
 
     const uncutData = await harnessPage.evaluate(async () => {
@@ -95,6 +129,7 @@ test.describe('Tier 1 Fast Verification Suite', () => {
       const mp4Blob = await exporter.exportMp4({
         videoBlob: blob,
         durationMs: 20221,
+        targetWidth: 960, // 20 s of 960 px keeps the software encoder within budget
         aspectRatio: '16:9',
         preset: VIBE_PRESETS['keynote-pro'],
         pills: [],
@@ -135,7 +170,7 @@ test.describe('Tier 1 Fast Verification Suite', () => {
   });
 
   test('a2) MP4 Export with cut silences, auto-zoom pills, cursor, and spotlight', async () => {
-    test.setTimeout(180_000);
+    test.setTimeout(240_000);
     const tCut0 = Date.now();
     const cutData = await harnessPage.evaluate(async () => {
       const { HardwareMp4Exporter, CursorSplineEngine, VIBE_PRESETS } = (window as any).__tier1Harness;
@@ -179,6 +214,7 @@ test.describe('Tier 1 Fast Verification Suite', () => {
       const mp4Blob = await exporter.exportMp4({
         videoBlob: blob,
         durationMs: 20221,
+        targetWidth: 960, // 20 s of 960 px keeps the software encoder within budget
         aspectRatio: '16:9',
         preset: VIBE_PRESETS['keynote-pro'],
         pills,
@@ -219,7 +255,7 @@ test.describe('Tier 1 Fast Verification Suite', () => {
   });
 
   test('a3) MP4 Export with trimStartMs, trimEndMs and cut silences', async () => {
-    test.setTimeout(180_000);
+    test.setTimeout(240_000);
     const tTrim0 = Date.now();
     const trimmedData = await harnessPage.evaluate(async () => {
       const { HardwareMp4Exporter, CursorSplineEngine, VIBE_PRESETS } = (window as any).__tier1Harness;
@@ -236,6 +272,7 @@ test.describe('Tier 1 Fast Verification Suite', () => {
       const mp4Blob = await exporter.exportMp4({
         videoBlob: blob,
         durationMs: 20221,
+        targetWidth: 960, // 20 s of 960 px keeps the software encoder within budget
         trimStartMs: 2000,
         trimEndMs: 18221,
         aspectRatio: '16:9',
@@ -300,7 +337,7 @@ test.describe('Tier 1 Fast Verification Suite', () => {
         showSpotlight: false,
         showCursor: false,
         showHud: false,
-        gifQuality: 'compact'
+        qualityPreset: 'compact'
       });
       const elapsedMs = performance.now() - startMs;
 
@@ -503,5 +540,222 @@ test.describe('Tier 1 Fast Verification Suite', () => {
     expect(Math.abs(silences[1].endTime - 16950)).toBeLessThan(500);
     expect(silences[1].duration).toBeGreaterThanOrEqual(1200);
     expect(silences[1].markedForCut).toBe(true);
+  });
+
+  test('e) SOP + HTML widget leave out trimmed-out and cut-out steps (real browser, live src)', async () => {
+    const out = await harnessPage.evaluate(() => {
+      const { SopGuideExporter, HtmlWidgetExporter } = (window as any).__tier1Harness;
+      const click = (t: number, label: string) => ({ t, x: 0.4, y: 0.5, button: 0, targetTag: 'BUTTON', targetText: label, targetLabel: label });
+      const telemetry = {
+        metadata: { id: 'e', startTime: 1_700_000_000_000, endTime: 1_700_000_012_000, durationMs: 12000, width: 1280, height: 720, devicePixelRatio: 1, title: 'Trim demo', url: 'https://app.example.com/home?token=abc123&view=week' },
+        mousePoints: [],
+        clicks: [click(1000, 'Alpha-Early'), click(5000, 'Bravo-Kept'), click(6000, 'Charlie-Cut'), click(7000, 'Delta-Kept'), click(10000, 'Echo-Late')],
+        keystrokes: [{ t: 1100, key: 'k', combo: 'Ctrl + K' }, { t: 5100, key: 's', combo: 'Ctrl + S' }],
+        inputEvents: [],
+        typingSessions: [
+          { t: 1200, endT: 1600, text: 'typed-early', sensitive: false, targetLabel: 'Name', targetTag: 'input' },
+          { t: 5200, endT: 5600, text: 'typed-kept', sensitive: false, targetLabel: 'City', targetTag: 'input' }
+        ]
+      };
+      const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      const snapshots = [1000, 5000, 6000, 7000, 10000].map((timestamp) => ({ timestamp, dataUrl: `${png}#SNAP${timestamp}` }));
+      const timeline = { durationMs: 12000, trimStartMs: 4000, trimEndMs: 8000, cutRanges: [{ startTime: 5500, endTime: 6500 }] };
+      return {
+        md: SopGuideExporter.generateMarkdownGuide(telemetry, snapshots, true, timeline),
+        html: HtmlWidgetExporter.generateInteractiveWidget(telemetry, snapshots, true, timeline),
+        mdFull: SopGuideExporter.generateMarkdownGuide(telemetry, snapshots, true)
+      };
+    });
+
+    for (const kept of ['Bravo-Kept', 'Delta-Kept']) {
+      expect(out.md).toContain(kept);
+      expect(out.html).toContain(kept);
+    }
+    expect(out.md).toContain('typed-kept');
+    for (const gone of ['Alpha-Early', 'Charlie-Cut', 'Echo-Late', 'SNAP1000', 'SNAP6000', 'SNAP10000']) {
+      expect(out.md, `${gone} must not be in the SOP`).not.toContain(gone);
+      expect(out.html, `${gone} must not be in the HTML widget`).not.toContain(gone);
+    }
+    expect(out.md).not.toContain('typed-early');
+    expect(out.md).toMatch(/### Step 1: Click on \*\*"Bravo-Kept"\*\*[^\n]*`\[1\.0s\]`/); // re-based to the exported timeline
+    expect(out.md).toContain('**Duration**: 3.0s');
+    expect(out.html).toContain('Step 1 of 2');
+    // The Source URL never prints the token.
+    expect(out.md).not.toContain('abc123');
+    // Without a timeline nothing is dropped (the filter only acts when asked).
+    expect(out.mdFull).toContain('Alpha-Early');
+    expect(out.mdFull).toContain('Echo-Late');
+  });
+
+  test('f) Cancel: a GIF and an MP4 export stop promptly, release the decoder/encoder, and an immediate re-export works', async () => {
+    test.setTimeout(240_000);
+    const result = await harnessPage.evaluate(async () => {
+      const { HardwareGifExporter, HardwareMp4Exporter, CursorSplineEngine, VIBE_PRESETS } = (window as any).__tier1Harness;
+      const decoders: any[] = [];
+      const encoders: any[] = [];
+      const RealDecoder = (window as any).VideoDecoder;
+      const RealEncoder = (window as any).VideoEncoder;
+      (window as any).VideoDecoder = class extends RealDecoder { constructor(init: any) { super(init); decoders.push(this); } };
+      (window as any).VideoEncoder = class extends RealEncoder { constructor(init: any) { super(init); encoders.push(this); } };
+      try {
+        const blob = await (await fetch('/tier1-c2.webm')).blob();
+        const base = () => ({
+          videoBlob: blob,
+          durationMs: 20221,
+          aspectRatio: '16:9',
+          preset: VIBE_PRESETS['keynote-pro'],
+          pills: [],
+          silences: [],
+          cursorEngine: new CursorSplineEngine(),
+          keystrokes: [],
+          cutSilences: false,
+          showSpotlight: false,
+          showCursor: false,
+          showHud: false
+        });
+        const cancelAt = async (run: (signal: AbortSignal, arm: (pct: number) => (pct: number) => void) => Promise<unknown>, atPct: number) => {
+          const controller = new AbortController();
+          let abortedAt = 0;
+          let progressAtAbort = -1;
+          const onProgress = (pct: number) => {
+            if (!abortedAt && pct >= atPct) {
+              abortedAt = performance.now();
+              progressAtAbort = pct;
+              controller.abort();
+            }
+          };
+          let error: any = null;
+          try { await run(controller.signal, () => onProgress); } catch (e: any) { error = { name: e?.name, message: e?.message }; }
+          return { error, rejectedAfterMs: abortedAt ? performance.now() - abortedAt : -1, progressAtAbort };
+        };
+
+        const gifCancel = await cancelAt(
+          (signal, arm) => new HardwareGifExporter().exportGif({ ...base(), qualityPreset: 'compact', signal, onProgress: arm(10) }),
+          10
+        );
+        const gifDecoderStates = decoders.map((d) => d.state);
+
+        const mp4Cancel = await cancelAt(
+          (signal, arm) => new HardwareMp4Exporter().exportMp4({ ...base(), targetWidth: 640, signal, onProgress: arm(5) }),
+          5
+        );
+        const mp4DecoderStates = decoders.map((d) => d.state);
+        const encoderStates = encoders.map((e) => e.state);
+
+        // Immediately after both cancels: a normal export must still work.
+        const t0 = performance.now();
+        const gif = await new HardwareGifExporter().exportGif({ ...base(), durationMs: 2000, trimStartMs: 0, trimEndMs: 2000, qualityPreset: 'compact' });
+        const mp4 = await new HardwareMp4Exporter().exportMp4({ ...base(), durationMs: 2000, trimStartMs: 0, trimEndMs: 1500, targetWidth: 640 });
+        const mp4Bytes = Array.from(new Uint8Array(await mp4.arrayBuffer()));
+        return {
+          gifCancel, mp4Cancel, gifDecoderStates, mp4DecoderStates, encoderStates,
+          videoElementsLeft: document.querySelectorAll('video').length,
+          reexport: { gifSize: gif.size, gifType: gif.type, mp4Size: mp4.size, ms: performance.now() - t0 },
+          mp4Bytes
+        };
+      } finally {
+        (window as any).VideoDecoder = RealDecoder;
+        (window as any).VideoEncoder = RealEncoder;
+      }
+    });
+
+    console.log(`[Tier 1] cancel: GIF rejected ${result.gifCancel.rejectedAfterMs.toFixed(0)}ms after abort (at ${result.gifCancel.progressAtAbort}%), MP4 ${result.mp4Cancel.rejectedAfterMs.toFixed(0)}ms (at ${result.mp4Cancel.progressAtAbort}%); re-export ${result.reexport.ms.toFixed(0)}ms`);
+
+    for (const [name, c] of [['GIF', result.gifCancel], ['MP4', result.mp4Cancel]] as const) {
+      expect(c.error, `${name} export must reject when cancelled`).toEqual({ name: 'AbortError', message: 'The export was cancelled.' });
+      expect(c.progressAtAbort, `${name} must have been cancelled mid-way`).toBeGreaterThan(0);
+      expect(c.progressAtAbort, `${name} must not have finished`).toBeLessThan(100);
+      expect(c.rejectedAfterMs, `${name} must stop promptly after the abort`).toBeLessThan(3000);
+    }
+    expect(result.gifDecoderStates.length, 'the GIF export opened a decoder').toBeGreaterThan(0);
+    for (const s of result.mp4DecoderStates) expect(s, 'every decoder is closed after a cancel').toBe('closed');
+    for (const s of result.encoderStates) expect(s, 'every encoder is closed after a cancel').toBe('closed');
+    expect(result.videoElementsLeft, 'no <video> element is left behind').toBe(0);
+
+    // An immediate re-export after the cancels works and is a real file.
+    expect(result.reexport.gifType).toBe('image/gif');
+    expect(result.reexport.gifSize).toBeGreaterThan(5_000);
+    const mp4Path = path.join(ARTIFACTS_DIR, 'tier1-reexport.mp4');
+    fs.writeFileSync(mp4Path, Buffer.from(result.mp4Bytes));
+    const info = mediaInfo(mp4Path);
+    expect(info.streams.find((s: any) => s.codec_type === 'video')?.codec_name).toBe('h264');
+    expect(info.durationSec).toBeGreaterThan(1.3);
+    expect(info.durationSec).toBeLessThan(1.8);
+  });
+
+  test('g) followCursor reaches the export: the default equals ON, OFF produces a different picture', async () => {
+    test.setTimeout(120_000);
+    const hashes = await harnessPage.evaluate(async () => {
+      const { HardwareGifExporter, CursorSplineEngine, VIBE_PRESETS } = (window as any).__tier1Harness;
+      const blob = await (await fetch('/tier1-c2.webm')).blob();
+      const sha = async (b: Blob) => {
+        const digest = await crypto.subtle.digest('SHA-256', await b.arrayBuffer());
+        return Array.from(new Uint8Array(digest)).map((x) => x.toString(16).padStart(2, '0')).join('');
+      };
+      // A zoom on the top-left while the cursor sits bottom-right: following the
+      // cursor visibly moves the camera, not following keeps it on the zoom.
+      const run = async (followCursor?: boolean) => sha(await new HardwareGifExporter().exportGif({
+        videoBlob: blob,
+        durationMs: 2000,
+        trimStartMs: 0,
+        trimEndMs: 2000,
+        aspectRatio: '16:9',
+        preset: VIBE_PRESETS['keynote-pro'],
+        pills: [{ id: 'z', startTime: 0, endTime: 2000, targetX: 0.25, targetY: 0.25, targetScale: 2, tiltX: 0, tiltY: 0 }],
+        silences: [],
+        cursorEngine: new CursorSplineEngine([{ t: 0, x: 0.9, y: 0.9, c: 'default' }, { t: 2000, x: 0.9, y: 0.9, c: 'default' }], []),
+        keystrokes: [],
+        cutSilences: false,
+        showSpotlight: false,
+        showCursor: false,
+        showHud: false,
+        qualityPreset: 'compact',
+        ...(followCursor === undefined ? {} : { followCursor })
+      }));
+      return { byDefault: await run(), on: await run(true), off: await run(false) };
+    });
+    expect(hashes.byDefault, 'the default is ON, exactly like the editor').toBe(hashes.on);
+    expect(hashes.off, 'switching it OFF must change the exported picture').not.toBe(hashes.on);
+  });
+  test('h) Dead-Zone Smart Pan reaches the export: jitter inside the safe zone changes nothing, leaving it pans', async () => {
+    test.setTimeout(120_000);
+    const hashes = await harnessPage.evaluate(async () => {
+      const { HardwareGifExporter, CursorSplineEngine, VIBE_PRESETS } = (window as any).__tier1Harness;
+      const blob = await (await fetch('/tier1-c2.webm')).blob();
+      const sha = async (b: Blob) => {
+        const digest = await crypto.subtle.digest('SHA-256', await b.arrayBuffer());
+        return Array.from(new Uint8Array(digest)).map((x) => x.toString(16).padStart(2, '0')).join('');
+      };
+      // A 2x zoom on the centre: the safe zone is +-0.125 around it.
+      const run = async (cursorAt: (t: number) => { x: number; y: number }) => {
+        const points: any[] = [];
+        for (let t = 0; t <= 2000; t += 25) points.push({ t, ...cursorAt(t), c: 'default' });
+        return sha(await new HardwareGifExporter().exportGif({
+          videoBlob: blob,
+          durationMs: 2000,
+          trimStartMs: 0,
+          trimEndMs: 2000,
+          aspectRatio: '16:9',
+          preset: VIBE_PRESETS['keynote-pro'],
+          pills: [{ id: 'z', startTime: 0, endTime: 2000, targetX: 0.5, targetY: 0.5, targetScale: 2, tiltX: 0, tiltY: 0 }],
+          silences: [],
+          cursorEngine: new CursorSplineEngine(points, [], [], { smoothing: 0.6 }),
+          keystrokes: [],
+          cutSilences: false,
+          showSpotlight: false,
+          showCursor: false,
+          showHud: false,
+          qualityPreset: 'compact',
+          followCursor: true
+        }));
+      };
+      return {
+        still: await run(() => ({ x: 0.5, y: 0.5 })),
+        jitter: await run((t) => ({ x: 0.5 + 0.06 * Math.sin(t / 90), y: 0.5 + 0.06 * Math.cos(t / 70) })),
+        leaves: await run((t) => ({ x: t < 600 ? 0.5 : 0.9, y: 0.5 }))
+      };
+    });
+    expect(hashes.jitter, 'a cursor inside the central safe zone must not move the camera').toBe(hashes.still);
+    expect(hashes.leaves, 'a cursor that leaves the safe zone must pan the camera').not.toBe(hashes.still);
   });
 });

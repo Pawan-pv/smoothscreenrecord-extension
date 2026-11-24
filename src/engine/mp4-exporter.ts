@@ -12,7 +12,7 @@ import {
   ShadowMode
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
-import { computeCinematicCameraState } from './spring-physics';
+import { buildCameraPath } from './camera-path';
 import { CursorSplineEngine } from './cursor-spline';
 import { diagnosticChannel } from './diagnostic-channel';
 import {
@@ -28,11 +28,24 @@ import {
 import { VideoFrameSeeker } from './video-seeker';
 import { SequentialVideoFrameSource } from './sequential-frame-source';
 import { resolveExportTimelineMs, clampTrimBounds } from './export-timeline';
+import { negotiateVideoEncoderConfig, NegotiatedVideoEncoderConfig } from './video-codec-negotiation';
+import { createExportAbortError } from './export-safety';
 
 function abortError(): Error {
-  const err = new Error('The export was cancelled.');
-  err.name = 'AbortError';
-  return err;
+  return createExportAbortError();
+}
+
+/** What the encoder was actually configured with (after negotiation). */
+export interface ExportEncoderInfo {
+  codec: string;
+  width: number;
+  height: number;
+  requestedWidth: number;
+  requestedHeight: number;
+  framerate: number;
+  hardwareAcceleration: 'prefer-hardware' | 'prefer-software' | 'no-preference';
+  /** True when the requested size was not accepted and a smaller one is used. */
+  downscaled: boolean;
 }
 
 
@@ -70,6 +83,13 @@ export interface ExportOptions {
   framingMode?: FramingMode;
   shadowMode?: ShadowMode;
   targetWidth?: number;
+  /**
+   * Whether the camera follows the cursor between zooms. Defaults to true (the
+   * editor's default); the preview and the export must use the same value.
+   */
+  followCursor?: boolean;
+  /** Called once the encoder configuration is settled: the REAL size, codec and encoder path. */
+  onEncoderSelected?: (info: ExportEncoderInfo) => void;
   /** Cancels the export during a seek or between frames. */
   signal?: AbortSignal;
   /** Real container duration of the recording, when known. */
@@ -108,7 +128,8 @@ export class HardwareMp4Exporter {
       framingMode,
       shadowMode,
       signal,
-      onProgress
+      onProgress,
+      onEncoderSelected
     } = options;
     if (signal?.aborted) throw abortError();
     const wallClockDurationMs = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
@@ -118,7 +139,28 @@ export class HardwareMp4Exporter {
 
     const sourceW = (options.metadata?.width && options.metadata.width > 0) ? options.metadata.width : 1920;
     const targetBaseW = options.targetWidth || sourceW;
-    const { width: outW, height: outH } = getAspectDimensions(aspectRatio, targetBaseW);
+    let { width: outW, height: outH } = getAspectDimensions(aspectRatio, targetBaseW);
+    const hasWebCodecs = typeof VideoEncoder !== 'undefined';
+    let encoderConfig: NegotiatedVideoEncoderConfig | null = null;
+    if (hasWebCodecs) {
+      const requestedW = outW;
+      const requestedH = outH;
+      encoderConfig = await negotiateVideoEncoderConfig(outW, outH);
+      outW = encoderConfig.width;
+      outH = encoderConfig.height;
+      onEncoderSelected?.({
+        codec: encoderConfig.codec,
+        width: outW,
+        height: outH,
+        requestedWidth: requestedW,
+        requestedHeight: requestedH,
+        framerate: encoderConfig.framerate,
+        hardwareAcceleration: encoderConfig.hardwareAcceleration,
+        downscaled: outW !== requestedW || outH !== requestedH
+      });
+      if (signal?.aborted) throw abortError();
+    }
+    const fps = encoderConfig?.framerate ?? 60;
 
     // Create offscreen export canvas
     const exportCanvas = document.createElement('canvas');
@@ -174,7 +216,6 @@ export class HardwareMp4Exporter {
       }
     }
 
-    const fps = 60;
     const frameIntervalMs = 1000 / fps;
 
     // C2: audio. If the recording has an audio track it MUST be decoded and
@@ -241,12 +282,9 @@ export class HardwareMp4Exporter {
     }
 
     const totalFrames = timelineTimestamps.length;
-    console.log(`[SmoothStudio MP4 Exporter] Starting hardware export: ${totalFrames} frames at 60fps (${outW}x${outH})`);
+    console.log(`[SmoothStudio MP4 Exporter] Starting hardware export: ${totalFrames} frames at ${fps}fps (${outW}x${outH})`);
 
-    // Check if WebCodecs VideoEncoder is available
-    const hasWebCodecs = typeof VideoEncoder !== 'undefined';
-
-      if (hasWebCodecs) {
+      if (hasWebCodecs && encoderConfig) {
         return await this.exportWithWebCodecs({
           video,
           frameSource,
@@ -256,6 +294,7 @@ export class HardwareMp4Exporter {
           outW,
           outH,
           fps,
+          encoderConfig,
           durationMs: effTrimEnd,
           totalFrames,
           timelineTimestamps,
@@ -286,6 +325,7 @@ export class HardwareMp4Exporter {
           backgroundImage,
           framingMode,
           shadowMode,
+          followCursor: options.followCursor,
           onProgress,
           audioTrack
         });
@@ -328,6 +368,7 @@ export class HardwareMp4Exporter {
         backgroundImage,
         framingMode,
         shadowMode,
+        followCursor: options.followCursor,
         onProgress
       });
     } finally {
@@ -352,6 +393,7 @@ export class HardwareMp4Exporter {
     outW: number;
     outH: number;
     fps: number;
+    encoderConfig: NegotiatedVideoEncoderConfig;
     durationMs: number;
     totalFrames: number;
     timelineTimestamps: number[];
@@ -381,6 +423,7 @@ export class HardwareMp4Exporter {
     backgroundImage?: CanvasImageSource | null;
     framingMode?: FramingMode;
     shadowMode?: ShadowMode;
+    followCursor?: boolean;
     /** Cancels the export during a seek or between frames. */
     signal?: AbortSignal;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
@@ -395,6 +438,7 @@ export class HardwareMp4Exporter {
       outW,
       outH,
       fps,
+      encoderConfig,
       durationMs,
       totalFrames,
       timelineTimestamps,
@@ -411,6 +455,7 @@ export class HardwareMp4Exporter {
       backgroundImage,
       framingMode,
       shadowMode,
+      followCursor = true,
       metadata,
       cursorTheme,
       cursorScale,
@@ -488,57 +533,23 @@ export class HardwareMp4Exporter {
       }
     });
 
-    const is4K = outW >= 3840 || outH >= 2160;
-    let targetBitrate = 14_000_000;
-    if (is4K) {
-      targetBitrate = 38_000_000; // 4K60 ~38 Mbps (35-40 Mbps)
-    } else if (outW >= 2560 || outH >= 1440) {
-      targetBitrate = 22_000_000; // 1440p ~22 Mbps
-    } else if (outW >= 1920 || outH >= 1080) {
-      targetBitrate = 14_000_000; // 1080p ~14 Mbps
-    } else {
-      targetBitrate = 6_000_000;  // 720p ~6 Mbps
-    }
-    let chosenCodec = is4K ? 'avc1.640033' : 'avc1.640028';
-    try {
-      const support = await VideoEncoder.isConfigSupported({
-        codec: chosenCodec,
-        width: outW,
-        height: outH,
-        bitrate: targetBitrate,
-        framerate: fps
-      });
-      if (!support.supported) {
-        chosenCodec = is4K ? 'avc1.4d0033' : 'avc1.4D002A';
-      }
-    } catch {
-      chosenCodec = is4K ? 'avc1.4d0033' : 'avc1.4D002A';
-    }
+    // The configuration was fully tested before the timeline and canvas were
+    // created. Never configure an untested codec/resolution combination.
+    videoEncoder.configure(encoderConfig);
 
-    // Configure H.264 profile
-    videoEncoder.configure({
-      codec: chosenCodec,
-      width: outW,
-      height: outH,
-      bitrate: targetBitrate,
-      framerate: fps,
-      hardwareAcceleration: 'prefer-hardware',
-      latencyMode: 'realtime'
+    // Deterministic camera schedule, built once (same as the preview and the GIF export).
+    const cameraPath = buildCameraPath(pills, {
+      followCursor,
+      cursorAt: (t) => cursorEngine.getCursorAt(t),
+      viewportWidth: metadata?.width || outW,
+      viewportHeight: metadata?.height || outH
     });
 
     try {
     for (let f = 0; f < totalFrames; f++) {
       const currentMs = timelineTimestamps[f];
 
-      const cursor = cursorEngine.getCursorAt(currentMs);
-      const camera = computeCinematicCameraState(
-        currentMs,
-        pills,
-        cursor,
-        metadata?.width || outW,
-        metadata?.height || outH,
-        true
-      );
+      const camera = cameraPath.at(currentMs);
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
 
       if (signal?.aborted) throw abortError();
@@ -584,7 +595,7 @@ export class HardwareMp4Exporter {
         aspectRatio,
         showSpotlight,
         showCursor,
-        outputFps: 60,
+        outputFps: fps,
         showHud,
         metadata,
         cursorTheme,
@@ -735,6 +746,7 @@ export class HardwareMp4Exporter {
     backgroundImage?: CanvasImageSource | null;
     framingMode?: FramingMode;
     shadowMode?: ShadowMode;
+    followCursor?: boolean;
     /** Cancels the export during a seek or between frames. */
     signal?: AbortSignal;
     onProgress?: (percent: number, currentFrame: number, totalFrames: number) => void;
@@ -758,6 +770,7 @@ export class HardwareMp4Exporter {
       backgroundImage,
       framingMode,
       shadowMode,
+      followCursor = true,
       metadata,
       cursorTheme,
       cursorScale,
@@ -806,19 +819,18 @@ export class HardwareMp4Exporter {
       await fallbackSeeker.waitUntilReady();
     }
 
+    const cameraPath = buildCameraPath(pills, {
+      followCursor,
+      cursorAt: (t) => cursorEngine.getCursorAt(t),
+      viewportWidth: metadata?.width || exportCanvas.width,
+      viewportHeight: metadata?.height || exportCanvas.height
+    });
+
     try {
     for (let f = 0; f < totalFrames; f++) {
       const currentMs = timelineTimestamps[f];
 
-      const cursor = cursorEngine.getCursorAt(currentMs);
-      const camera = computeCinematicCameraState(
-        currentMs,
-        pills,
-        cursor,
-        metadata?.width || exportCanvas.width,
-        metadata?.height || exportCanvas.height,
-        true
-      );
+      const camera = cameraPath.at(currentMs);
       const activePill = pills.find((p) => currentMs >= p.startTime && currentMs <= p.endTime);
       if (video instanceof HTMLVideoElement && fallbackSeeker) {
         await fallbackSeeker.seekTo(currentMs / 1000);

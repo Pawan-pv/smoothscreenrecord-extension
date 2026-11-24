@@ -152,6 +152,7 @@ export function createMockChrome() {
     },
     tabs: {
       _tabs: tabsList,
+      onUpdated: new MockChromeEvent(),
       query: vi.fn((queryInfo: any, callback?: (tabs: MockTab[]) => void) => {
         const matched = tabsList.filter((tab) => {
           if (queryInfo.active !== undefined && tab.active !== queryInfo.active) return false;
@@ -165,7 +166,7 @@ export function createMockChrome() {
         return Promise.resolve(matched);
       }),
       sendMessage: vi.fn((tabId: number, message: any, callback?: (response: any) => void) => {
-        const res = { success: true, tabId, message };
+        const res = { ok: true, success: true, tabId, message };
         if (callback) callback(res);
         return Promise.resolve(res);
       }),
@@ -201,6 +202,9 @@ export function createMockChrome() {
         if (callback) callback();
         return Promise.resolve();
       })
+    },
+    scripting: {
+      executeScript: vi.fn(() => Promise.resolve([]))
     }
   };
 

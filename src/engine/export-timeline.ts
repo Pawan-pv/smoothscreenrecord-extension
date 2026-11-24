@@ -154,3 +154,66 @@ export function resolveExportTimelineMs(input: ExportTimelineInput): number {
 
   return Math.ceil(Math.max(videoEnd, audioEnd));
 }
+
+/**
+ * What the user kept of the recording, as seen by the exports that are not a
+ * video (SOP guide, HTML widget). The MP4/GIF exporters cut the picture itself;
+ * these two list steps, so a step that was trimmed or cut away must not appear
+ * and the steps that remain must be timed against the exported timeline.
+ */
+export interface ExportTimelineWindow {
+  /** Duration of the recording the telemetry belongs to. */
+  durationMs: number;
+  trimStartMs?: number;
+  trimEndMs?: number;
+  /** Silence cuts that are switched on. */
+  cutRanges?: TimeRangeMs[];
+}
+
+export interface ExportTimelineFilter {
+  /** False when nothing was trimmed or cut: every event is kept and times are untouched. */
+  active: boolean;
+  /** True when a telemetry timestamp is inside the exported video. */
+  keeps(tMs: number): boolean;
+  /** Timestamp on the exported timeline (identical to the input when inactive). */
+  toExportTime(tMs: number): number;
+  /** Length of the exported timeline, or null when inactive. */
+  exportedDurationMs: number | null;
+}
+
+export function createExportTimelineFilter(window?: ExportTimelineWindow | null): ExportTimelineFilter {
+  const passthrough: ExportTimelineFilter = {
+    active: false,
+    keeps: () => true,
+    toExportTime: (t) => t,
+    exportedDurationMs: null
+  };
+  if (!window) return passthrough;
+  const duration = Number.isFinite(window.durationMs) && window.durationMs > 0 ? window.durationMs : 0;
+  const trimmed = (Number.isFinite(window.trimStartMs) && (window.trimStartMs as number) > 0) ||
+    (Number.isFinite(window.trimEndMs) && duration > 0 && (window.trimEndMs as number) < duration);
+  const hasCuts = (window.cutRanges || []).some(
+    (c) => Number.isFinite(c?.startTime) && Number.isFinite(c?.endTime) && c.endTime > c.startTime
+  );
+  if (duration <= 0 || (!trimmed && !hasCuts)) return passthrough;
+
+  const keep = composeTrimAndCuts(window.cutRanges || [], duration, window.trimStartMs ?? 0, window.trimEndMs);
+  const total = keep.reduce((sum, span) => sum + (span.endTime - span.startTime), 0);
+  const locate = (t: number): { span: TimeRangeMs; before: number } | null => {
+    let before = 0;
+    for (const span of keep) {
+      if (t >= span.startTime && t <= span.endTime) return { span, before };
+      before += span.endTime - span.startTime;
+    }
+    return null;
+  };
+  return {
+    active: true,
+    keeps: (t) => Number.isFinite(t) && locate(t) !== null,
+    toExportTime: (t) => {
+      const hit = locate(t);
+      return hit ? Math.round(hit.before + (t - hit.span.startTime)) : 0;
+    },
+    exportedDurationMs: total
+  };
+}

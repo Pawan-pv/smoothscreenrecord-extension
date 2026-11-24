@@ -1,5 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { ZoomPill, SilenceSegment, KeystrokeEvent, CaptionBlock } from '../types/telemetry';
+import { autoZoomScaleCap } from '../engine/spring-physics';
+import { DEFAULT_TRANSITION_MS } from '../engine/camera-path';
 import { Scissors, Plus, Trash2, Eye, Box, Sliders, Subtitles, RotateCcw, Sparkles } from 'lucide-react';
 
 interface MagneticTimelineProps {
@@ -14,6 +16,8 @@ interface MagneticTimelineProps {
   onRedetectZooms?: () => void;
   onUpdatePill: (pill: ZoomPill) => void;
   onDeletePill: (id: string) => void;
+  /** Real pixel width of the recording: the inspector warns when a zoom goes past what it shows sharply. */
+  sourcePixelWidth?: number;
   onAddPillAtPlayhead: () => void;
   silences: SilenceSegment[];
   onToggleSilenceCut: (id: string) => void;
@@ -46,6 +50,7 @@ export function MagneticTimeline({
   onRedetectZooms,
   onUpdatePill,
   onDeletePill,
+  sourcePixelWidth,
   onAddPillAtPlayhead,
   silences,
   onToggleSilenceCut,
@@ -304,6 +309,31 @@ export function MagneticTimeline({
                 className="w-16 accent-purple-500"
               />
               <span className="font-mono text-purple-300">{selectedPill.targetScale.toFixed(1)}x</span>
+              {selectedPill.targetScale > autoZoomScaleCap(sourcePixelWidth) + 1e-6 && (
+                <span
+                  data-testid="sharpness-warning"
+                  className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-200"
+                  title={`This recording is ${sourcePixelWidth}px wide; zooming past ${autoZoomScaleCap(sourcePixelWidth)}x shows softness.`}
+                >
+                  Soft above {autoZoomScaleCap(sourcePixelWidth)}x
+                </span>
+              )}
+            </label>
+
+            {/* Transition speed: how long the camera takes to move into this zoom */}
+            <label className="flex items-center gap-1.5 text-[11px]">
+              Move:
+              <select
+                data-testid="transition-speed"
+                value={String(selectedPill.transitionDuration ?? DEFAULT_TRANSITION_MS)}
+                onChange={(e) => onUpdatePill({ ...selectedPill, transitionDuration: parseInt(e.target.value, 10) })}
+                className="rounded bg-white/10 px-1 py-0.5 text-[11px] text-gray-200 focus:outline-none"
+                title="How fast the camera moves into this zoom"
+              >
+                <option value="300" className="bg-[#14161D]">Fast 300ms</option>
+                <option value="450" className="bg-[#14161D]">Smooth 450ms</option>
+                <option value="650" className="bg-[#14161D]">Slow 650ms</option>
+              </select>
             </label>
 
             {/* 3D Isometric Tilt Toggle */}

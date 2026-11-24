@@ -375,6 +375,9 @@ export function VibePresetsPanel({
               onChangeBackdropParams?.({ presetType: 'keynote-pro' });
               if (currentPreset.id !== 'keynote-pro') {
                 onSelectPreset(VIBE_PRESETS['keynote-pro']);
+              } else {
+                // Already on this backdrop: choosing it again still drops an uploaded image / solid colour.
+                handleResetBackground();
               }
             }}
             className={`p-1.5 rounded-lg border text-center transition-all ${
@@ -391,6 +394,9 @@ export function VibePresetsPanel({
               onChangeBackdropParams?.({ presetType: 'stripe-mesh' });
               if (currentPreset.id !== 'stripe-mesh') {
                 onSelectPreset(VIBE_PRESETS['stripe-mesh']);
+              } else {
+                // Already on this backdrop: choosing it again still drops an uploaded image / solid colour.
+                handleResetBackground();
               }
             }}
             className={`p-1.5 rounded-lg border text-center transition-all ${
@@ -407,6 +413,9 @@ export function VibePresetsPanel({
               onChangeBackdropParams?.({ presetType: 'linear-cosmic' });
               if (currentPreset.id !== 'linear-cosmic') {
                 onSelectPreset(VIBE_PRESETS['linear-cosmic']);
+              } else {
+                // Already on this backdrop: choosing it again still drops an uploaded image / solid colour.
+                handleResetBackground();
               }
             }}
             className={`p-1.5 rounded-lg border text-center transition-all ${
@@ -823,13 +832,18 @@ export function VibePresetsPanel({
             checked={showCursor}
             onChange={(e) => onToggleCursor(e.target.checked)}
             className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
-            title={capturedNativeCursor === 'always' || capturedNativeCursor === 'motion' ? 'Native cursor was detected; enabling this may show both cursors.' : undefined}
+            title={capturedNativeCursor === 'always' ? 'The native cursor was captured; enabling this may show both cursors.' : undefined}
           />
         </label>
 
-        {(capturedNativeCursor === 'always' || capturedNativeCursor === 'motion') && (
+        {capturedNativeCursor === 'always' && (
           <p className="text-[11px] leading-relaxed text-amber-300/90">
-            Native cursor detected in this capture. The vector cursor starts off to prevent a double cursor; you can re-enable it manually.
+            The native cursor was captured in this recording. The vector cursor starts off to prevent a double cursor; you can re-enable it manually.
+          </p>
+        )}
+        {capturedNativeCursor === 'motion' && metadata?.displaySurface !== 'window' && metadata?.displaySurface !== 'monitor' && showCursor && (
+          <p id="cursor-motion-note" className="text-[11px] leading-relaxed text-gray-400">
+            Chrome may draw its own cursor while the mouse moves. If you see two cursors in the preview, switch the vector cursor off.
           </p>
         )}
 
@@ -837,7 +851,7 @@ export function VibePresetsPanel({
           <div id="cursor-mode-hint" className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-[11px] text-indigo-200 flex items-start gap-2 leading-relaxed">
             <Info className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
             <span>
-              For the smooth cinematic cursor, share a browser tab.
+              Window/monitor capture keeps the native cursor and disables DOM Auto Zoom. Add zooms manually, or share a browser tab for cinematic cursor tracking.
             </span>
           </div>
         )}

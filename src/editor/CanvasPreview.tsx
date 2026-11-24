@@ -11,7 +11,8 @@ import {
   ShadowMode
 } from '../types/telemetry';
 import { StudioRenderer, RenderFrameOptions, getAspectDimensions } from '../engine/renderer';
-import { computeCinematicCameraState, CameraState } from '../engine/spring-physics';
+import { CameraState } from '../engine/spring-physics';
+import { buildCameraPath } from '../engine/camera-path';
 import { CursorSplineEngine } from '../engine/cursor-spline';
 import { computeFrameLayout, projectSourceToCanvas, unprojectCanvasToSource, FrameLayout, FramingMode } from '../engine/framing-math';
 import { Play, Pause, RotateCcw } from 'lucide-react';
@@ -50,6 +51,8 @@ interface CanvasPreviewProps {
   showCursor: boolean;
   showHud: boolean;
   followCursor: boolean;
+  /** Changes whenever the cursor path or its smoothing changes: the camera schedule is rebuilt. */
+  cameraCursorKey?: string;
   metadata?: { width: number; height: number };
   cursorTheme?: CursorTheme;
   cursorScale?: number;
@@ -91,6 +94,7 @@ export function CanvasPreview({
   showCursor,
   showHud,
   followCursor,
+  cameraCursorKey,
   metadata,
   cursorTheme,
   cursorScale,
@@ -144,6 +148,20 @@ export function CanvasPreview({
     outputFps: 60
   });
 
+  // The camera is a deterministic schedule (zooms + the smoothed cursor path), built
+  // once and only rebuilt when one of those changes: scrubbing is a lookup, and the
+  // MP4 / GIF exports evaluate the very same schedule.
+  const cameraPath = useMemo(
+    () => buildCameraPath(pills, {
+      followCursor,
+      cursorAt: (t) => cursorEngine.getCursorAt(t),
+      viewportWidth: metadata?.width || targetWidth,
+      viewportHeight: metadata?.height || targetHeight
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pills, followCursor, cursorEngine, cameraCursorKey, metadata?.width, metadata?.height, targetWidth, targetHeight]
+  );
+
   // Render preview frame whenever currentTimeMs, preset, or props change
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -171,15 +189,7 @@ export function CanvasPreview({
 
     // Direct analytical cinematic camera evaluation: guarantees 100% identical camera
     // framing across 60Hz/120Hz preview, 60fps MP4, and 15fps GIF with zero drift.
-    const cursor = cursorEngine.getCursorAt(currentTimeMs);
-    const camera = computeCinematicCameraState(
-      currentTimeMs,
-      pills,
-      cursor,
-      metadata?.width || targetWidth,
-      metadata?.height || targetHeight,
-      followCursor
-    );
+    const camera = cameraPath.at(currentTimeMs);
     currentCameraRef.current = camera;
 
     const activePill = pills.find((p) => currentTimeMs >= p.startTime && currentTimeMs <= p.endTime);
@@ -331,6 +341,7 @@ export function CanvasPreview({
     targetWidth,
     targetHeight,
     pills,
+    cameraPath,
     selectedPillId,
     showSpotlight,
     showCursor,

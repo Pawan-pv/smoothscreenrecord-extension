@@ -34,3 +34,6 @@ tests/fixtures/audio/*.wav
 tests/round4/out/
 tests/verify/out/
 tests/e2e/out/
+
+# Tier-1 harness bundle: generated from src/ by npm run build:tier1-harness (never commit a stale copy)
+tests/fixtures/tier1-harness.bundle.js

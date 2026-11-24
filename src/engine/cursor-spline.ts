@@ -37,11 +37,18 @@ function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): 
 
 export class CursorSplineEngine {
   private mousePoints: MousePoint[] = [];
+  private filteredMousePoints: MousePoint[] = [];
   private clicks: ClickEvent[] = [];
   private pressEvents: PressEvent[] = [];
   private activityTimestamps: number[] = [];
   private smoothing = 0.6;
   private cutRanges: Array<{ startTime: number; endTime: number }> = [];
+  /**
+   * The filtered trajectory depends ONLY on the raw points and the smoothing
+   * strength. Trim handles, silence cuts and every other option leave it alone,
+   * so it is rebuilt only when one of those two changed.
+   */
+  private filterDirty = true;
 
   constructor(mousePoints: MousePoint[] = [], clicks: ClickEvent[] = [], pressEvents: PressEvent[] = [], options: CursorSplineOptions = {}) {
     this.setData(mousePoints, clicks, pressEvents, options);
@@ -49,6 +56,7 @@ export class CursorSplineEngine {
 
   public setData(mousePoints: MousePoint[], clicks: ClickEvent[], pressEvents: PressEvent[] = [], options: CursorSplineOptions = {}) {
     this.mousePoints = [...mousePoints].sort((a, b) => a.t - b.t);
+    this.filterDirty = true;
     this.clicks = [...clicks].sort((a, b) => a.t - b.t);
     this.pressEvents = [...pressEvents].sort((a, b) => a.t - b.t);
     this.setOptions(options);
@@ -77,7 +85,9 @@ export class CursorSplineEngine {
 
   public setOptions(options: CursorSplineOptions = {}): void {
     if (typeof options.smoothing === 'number' && Number.isFinite(options.smoothing)) {
-      this.smoothing = Math.max(0, Math.min(1, options.smoothing));
+      const next = Math.max(0, Math.min(1, options.smoothing));
+      if (next !== this.smoothing) this.filterDirty = true;
+      this.smoothing = next;
     }
     if (options.cutRanges) {
       this.cutRanges = options.cutRanges
@@ -85,6 +95,83 @@ export class CursorSplineEngine {
         .map((range) => ({ startTime: range.startTime, endTime: range.endTime }))
         .sort((a, b) => a.startTime - b.startTime);
     }
+    if (this.filterDirty) {
+      this.rebuildFilteredMousePoints();
+      this.filterDirty = false;
+    }
+  }
+
+  /** Build a centred, zero-phase trajectory before Catmull-Rom interpolation. */
+  private rebuildFilteredMousePoints(): void {
+    if (this.mousePoints.length === 0 || this.smoothing <= 0) {
+      this.filteredMousePoints = this.mousePoints.map((point) => ({ ...point }));
+      return;
+    }
+
+    const maxCoordinate = this.mousePoints.reduce((max, point) => Math.max(max, Math.abs(point.x), Math.abs(point.y)), 0);
+    const coordinateScale = maxCoordinate <= 1.01 ? 1 / 1920 : 1;
+    const deadband = 2 * coordinateScale;
+    const sigmaMs = 18 + this.smoothing * 55;
+    const radiusMs = sigmaMs * 3;
+    const filtered: MousePoint[] = [];
+    const points = this.mousePoints;
+
+    // Telemetry timestamps are whole milliseconds, so the Gaussian weight of a
+    // candidate is a lookup by its integer distance. (A fractional distance
+    // falls back to the exact formula, so the result never differs.)
+    const weightAt = new Float64Array(Math.floor(radiusMs) + 1);
+    for (let d = 0; d < weightAt.length; d++) weightAt[d] = Math.exp(-0.5 * (d / sigmaMs) ** 2);
+
+    // The points are sorted by time, so the window [t - radius, t + radius] only
+    // ever slides forward: each point looks at the ~2*radius/dt samples around
+    // it (about 55 at 120 Hz), never at the whole recording. O(N).
+    let windowStart = 0;
+    for (let i = 0; i < points.length; i++) {
+      const point = points[i];
+      while (windowStart < i && point.t - points[windowStart].t > radiusMs) windowStart++;
+      let weightSum = 0;
+      let x = 0;
+      let y = 0;
+      for (let j = windowStart; j < points.length; j++) {
+        const candidate = points[j];
+        const distance = Math.abs(candidate.t - point.t);
+        if (distance > radiusMs) {
+          if (candidate.t > point.t) break;
+          continue;
+        }
+        const weight = Number.isInteger(distance) ? weightAt[distance] : Math.exp(-0.5 * (distance / sigmaMs) ** 2);
+        weightSum += weight;
+        x += candidate.x * weight;
+        y += candidate.y * weight;
+      }
+      const previous = filtered[i - 1];
+      let nextX = weightSum > 0 ? x / weightSum : point.x;
+      let nextY = weightSum > 0 ? y / weightSum : point.y;
+      if (previous) {
+        const dt = Math.max(1, point.t - this.mousePoints[i - 1].t);
+        const rawDistance = Math.hypot(point.x - this.mousePoints[i - 1].x, point.y - this.mousePoints[i - 1].y);
+        const filteredDistance = Math.hypot(nextX - previous.x, nextY - previous.y);
+        if (filteredDistance < deadband && rawDistance / dt * 1000 < 120 * coordinateScale) {
+          nextX = previous.x;
+          nextY = previous.y;
+        }
+      }
+      filtered.push({ ...point, x: nextX, y: nextY });
+    }
+    if (filtered.length > 0) filtered[0] = { ...this.mousePoints[0] };
+    if (filtered.length > 1) filtered[filtered.length - 1] = { ...this.mousePoints[this.mousePoints.length - 1] };
+    this.filteredMousePoints = filtered;
+  }
+
+  private pinToClick(timeMs: number, x: number, y: number): { x: number; y: number } {
+    const click = this.clicks.reduce<ClickEvent | null>((nearest, candidate) => {
+      if (Math.abs(candidate.t - timeMs) > 60) return nearest;
+      return !nearest || Math.abs(candidate.t - timeMs) < Math.abs(nearest.t - timeMs) ? candidate : nearest;
+    }, null);
+    if (!click) return { x, y };
+    const normalized = 1 - Math.abs(click.t - timeMs) / 60;
+    const weight = normalized * normalized * (3 - 2 * normalized);
+    return { x: x + (click.x - x) * weight, y: y + (click.y - y) * weight };
   }
 
   public getCursorOpacityAt(timeMs: number): number {
@@ -131,19 +218,24 @@ export class CursorSplineEngine {
       return { x: 0, y: 0, style: 'default', vx: 0, vy: 0, speed: 0, opacity };
     }
 
+    const points = this.filteredMousePoints.length > 0 ? this.filteredMousePoints : this.mousePoints;
+
     if (timeMs <= this.mousePoints[0].t) {
-      const p = this.mousePoints[0];
-      return { x: p.x, y: p.y, style: p.c, vx: 0, vy: 0, speed: 0, opacity };
+      const p = points[0];
+      const pinned = this.pinToClick(timeMs, p.x, p.y);
+      return { x: pinned.x, y: pinned.y, style: this.mousePoints[0].c, vx: 0, vy: 0, speed: 0, opacity };
     }
 
     const seamCut = this.cutRanges.find((range) => timeMs >= range.startTime && timeMs <= range.endTime + 80);
     if (seamCut) {
-      const postCut = this.mousePoints.find((point) => point.t >= seamCut.endTime) || this.mousePoints[this.mousePoints.length - 1];
+      const postCutIndex = points.findIndex((point) => point.t >= seamCut.endTime);
+      const postCut = postCutIndex >= 0 ? points[postCutIndex] : points[points.length - 1];
+      const rawPostCut = postCutIndex >= 0 ? this.mousePoints[postCutIndex] : this.mousePoints[this.mousePoints.length - 1];
       const seamProgress = timeMs <= seamCut.endTime ? 0 : Math.min(1, (timeMs - seamCut.endTime) / 80);
       return {
-        x: postCut.x,
-        y: postCut.y,
-        style: postCut.c,
+        x: rawPostCut.x,
+        y: rawPostCut.y,
+        style: rawPostCut.c,
         vx: 0,
         vy: 0,
         speed: 0,
@@ -151,19 +243,20 @@ export class CursorSplineEngine {
       };
     }
 
-    const last = this.mousePoints[this.mousePoints.length - 1];
+    const last = points[points.length - 1];
     if (timeMs >= last.t) {
-      return { x: last.x, y: last.y, style: last.c, vx: 0, vy: 0, speed: 0, opacity };
+      const pinned = this.pinToClick(timeMs, last.x, last.y);
+      return { x: pinned.x, y: pinned.y, style: this.mousePoints[this.mousePoints.length - 1].c, vx: 0, vy: 0, speed: 0, opacity };
     }
 
     // Binary search for closest points surrounding timeMs
     let low = 0;
-    let high = this.mousePoints.length - 1;
+    let high = points.length - 1;
     let index = 0;
 
     while (low <= high) {
       const mid = Math.floor((low + high) / 2);
-      if (this.mousePoints[mid].t <= timeMs) {
+      if (points[mid].t <= timeMs) {
         index = mid;
         low = mid + 1;
       } else {
@@ -176,17 +269,21 @@ export class CursorSplineEngine {
     const i0 = Math.max(0, i1 - 1);
     const i3 = Math.min(this.mousePoints.length - 1, i2 + 1);
 
-    const p0 = this.mousePoints[i0];
-    const p1 = this.mousePoints[i1];
-    const p2 = this.mousePoints[i2];
-    const p3 = this.mousePoints[i3];
+    const p0 = points[i0];
+    const p1 = points[i1];
+    const p2 = points[i2];
+    const p3 = points[i3];
+    const rawP1 = this.mousePoints[i1];
 
     const crossesCut = this.cutRanges.some((range) => p1.t < range.startTime && p2.t > range.endTime);
     if (crossesCut) {
+      const cut = this.cutRanges.find((range) => p1.t < range.startTime && p2.t > range.endTime);
+      const before = timeMs < (cut?.startTime || timeMs);
+      const seamRawPoint = before ? this.mousePoints[i1] : this.mousePoints[i2];
       return {
-        x: timeMs < (this.cutRanges.find((range) => p1.t < range.startTime && p2.t > range.endTime)?.startTime || timeMs) ? p1.x : p2.x,
-        y: timeMs < (this.cutRanges.find((range) => p1.t < range.startTime && p2.t > range.endTime)?.startTime || timeMs) ? p1.y : p2.y,
-        style: timeMs < (this.cutRanges.find((range) => p1.t < range.startTime && p2.t > range.endTime)?.startTime || timeMs) ? p1.c : p2.c,
+        x: seamRawPoint.x,
+        y: seamRawPoint.y,
+        style: seamRawPoint.c,
         vx: 0,
         vy: 0,
         speed: 0,
@@ -219,10 +316,11 @@ export class CursorSplineEngine {
     const vy = segmentDuration < 300 ? (p2.y - p1.y) / dt : 0;
     const speed = Math.hypot(vx, vy);
 
+    const pinned = this.pinToClick(timeMs, x, y);
     return {
-      x,
-      y,
-      style: p1.c || 'default',
+      x: pinned.x,
+      y: pinned.y,
+      style: rawP1.c || 'default',
       vx,
       vy,
       speed,

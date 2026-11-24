@@ -5,6 +5,10 @@ export interface PrivacyOptions {
   interactivePicker: boolean;
 }
 
+// Idempotence: the service worker may inject this file again into an open tab
+// (all frames). The message listener at the bottom is guarded by
+// `__smoothstudio_privacy_listener`, so a repeat evaluation adds no second listener.
+
 let isPickerActive = false;
 let hoveredElement: HTMLElement | null = null;
 let blurredElements: Set<HTMLElement> = new Set();
@@ -550,19 +554,19 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'APPLY_PRIVACY_OPTIONS') {
       const count = applyAutoRedaction(message.options || {});
-      sendResponse({ status: 'applied', count });
+      sendResponse({ ok: true, status: 'applied', count });
       return true;
     } else if (message.type === 'START_PICKER') {
       startElementPicker();
-      sendResponse({ status: 'picker_active' });
+      sendResponse({ ok: true, status: 'picker_active' });
       return true;
     } else if (message.type === 'STOP_PICKER') {
       stopElementPicker();
-      sendResponse({ status: 'picker_stopped' });
+      sendResponse({ ok: true, status: 'picker_stopped' });
       return true;
     } else if (message.type === 'RESET_PRIVACY') {
       resetRedactions();
-      sendResponse({ status: 'reset' });
+      sendResponse({ ok: true, status: 'reset' });
       return true;
     }
     return false;

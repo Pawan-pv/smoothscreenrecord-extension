@@ -206,5 +206,71 @@ describe('Service Worker: Long-Lived Port & Background Message Processing', () =
         expect.any(Function)
       );
     });
+
+    it('injects content scripts and retries START_TELEMETRY when the tab has no receiver', async () => {
+      (chrome.tabs as any)._tabs.length = 0;
+      (chrome.tabs as any)._tabs.push({ id: 606, active: true, url: 'https://example.com/already-open' });
+      const responses: any[] = [];
+      (chrome.tabs.sendMessage as any)
+        .mockImplementationOnce((_tabId: number, _message: any, callback?: (response?: any) => void) => {
+          chrome.runtime.lastError = { message: 'Could not establish connection. Receiving end does not exist.' };
+          callback?.(undefined);
+          chrome.runtime.lastError = null;
+          return Promise.resolve();
+        })
+        .mockImplementationOnce((_tabId: number, message: any, callback?: (response?: any) => void) => {
+          responses.push(message);
+          callback?.({ ok: true, status: 'started' });
+          return Promise.resolve({ ok: true, status: 'started' });
+        });
+
+      const sendResponse = vi.fn();
+      (chrome.runtime.onMessage as any).dispatch(
+        { type: 'START_RECORDING', tabId: 606, sessionId: 'reinject_ses' },
+        { id: 'caller' },
+        sendResponse
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      // The shield goes into EVERY frame (cross-origin iframes included); the
+      // tracker stays top-frame only so sub-frames emit no second telemetry stream.
+      expect(chrome.scripting.executeScript).toHaveBeenCalledWith({
+        target: { tabId: 606, allFrames: true },
+        files: ['content/privacy-redactor.js']
+      });
+      expect(chrome.scripting.executeScript).toHaveBeenCalledWith({
+        target: { tabId: 606 },
+        files: ['content/dom-tracker.js']
+      });
+      for (const call of (chrome.scripting.executeScript as any).mock.calls) {
+        if (call[0].files.includes('content/dom-tracker.js')) {
+          expect(call[0].target.allFrames, 'dom-tracker must not be injected into sub-frames').toBeFalsy();
+        }
+      }
+      expect(responses).toEqual([
+        expect.objectContaining({ type: 'START_TELEMETRY', sessionId: 'reinject_ses' })
+      ]);
+      expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({ status: 'recording_started' }));
+    });
+
+    it('reports restricted tabs instead of claiming privacy forwarding succeeded', async () => {
+      (chrome.tabs as any)._tabs.length = 0;
+      (chrome.tabs as any)._tabs.push({ id: 707, active: true, url: 'chrome://settings' });
+      const sendResponse = vi.fn();
+
+      (chrome.runtime.onMessage as any).dispatch(
+        { type: 'APPLY_PRIVACY_OPTIONS', options: { blurEmails: true } },
+        { id: 'caller' },
+        sendResponse
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'forwarded',
+        results: [expect.objectContaining({ tabId: 707, ok: false, reason: 'restricted_page' })]
+      }));
+    });
   });
 });

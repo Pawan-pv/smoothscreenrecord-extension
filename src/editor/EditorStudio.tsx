@@ -15,15 +15,18 @@ import {
   BackdropMatrixParams
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
-import { generateAutoZoomPills } from '../engine/spring-physics';
+import { generateAutoZoomPills, resolveSourcePixelWidth } from '../engine/spring-physics';
 import { CursorSplineEngine } from '../engine/cursor-spline';
 import { AudioProcessor } from '../engine/audio-processor';
 import { SfxSynthesizer } from '../engine/sfx-synthesizer';
-import { HardwareMp4Exporter } from '../engine/mp4-exporter';
+import { HardwareMp4Exporter, ExportEncoderInfo } from '../engine/mp4-exporter';
+import { describeMp4Export } from '../engine/export-report';
+import { loadPrivacyPrefs } from '../engine/privacy-prefs';
+import { resolveEditorShortcut } from './keyboard-shortcuts';
 import { HardwareGifExporter, GIF_QUALITY_PRESETS, GifQualityPreset } from '../engine/gif-exporter';
 import { SopGuideExporter } from '../engine/sop-guide-exporter';
 import { HtmlWidgetExporter } from '../engine/html-widget-exporter';
-import { scheduleObjectUrlRevoke } from '../engine/export-safety';
+import { scheduleObjectUrlRevoke, isExportAbortError } from '../engine/export-safety';
 import {
   getRecordingBlob, loadTelemetry, saveTelemetry, setUseOpfs, newSessionId, getFinalSessionId,
   recoverInterruptedSession, isSessionLockHeld
@@ -51,7 +54,8 @@ import {
   Activity,
   AlertTriangle,
   HardDrive,
-  Cpu
+  Cpu,
+  XCircle
 } from 'lucide-react';
 
 /**
@@ -221,6 +225,8 @@ export function EditorStudio() {
   const [isExportingGif, setIsExportingGif] = useState<boolean>(false);
   const [exportGifProgress, setExportGifProgress] = useState<number>(0);
   const [exportGifComplete, setExportGifComplete] = useState<boolean>(false);
+  // The running export (MP4 or GIF) can be cancelled; one controller per export.
+  const exportAbortRef = useRef<AbortController | null>(null);
   const [gifPreset, setGifPreset] = useState<GifQualityPreset>('compact');
 
   const [copiedSop, setCopiedSop] = useState<boolean>(false);
@@ -616,16 +622,27 @@ export function EditorStudio() {
 
     cursorEngineRef.current.setData(data.mousePoints || [], data.clicks || [], data.pressEvents || []);
 
-    // Auto-generate smart zoom pills based on DOM bounding boxes & clicks
-    const autoPills = generateAutoZoomPills(
-      data.clicks || [],
-      data.inputEvents || [],
-      safeDuration,
-      data.metadata?.width || 1920,
-      data.metadata?.height || 1080,
-      data.scrollEvents,
-      data.typingSessions
-    );
+    const displaySurface = data.metadata?.displaySurface || captureEngineRef.current.getTrackSettings()?.displaySurface;
+    const isPageCapture = displaySurface !== 'window' && displaySurface !== 'monitor';
+
+    // DOM coordinates are meaningful only for a browser-tab capture. A
+    // window/monitor frame has a different coordinate space, so only manual
+    // canvas zooms are offered for that recording.
+    const autoPills = isPageCapture ? generateAutoZoomPills(
+        data.clicks || [],
+        data.inputEvents || [],
+        safeDuration,
+        data.metadata?.width || 1920,
+        data.metadata?.height || 1080,
+        data.scrollEvents,
+        data.typingSessions,
+        {
+          mousePoints: data.mousePoints,
+          keystrokes: data.keystrokes,
+          visibilityEvents: data.visibilityEvents,
+          sourcePixelWidth: resolveSourcePixelWidth(captureEngineRef.current.getTrackSettings()?.width, undefined, data.metadata)
+        }
+      ) : [];
     setPills(autoPills);
     if (import.meta.env.DEV) (window as any).__smoothstudio_pills = autoPills;
 
@@ -657,7 +674,6 @@ export function EditorStudio() {
     }
     // Configure cursor visibility from the actual captured track setting, with a
     // conservative window/monitor fallback when DOM telemetry is unavailable.
-    const displaySurface = data.metadata?.displaySurface || captureEngineRef.current.getTrackSettings()?.displaySurface;
     const capturedNativeCursor = data.metadata?.capturedNativeCursor || captureEngineRef.current.getCapturedNativeCursor();
     const hasDomCursorTelemetry = (data.mousePoints || []).some((point) => Boolean(point.c));
     setShowCursor(shouldEnableCustomCursor(capturedNativeCursor, displaySurface, hasDomCursorTelemetry));
@@ -851,7 +867,9 @@ export function EditorStudio() {
 
   const handleSelectPreset = useCallback((newPreset: VibePreset) => {
     setPreset(newPreset);
+    // The latest choice wins: picking a preset drops an uploaded image AND a solid colour.
     clearBackgroundImage();
+    setBackgroundColor(null);
     if (newPreset.backdrop) {
       setBackdropParams(newPreset.backdrop);
     }
@@ -915,33 +933,39 @@ export function EditorStudio() {
     }
   }, [encoderStreamMode, showToast]);
 
-  // Keyboard shortcuts: Space (play/pause), ArrowLeft/Right (seek), Z (add zoom)
+  // Keyboard shortcuts: Space (play/pause), ArrowLeft/Right (seek), Z (add zoom),
+  // Delete/Backspace (delete the selected zoom). Typing surfaces (input, textarea,
+  // select, contenteditable) keep every key; a focused button keeps Space.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const shortcut = resolveEditorShortcut(e, { hasSelectedPill: Boolean(selectedPillId) });
+      if (!shortcut) return;
 
-      if (e.code === 'Space') {
+      if (shortcut === 'toggle-play') {
         e.preventDefault();
         handleTogglePlay();
-      } else if (e.code === 'ArrowLeft') {
+      } else if (shortcut === 'delete-pill') {
+        e.preventDefault();
+        const doomed = selectedPillId;
+        setPills((prev) => prev.filter((p) => p.id !== doomed));
+        setSelectedPillId(null);
+      } else if (shortcut === 'seek-back') {
         e.preventDefault();
         firedSfxRef.current.clear();
         const safeTrimStart = Math.max(0, Math.min(durationMs, trimStartMs));
         setCurrentTimeMs((t) => Math.max(safeTrimStart, t - 1000));
-      } else if (e.code === 'ArrowRight') {
+      } else if (shortcut === 'seek-forward') {
         e.preventDefault();
         firedSfxRef.current.clear();
         const safeTrimEnd = Math.max(0, Math.min(durationMs, trimEndMs > 0 ? trimEndMs : durationMs));
         setCurrentTimeMs((t) => Math.min(safeTrimEnd, t + 1000));
-      } else if (e.code === 'KeyZ' && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
-        if (!e.metaKey && !e.ctrlKey) {
-          handleAddPillAtPlayhead(0.5, 0.5);
-        }
+      } else if (shortcut === 'add-zoom') {
+        handleAddPillAtPlayhead(0.5, 0.5);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [durationMs, trimStartMs, trimEndMs, currentTimeMs, handleAddPillAtPlayhead, handleTogglePlay]);
+  }, [durationMs, trimStartMs, trimEndMs, currentTimeMs, selectedPillId, handleAddPillAtPlayhead, handleTogglePlay]);
 
   useEffect(() => { currentTimeRef.current = currentTimeMs; }, [currentTimeMs]);
   useEffect(() => { sfxSynthesizerRef.current.setEnabled(soundEnabled); }, [soundEnabled]);
@@ -1075,12 +1099,15 @@ export function EditorStudio() {
       // No originEpoch is sent: the content script owns the HUD-visible epoch
       // and publishes it back with HUD_VISIBLE.
       if (typeof chrome !== 'undefined' && chrome.runtime) {
-        // QA-006: forward privacy options to the target tab when starting from
-        // the editor, matching popup.tsx:103-109. Default to all categories ON
-        // so sensitive data is never recorded unblurred.
+        // QA-006: forward the privacy options to the target tab when starting from
+        // the editor. They are the user's saved popup choices (a category switched
+        // OFF stays OFF); with nothing saved every category is ON, so sensitive data
+        // is never recorded unblurred by default.
+        const privacyPrefs = await loadPrivacyPrefs();
         chrome.runtime.sendMessage({
           type: 'APPLY_PRIVACY_OPTIONS',
-          options: { blurEmails: true, blurRevenue: true, blurApiKeys: true }
+          options: privacyPrefs,
+          ...(sourceTabId ? { tabId: sourceTabId } : {})
         }, () => {
           void chrome.runtime?.lastError;
         });
@@ -1239,6 +1266,17 @@ export function EditorStudio() {
 
   const handleRedetectZooms = () => {
     if (!telemetry) return;
+    const displaySurface = telemetry.metadata?.displaySurface;
+    if (displaySurface === 'window' || displaySurface === 'monitor') {
+      setPills([]);
+      setSelectedPillId(null);
+      showToast({
+        type: 'info',
+        title: 'Manual zoom only',
+        message: 'Auto Zoom uses browser-tab coordinates. Add zooms manually for this window or monitor capture.'
+      });
+      return;
+    }
     const safeDuration = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000;
     const autoPills = generateAutoZoomPills(
       telemetry.clicks || [],
@@ -1247,7 +1285,17 @@ export function EditorStudio() {
       telemetry.metadata?.width || 1920,
       telemetry.metadata?.height || 1080,
       telemetry.scrollEvents,
-      telemetry.typingSessions
+      telemetry.typingSessions,
+      {
+        mousePoints: telemetry.mousePoints,
+        keystrokes: telemetry.keystrokes,
+        visibilityEvents: telemetry.visibilityEvents,
+        sourcePixelWidth: resolveSourcePixelWidth(
+          captureEngineRef.current.getTrackSettings()?.width,
+          videoElement instanceof HTMLVideoElement ? videoElement.videoWidth : undefined,
+          telemetry.metadata
+        )
+      }
     );
     setPills(autoPills);
     if (selectedPillId && !autoPills.some((p) => p.id === selectedPillId)) {
@@ -1363,10 +1411,15 @@ export function EditorStudio() {
     setIsExporting(true);
     setExportProgress(0);
     setExportComplete(false);
+    const abortController = new AbortController();
+    exportAbortRef.current = abortController;
+    let encoderInfo: ExportEncoderInfo | null = null;
 
     try {
       const exporter = new HardwareMp4Exporter();
       const mp4Blob = await exporter.exportMp4({
+        signal: abortController.signal,
+        onEncoderSelected: (info) => { encoderInfo = info; },
         videoSource: videoElement,
         videoBlob,
         durationMs,
@@ -1401,6 +1454,7 @@ export function EditorStudio() {
         framingMode,
         shadowMode,
         targetWidth: targetExportWidth,
+        followCursor,
         mediaDurationMs: mediaDurationRef.current ?? undefined,
         onProgress: (pct) => setExportProgress(pct)
       });
@@ -1410,16 +1464,26 @@ export function EditorStudio() {
       showToast({
         type: 'success',
         title: 'MP4 Exported',
-        message: isUpscaled
-          ? `Hardware encoded ${targetResLabel}/60fps video downloaded (Upscaled from ${sourceResLabel}).`
-          : `Hardware encoded ${targetResLabel}/60fps video downloaded.`
+        message: describeMp4Export(encoderInfo, {
+          requestedLabel: targetResLabel,
+          sourceLabel: sourceResLabel,
+          upscaled: isUpscaled
+        })
       });
     } catch (err: any) {
-      console.error('MP4 export failed:', err);
-      diagnosticChannel.recordFrameDrop(err?.message || 'VideoEncoder runtime error during export');
-      showToast({ type: 'error', title: 'MP4 Export Failed', message: err?.message || 'VideoEncoder error' });
+      if (isExportAbortError(err)) {
+        // The user pressed Cancel: not a failure, nothing to report as an error.
+        setExportComplete(false);
+        showToast({ type: 'info', title: 'Export Cancelled', message: 'The MP4 export was cancelled. Nothing was downloaded.' });
+      } else {
+        console.error('MP4 export failed:', err);
+        diagnosticChannel.recordFrameDrop(err?.message || 'VideoEncoder runtime error during export');
+        showToast({ type: 'error', title: 'MP4 Export Failed', message: err?.message || 'VideoEncoder error' });
+      }
     } finally {
+      if (exportAbortRef.current === abortController) exportAbortRef.current = null;
       setIsExporting(false);
+      setExportProgress(0);
     }
   };
 
@@ -1430,10 +1494,14 @@ export function EditorStudio() {
     setExportGifProgress(0);
     setExportGifComplete(false);
 
+    const gifAbortController = new AbortController();
+    exportAbortRef.current = gifAbortController;
     try {
       const exporter = new HardwareGifExporter();
       const config = GIF_QUALITY_PRESETS[gifPreset] || GIF_QUALITY_PRESETS.compact;
       const gifBlob = await exporter.exportGif({
+        signal: gifAbortController.signal,
+        followCursor,
         videoSource: videoElement,
         videoBlob: videoBlob ?? undefined,
         durationMs,
@@ -1478,17 +1546,39 @@ export function EditorStudio() {
       setExportGifComplete(true);
       showToast({ type: 'success', title: 'GIF Exported', message: 'Looping animated GIF downloaded.' });
     } catch (err: any) {
-      console.error('GIF export failed:', err);
-      showToast({ type: 'error', title: 'GIF Export Failed', message: err?.message || 'GIF encoder error' });
+      if (isExportAbortError(err)) {
+        setExportGifComplete(false);
+        showToast({ type: 'info', title: 'Export Cancelled', message: 'The GIF export was cancelled. Nothing was downloaded.' });
+      } else {
+        console.error('GIF export failed:', err);
+        showToast({ type: 'error', title: 'GIF Export Failed', message: err?.message || 'GIF encoder error' });
+      }
     } finally {
+      if (exportAbortRef.current === gifAbortController) exportAbortRef.current = null;
       setIsExportingGif(false);
+      setExportGifProgress(0);
     }
   };
+
+  const handleCancelExport = () => {
+    exportAbortRef.current?.abort();
+  };
+
+  // What the user kept of the recording. The SOP guide and the HTML widget list
+  // steps, so they follow the same trim window and silence cuts as the video.
+  const buildExportTimelineWindow = () => ({
+    durationMs,
+    trimStartMs: trimStartMs > 0 ? trimStartMs : undefined,
+    trimEndMs: trimEndMs > 0 && trimEndMs < durationMs ? trimEndMs : undefined,
+    cutRanges: autoCutSilences
+      ? silences.filter((silence) => silence.markedForCut).map((silence) => ({ startTime: silence.startTime, endTime: silence.endTime }))
+      : []
+  });
 
   // 2. Step-by-Step Markdown / Notion SOP Guide Export
   const handleExportSopGuide = () => {
     if (!telemetry) return;
-    const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots());
+    const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots(), true, buildExportTimelineWindow());
     SopGuideExporter.downloadMarkdown(md, `${telemetry.metadata.title || 'SOP'}_Guide.md`);
     showToast({ type: 'success', title: 'SOP Guide Exported', message: 'Markdown guide downloaded.' });
   };
@@ -1496,7 +1586,7 @@ export function EditorStudio() {
   const handleCopySopGuide = async () => {
     if (!telemetry) return;
     try {
-      const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots());
+      const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots(), true, buildExportTimelineWindow());
       await navigator.clipboard.writeText(md);
       setCopiedSop(true);
       showToast({ type: 'success', title: 'SOP Copied', message: 'Markdown documentation copied to clipboard.' });
@@ -1511,7 +1601,9 @@ export function EditorStudio() {
     if (!telemetry) return;
     const html = HtmlWidgetExporter.generateInteractiveWidget(
       telemetry,
-      captureEngineRef.current.getSnapshots()
+      captureEngineRef.current.getSnapshots(),
+      true,
+      buildExportTimelineWindow()
     );
     HtmlWidgetExporter.downloadWidget(html, `${telemetry.metadata.title || 'Walkthrough'}_Interactive.html`);
     showToast({ type: 'success', title: 'HTML Widget Exported', message: 'Interactive walkthrough downloaded.' });
@@ -1705,6 +1797,18 @@ export function EditorStudio() {
             </option>
           </select>
 
+          {(isExporting || isExportingGif) && (
+            <button
+              id="cancel-export-btn"
+              onClick={handleCancelExport}
+              className="px-3.5 py-1.5 rounded-xl bg-red-500/15 hover:bg-red-500/25 text-red-200 text-xs font-medium flex items-center gap-1.5 border border-red-500/40 transition-colors"
+              title="Cancel the running export"
+            >
+              <XCircle className="w-3.5 h-3.5" />
+              Cancel export
+            </button>
+          )}
+
           {/* Hardware MP4 Exporter */}
           <button
             id="export-mp4-btn"
@@ -1833,6 +1937,7 @@ export function EditorStudio() {
           showCursor={showCursor}
           showHud={showHud}
           followCursor={followCursor}
+          cameraCursorKey={`${cursorSmoothing}|${telemetry?.metadata?.id ?? ''}|${telemetry?.mousePoints?.length ?? 0}`}
           metadata={telemetry?.metadata}
           cursorTheme={cursorTheme}
           cursorScale={cursorScale}
@@ -1915,6 +2020,11 @@ export function EditorStudio() {
         onRedetectZooms={handleRedetectZooms}
         onUpdatePill={handleUpdatePill}
         onDeletePill={handleDeletePill}
+        sourcePixelWidth={resolveSourcePixelWidth(
+          captureEngineRef.current.getTrackSettings()?.width,
+          videoElement instanceof HTMLVideoElement ? videoElement.videoWidth : undefined,
+          telemetry?.metadata
+        )}
         onAddPillAtPlayhead={() => handleAddPillAtPlayhead(0.5, 0.5)}
         silences={silences}
         onToggleSilenceCut={handleToggleSilenceCut}

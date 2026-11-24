@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { Video, Mic, EyeOff, Shield, Sparkles, Sliders, ExternalLink } from 'lucide-react';
 import { ensureDevChromeMocks } from '../engine/dev-environment';
+import { loadPrivacyPrefs, savePrivacyPrefs } from '../engine/privacy-prefs';
+import { describeShieldOutcome } from './shield-feedback';
 import '../index.css';
 
 ensureDevChromeMocks();
@@ -23,6 +25,18 @@ export function PopupApp() {
   const [blurRevenue, setBlurRevenue] = useState(true);
   const [blurApiKeys, setBlurApiKeys] = useState(true);
   const [pickerActive, setPickerActive] = useState(false);
+  // Shown when the privacy shield could not be attached to the page being recorded.
+  const [shieldNotice, setShieldNotice] = useState<{ text: string; proceed?: () => void } | null>(null);
+
+  // The toggles are remembered: reopen the popup (or start from the editor) and
+  // the categories are as the user left them.
+  useEffect(() => {
+    loadPrivacyPrefs().then((prefs) => {
+      setBlurEmails(prefs.blurEmails);
+      setBlurRevenue(prefs.blurRevenue);
+      setBlurApiKeys(prefs.blurApiKeys);
+    });
+  }, []);
 
   useEffect(() => {
     if (typeof chrome !== 'undefined' && chrome.runtime) {
@@ -46,13 +60,26 @@ export function PopupApp() {
       blurApiKeys: key === 'keys' ? val : blurApiKeys
     };
 
-    // Forward via service worker to broadcast to all matching web tabs
+    void savePrivacyPrefs(options);
+
+    // Forward via service worker to broadcast to all matching web tabs. The
+    // service worker answers with a per-tab result: tell the user when the
+    // shield did not reach the page they are looking at.
     if (typeof chrome !== 'undefined' && chrome.runtime) {
       chrome.runtime.sendMessage({
         type: 'APPLY_PRIVACY_OPTIONS',
         options
-      }, () => {
-        void chrome.runtime?.lastError;
+      }, (res) => {
+        if (chrome.runtime?.lastError) return;
+        const anyOn = options.blurEmails || options.blurRevenue || options.blurApiKeys;
+        if (!anyOn) {
+          setShieldNotice(null);
+          return;
+        }
+        chrome.tabs?.query?.({ active: true, currentWindow: true }, (tabs) => {
+          const text = describeShieldOutcome(res?.results, tabs?.[0]?.id);
+          setShieldNotice(text ? { text } : null);
+        });
       });
     }
 
@@ -109,18 +136,30 @@ export function PopupApp() {
 
         const launchWithTarget = (targetTab?: chrome.tabs.Tab) => {
           const targetTabId = targetTab?.id;
-          if (targetTabId && isLikelyWebTab(targetTab)) {
-            chrome.tabs.sendMessage(targetTabId, {
-              type: 'APPLY_PRIVACY_OPTIONS',
-              options: { blurEmails, blurRevenue, blurApiKeys }
-            }, () => {
-              void chrome.runtime?.lastError;
-            });
+          const openEditor = () => {
+            const url = chrome.runtime.getURL(`editor.html?record=true&includeMic=${includeMic}&sourceTab=${targetTabId || ''}`);
+            chrome.tabs.create({ url });
+            window.close();
+          };
+          const options = { blurEmails, blurRevenue, blurApiKeys };
+          void savePrivacyPrefs(options);
+          if (!(targetTabId && isLikelyWebTab(targetTab))) {
+            openEditor();
+            return;
           }
-
-          const url = chrome.runtime.getURL(`editor.html?record=true&includeMic=${includeMic}&sourceTab=${targetTabId || ''}`);
-          chrome.tabs.create({ url });
-          window.close();
+          // Shield the page that is about to be recorded, and listen to the
+          // answer: if the shield cannot reach it, say so BEFORE recording
+          // starts instead of recording unblurred data without a word.
+          chrome.runtime.sendMessage({ type: 'APPLY_PRIVACY_OPTIONS', options, tabId: targetTabId }, (res) => {
+            void chrome.runtime?.lastError;
+            const anyOn = options.blurEmails || options.blurRevenue || options.blurApiKeys;
+            const text = anyOn ? describeShieldOutcome(res?.results, targetTabId) : null;
+            if (text) {
+              setShieldNotice({ text, proceed: openEditor });
+              return;
+            }
+            openEditor();
+          });
         };
 
         if (currentActive && isLikelyWebTab(currentActive)) {
@@ -198,6 +237,38 @@ export function PopupApp() {
           </button>
         )}
       </div>
+
+      {shieldNotice && (
+        <div
+          id="shield-notice"
+          role="alert"
+          className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-[11px] leading-relaxed text-amber-100"
+        >
+          <p>{shieldNotice.text}</p>
+          <div className="mt-2 flex items-center gap-2">
+            {shieldNotice.proceed && (
+              <button
+                id="shield-notice-proceed"
+                onClick={() => {
+                  const go = shieldNotice.proceed;
+                  setShieldNotice(null);
+                  go?.();
+                }}
+                className="rounded-lg bg-amber-500/25 px-2.5 py-1 font-medium text-amber-50 hover:bg-amber-500/40"
+              >
+                Record anyway
+              </button>
+            )}
+            <button
+              id="shield-notice-dismiss"
+              onClick={() => setShieldNotice(null)}
+              className="rounded-lg border border-white/15 px-2.5 py-1 text-gray-300 hover:bg-white/10"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Recording Controls */}
       <div className="space-y-3 bg-[#14161D] p-3 rounded-xl border border-white/5 mb-4">

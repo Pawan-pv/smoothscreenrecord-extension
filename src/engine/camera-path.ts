@@ -12,25 +12,27 @@ import type { CameraState } from './spring-physics';
  *
  * Behaviours:
  *   idle (1.0x) -> zoom-in -> hold with dead-zone pan -> zoom-out (to 1.0x)
- *   and, between two pills that follow each other closely, a direct move that
- *   dips the scale when the targets are a medium distance apart (camera hop).
+ *   and, between two pills that follow each other closely, a direct smooth pan
+ *   from one target to the next (no zoom-out in between).
  */
 
 /** Front-loaded ease-out: zoom-ins launch crisply and settle softly. */
 export const CAMERA_EASE: readonly [number, number, number, number] = [0.22, 1, 0.36, 1];
-/** Length of a camera move when a pill does not set its own. */
-export const DEFAULT_TRANSITION_MS = 450;
+/** Camera speed presets: how long a zoom-in, a pan between zooms and a zoom-out take. */
+export const ZOOM_SPEEDS = [
+  { label: 'Rapid', ms: 250 },
+  { label: 'Quick', ms: 400 },
+  { label: 'Default', ms: 600 },
+  { label: 'Slow', ms: 900 }
+] as const;
+/** Length of a camera move when a pill does not set its own ("Default"). */
+export const DEFAULT_TRANSITION_MS = 600;
 /** A move may take at most this share of a (short) pill. */
 export const TRANSITION_MAX_FRACTION = 0.35;
 /** Pills closer than this follow each other without a trip back to 1.0x. */
 export const CHAIN_GAP_MS = 800;
 /** The still region of the zoomed view, as a share of the view's width/height. */
 export const DEAD_ZONE_FRACTION = 0.5;
-/** Camera hop: only for targets this far apart (normalized). */
-export const HOP_MIN_DISTANCE = 0.25;
-export const HOP_MAX_DISTANCE = 0.55;
-export const HOP_MIN_SCALE = 1.25;
-export const HOP_DIP_FACTOR = 0.72;
 
 const PAN_STEP_MS = 1000 / 120;
 /** Natural frequency of the pan follow (rad/s): critically damped, settles in ~0.5 s. */
@@ -271,14 +273,7 @@ export function buildCameraPath(pills: ZoomPill[], options: CameraPathOptions = 
     const e = ease(p);
     const from = a.pan.at(a.end);
     const to = b.pan.at(t);
-    let scale = lerp(a.scale, b.scale, e);
-    const distance = Math.hypot(b.targetX - a.targetX, b.targetY - a.targetY);
-    if (distance >= HOP_MIN_DISTANCE && distance <= HOP_MAX_DISTANCE) {
-      // Camera hop: pull back while panning, then settle into the next zoom.
-      const dip = Math.max(HOP_MIN_SCALE, Math.min(a.scale, b.scale) * HOP_DIP_FACTOR);
-      const depth = lerp(a.scale, b.scale, ease(0.5)) - dip;
-      scale -= depth * Math.sin(Math.PI * p) ** 2;
-    }
+    const scale = lerp(a.scale, b.scale, e);
     return finish(
       lerp(from.x, to.x, e),
       lerp(from.y, to.y, e),

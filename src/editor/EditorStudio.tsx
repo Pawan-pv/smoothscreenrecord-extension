@@ -15,7 +15,8 @@ import {
   BackdropMatrixParams
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
-import { generateAutoZoomPills, resolveSourcePixelWidth } from '../engine/spring-physics';
+import { generateAutoZoomPills, resolveSourcePixelWidth, AUTO_ZOOM_DEFAULT_DEPTH } from '../engine/spring-physics';
+import { DEFAULT_TRANSITION_MS } from '../engine/camera-path';
 import { toCaptureSpace } from '../engine/capture-space';
 import { CursorSplineEngine } from '../engine/cursor-spline';
 import { AudioProcessor } from '../engine/audio-processor';
@@ -93,6 +94,51 @@ function withSession(tel: TelemetryData | null, sessionId: string, durationMs: n
   };
 }
 
+export interface AutoZoomSettings {
+  enabled: boolean;
+  /** Depth of every auto zoom. */
+  depth: number;
+  /** Camera speed of auto zooms (ms). */
+  speedMs: number;
+}
+
+const AUTO_ZOOM_SETTINGS_KEY = 'smoothstudio.autoZoom';
+
+function loadAutoZoomSettings(): AutoZoomSettings {
+  const defaults: AutoZoomSettings = { enabled: true, depth: AUTO_ZOOM_DEFAULT_DEPTH, speedMs: DEFAULT_TRANSITION_MS };
+  try {
+    const saved = JSON.parse(localStorage.getItem(AUTO_ZOOM_SETTINGS_KEY) || 'null');
+    if (!saved || typeof saved !== 'object') return defaults;
+    return {
+      enabled: typeof saved.enabled === 'boolean' ? saved.enabled : defaults.enabled,
+      depth: Number.isFinite(saved.depth) && saved.depth > 1 ? saved.depth : defaults.depth,
+      speedMs: Number.isFinite(saved.speedMs) && saved.speedMs > 0 ? saved.speedMs : defaults.speedMs
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+/**
+ * Page clicks line up with a browser-tab recording directly, and with a window /
+ * screen recording once they were moved onto its frame (toCaptureSpace).
+ */
+function canAutoZoom(tel: TelemetryData): boolean {
+  const surface = tel.metadata?.displaySurface;
+  return (surface !== 'window' && surface !== 'monitor') || tel.metadata?.coordinateSpace === 'capture';
+}
+
+function buildAutoZoomPills(tel: TelemetryData, durationMs: number, settings: AutoZoomSettings): ZoomPill[] {
+  if (!settings.enabled || !canAutoZoom(tel)) return [];
+  return generateAutoZoomPills(
+    tel.clicks || [],
+    durationMs,
+    tel.metadata?.width || 1920,
+    tel.metadata?.height || 1080,
+    { depth: settings.depth, transitionMs: settings.speedMs }
+  );
+}
+
 export function EditorStudio() {
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
   const prevBlobUrlRef = useRef<string | null>(null);
@@ -102,6 +148,14 @@ export function EditorStudio() {
   const activeSessionIdRef = useRef<string | null>(null);
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | HTMLCanvasElement | null>(null);
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
+  const [autoZoomSettings, setAutoZoomSettingsState] = useState<AutoZoomSettings>(loadAutoZoomSettings);
+  /** Read by setupLoadedRecording, which can run from an older render. */
+  const autoZoomSettingsRef = useRef<AutoZoomSettings>(autoZoomSettings);
+  const setAutoZoomSettings = (settings: AutoZoomSettings) => {
+    autoZoomSettingsRef.current = settings;
+    setAutoZoomSettingsState(settings);
+    try { localStorage.setItem(AUTO_ZOOM_SETTINGS_KEY, JSON.stringify(settings)); } catch { /* storage unavailable */ }
+  };
   const [durationMs, setDurationMs] = useState<number>(10000);
   const [trimStartMs, setTrimStartMs] = useState<number>(0);
   const [trimEndMs, setTrimEndMs] = useState<number>(0);
@@ -605,26 +659,7 @@ export function EditorStudio() {
     cursorEngineRef.current.setData(data.mousePoints || [], data.clicks || [], data.pressEvents || []);
 
     const displaySurface = data.metadata?.displaySurface || captureEngineRef.current.getTrackSettings()?.displaySurface;
-    const isPageCapture = displaySurface !== 'window' && displaySurface !== 'monitor';
-
-    // DOM coordinates match a browser-tab capture directly. A window/monitor frame
-    // has a different coordinate space: auto-zoom runs once the clicks were moved
-    // onto that frame (toCaptureSpace); otherwise only manual zooms are offered.
-    const autoPills = isPageCapture || data.metadata?.coordinateSpace === 'capture' ? generateAutoZoomPills(
-        data.clicks || [],
-        data.inputEvents || [],
-        safeDuration,
-        data.metadata?.width || 1920,
-        data.metadata?.height || 1080,
-        data.scrollEvents,
-        data.typingSessions,
-        {
-          mousePoints: data.mousePoints,
-          keystrokes: data.keystrokes,
-          visibilityEvents: data.visibilityEvents,
-          sourcePixelWidth: resolveSourcePixelWidth(captureEngineRef.current.getTrackSettings()?.width, undefined, data.metadata)
-        }
-      ) : [];
+    const autoPills = buildAutoZoomPills(data, safeDuration, autoZoomSettingsRef.current);
     setPills(autoPills);
 
     // Captions are only ever sourced from a REAL transcription supplied with the
@@ -814,22 +849,33 @@ export function EditorStudio() {
   }, [isPlaying, durationMs, trimStartMs, trimEndMs, soundEnabled, telemetry, pills, silences, autoCutSilences, showOutroCard]);
 
   // Timeline Interactions
-  const handleAddPillAtPlayhead = useCallback((targetX = 0.5, targetY = 0.5) => {
+  /** A zoom at the playhead: on the given point, else on the cursor at that moment (like an auto zoom). */
+  const handleAddPillAtPlayhead = useCallback((targetX?: number, targetY?: number) => {
     const playhead = currentTimeRef.current;
+    const settings = autoZoomSettingsRef.current;
+    let x = targetX;
+    let y = targetY;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      const cursor = (telemetry?.mousePoints || []).length > 0 ? cursorEngineRef.current.getCursorAt(playhead) : null;
+      const onFrame = (v: number | undefined) => Number.isFinite(v) && (v as number) >= 0 && (v as number) <= 1;
+      x = cursor && onFrame(cursor.x) && onFrame(cursor.y) ? cursor.x : 0.5;
+      y = cursor && onFrame(cursor.x) && onFrame(cursor.y) ? cursor.y : 0.5;
+    }
     const newPill: ZoomPill = {
       id: 'pill_' + Date.now(),
-      startTime: Math.max(0, playhead - 200),
-      endTime: Math.min(durationMs, playhead + 2400),
-      targetX,
-      targetY,
-      targetScale: 1.8,
-      tiltX: targetX > 0.5 ? -4 : 4,
-      tiltY: targetX > 0.5 ? 6 : -6,
-      spotlight: true,
-      label: 'Custom Zoom'
+      startTime: Math.max(0, playhead - settings.speedMs),
+      endTime: Math.min(durationMs, playhead + 2500),
+      targetX: x as number,
+      targetY: y as number,
+      targetScale: settings.depth,
+      tiltX: 0,
+      tiltY: 0,
+      spotlight: false,
+      label: 'Custom Zoom',
+      transitionDuration: settings.speedMs
     };
     setPills((prev) => [...prev, newPill].sort((a, b) => a.startTime - b.startTime));
-  }, [durationMs]);
+  }, [durationMs, telemetry]);
 
   const handleSelectPreset = useCallback((newPreset: VibePreset) => {
     setPreset(newPreset);
@@ -926,7 +972,7 @@ export function EditorStudio() {
         const safeTrimEnd = Math.max(0, Math.min(durationMs, trimEndMs > 0 ? trimEndMs : durationMs));
         setCurrentTimeMs((t) => Math.min(safeTrimEnd, t + 1000));
       } else if (shortcut === 'add-zoom') {
-        handleAddPillAtPlayhead(0.5, 0.5);
+        handleAddPillAtPlayhead();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -1228,43 +1274,35 @@ export function EditorStudio() {
     if (selectedPillId === id) setSelectedPillId(null);
   };
 
+  /** Rebuilds the auto zooms with these settings; zooms added by hand are kept. */
+  const applyAutoZoom = (settings: AutoZoomSettings) => {
+    if (!telemetry) return;
+    const safeDuration = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000;
+    const autoPills = buildAutoZoomPills(telemetry, safeDuration, settings);
+    setPills((prev) => {
+      const next = [...prev.filter((p) => !p.autoGenerated), ...autoPills].sort((a, b) => a.startTime - b.startTime);
+      if (selectedPillId && !next.some((p) => p.id === selectedPillId)) setSelectedPillId(null);
+      return next;
+    });
+  };
+
   const handleRedetectZooms = () => {
     if (!telemetry) return;
-    const displaySurface = telemetry.metadata?.displaySurface;
-    if ((displaySurface === 'window' || displaySurface === 'monitor') && telemetry.metadata?.coordinateSpace !== 'capture') {
-      setPills([]);
-      setSelectedPillId(null);
+    if (!canAutoZoom(telemetry)) {
       showToast({
         type: 'info',
         title: 'Manual zoom only',
-        message: 'Auto Zoom uses browser-tab coordinates. Add zooms manually for this window or monitor capture.'
+        message: 'This window or screen recording does not show the recorded page where SmoothStudio expected it. Add zooms by hand.'
       });
       return;
     }
-    const safeDuration = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 10000;
-    const autoPills = generateAutoZoomPills(
-      telemetry.clicks || [],
-      telemetry.inputEvents || [],
-      safeDuration,
-      telemetry.metadata?.width || 1920,
-      telemetry.metadata?.height || 1080,
-      telemetry.scrollEvents,
-      telemetry.typingSessions,
-      {
-        mousePoints: telemetry.mousePoints,
-        keystrokes: telemetry.keystrokes,
-        visibilityEvents: telemetry.visibilityEvents,
-        sourcePixelWidth: resolveSourcePixelWidth(
-          captureEngineRef.current.getTrackSettings()?.width,
-          videoElement instanceof HTMLVideoElement ? videoElement.videoWidth : undefined,
-          telemetry.metadata
-        )
-      }
-    );
-    setPills(autoPills);
-    if (selectedPillId && !autoPills.some((p) => p.id === selectedPillId)) {
-      setSelectedPillId(null);
-    }
+    applyAutoZoom(autoZoomSettings);
+  };
+
+  const handleChangeAutoZoom = (change: Partial<AutoZoomSettings>) => {
+    const settings = { ...autoZoomSettings, ...change };
+    setAutoZoomSettings(settings);
+    applyAutoZoom(settings);
   };
 
   // Timeline seek: reset SFX dedup so re-scrubbing can re-arm event triggers
@@ -1981,6 +2019,9 @@ export function EditorStudio() {
         selectedPillId={selectedPillId}
         onSelectPill={setSelectedPillId}
         onRedetectZooms={handleRedetectZooms}
+        autoZoom={autoZoomSettings}
+        onChangeAutoZoom={handleChangeAutoZoom}
+        recordedClickCount={telemetry ? (telemetry.clicks || []).length : undefined}
         onUpdatePill={handleUpdatePill}
         onDeletePill={handleDeletePill}
         sourcePixelWidth={resolveSourcePixelWidth(
@@ -1988,7 +2029,7 @@ export function EditorStudio() {
           videoElement instanceof HTMLVideoElement ? videoElement.videoWidth : undefined,
           telemetry?.metadata
         )}
-        onAddPillAtPlayhead={() => handleAddPillAtPlayhead(0.5, 0.5)}
+        onAddPillAtPlayhead={() => handleAddPillAtPlayhead()}
         silences={silences}
         onToggleSilenceCut={handleToggleSilenceCut}
         onCutAllSilences={handleCutAllSilences}

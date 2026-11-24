@@ -8,12 +8,15 @@ import {
   maskIfSensitive,
   BlurOptions
 } from './export-safety';
+import { createExportTimelineFilter, ExportTimelineWindow } from './export-timeline';
 
 export class HtmlWidgetExporter {
   public static generateInteractiveWidget(
     telemetry: TelemetryData,
     snapshots: { timestamp: number; dataUrl: string }[] = [],
-    autoBlur: boolean | { blurEmails?: boolean; blurRevenue?: boolean; blurApiKeys?: boolean } = true
+    autoBlur: boolean | { blurEmails?: boolean; blurRevenue?: boolean; blurApiKeys?: boolean } = true,
+    /** What the user kept: steps outside the trim window or inside a cut are left out. */
+    timeline?: ExportTimelineWindow | null
   ): string {
     const blurOptions: BlurOptions = typeof autoBlur === 'boolean'
       ? { blurEmails: autoBlur, blurRevenue: autoBlur, blurApiKeys: autoBlur }
@@ -24,7 +27,10 @@ export class HtmlWidgetExporter {
         };
     const isAutoBlurOn = Boolean(blurOptions.blurEmails || blurOptions.blurRevenue || blurOptions.blurApiKeys);
 
-    const { metadata, clicks } = telemetry;
+    const { metadata } = telemetry;
+    const kept = createExportTimelineFilter(timeline);
+    const clicks = telemetry.clicks.filter((c) => kept.keeps(c.t));
+    snapshots = snapshots.filter((s) => kept.keeps(s.timestamp));
 
     const rawTitle = metadata.title || 'Screen Recording';
     const maskedTitle = maskIfSensitive(rawTitle, false, blurOptions);

@@ -1500,10 +1500,21 @@ export function EditorStudio() {
     }
   };
 
+  // What the user kept of the recording. The SOP guide and the HTML widget list
+  // steps, so they follow the same trim window and silence cuts as the video.
+  const buildExportTimelineWindow = () => ({
+    durationMs,
+    trimStartMs: trimStartMs > 0 ? trimStartMs : undefined,
+    trimEndMs: trimEndMs > 0 && trimEndMs < durationMs ? trimEndMs : undefined,
+    cutRanges: autoCutSilences
+      ? silences.filter((silence) => silence.markedForCut).map((silence) => ({ startTime: silence.startTime, endTime: silence.endTime }))
+      : []
+  });
+
   // 2. Step-by-Step Markdown / Notion SOP Guide Export
   const handleExportSopGuide = () => {
     if (!telemetry) return;
-    const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots());
+    const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots(), true, buildExportTimelineWindow());
     SopGuideExporter.downloadMarkdown(md, `${telemetry.metadata.title || 'SOP'}_Guide.md`);
     showToast({ type: 'success', title: 'SOP Guide Exported', message: 'Markdown guide downloaded.' });
   };
@@ -1511,7 +1522,7 @@ export function EditorStudio() {
   const handleCopySopGuide = async () => {
     if (!telemetry) return;
     try {
-      const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots());
+      const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots(), true, buildExportTimelineWindow());
       await navigator.clipboard.writeText(md);
       setCopiedSop(true);
       showToast({ type: 'success', title: 'SOP Copied', message: 'Markdown documentation copied to clipboard.' });
@@ -1526,7 +1537,9 @@ export function EditorStudio() {
     if (!telemetry) return;
     const html = HtmlWidgetExporter.generateInteractiveWidget(
       telemetry,
-      captureEngineRef.current.getSnapshots()
+      captureEngineRef.current.getSnapshots(),
+      true,
+      buildExportTimelineWindow()
     );
     HtmlWidgetExporter.downloadWidget(html, `${telemetry.metadata.title || 'Walkthrough'}_Interactive.html`);
     showToast({ type: 'success', title: 'HTML Widget Exported', message: 'Interactive walkthrough downloaded.' });

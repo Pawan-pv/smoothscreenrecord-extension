@@ -177,3 +177,56 @@ export function maskIfSensitive(
   return { text, hidden: false };
 }
 
+const SENSITIVE_URL_KEY = /(token|key|secret|passw|auth|session|sig(nature)?$|jwt|bearer|credential|code$|otp)/i;
+
+function decodeURIComponentSafe(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * A recorded page's URL is page-controlled text and routinely carries secrets
+ * (`?token=`, `#access_token=`, `user:pass@host`, an email in a path). When the
+ * privacy shield is active the URL printed in a guide must not give them away.
+ * With every category off the URL is returned untouched.
+ */
+export function redactUrlForExport(
+  url: string | undefined,
+  blur: BlurOptions = { blurEmails: true, blurRevenue: true, blurApiKeys: true }
+): string | undefined {
+  if (!url) return url;
+  if (!(blur.blurEmails || blur.blurRevenue || blur.blurApiKeys)) return url;
+  const MASK = 'REDACTED';
+  const maskValue = (key: string, value: string): string => {
+    if (!value) return value;
+    if (SENSITIVE_URL_KEY.test(key)) return MASK;
+    return maskIfSensitive(decodeURIComponentSafe(value), false, blur).hidden ? MASK : value;
+  };
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return maskIfSensitive(url, false, blur).hidden ? MASK : url;
+  }
+  parsed.username = '';
+  parsed.password = '';
+  parsed.pathname = parsed.pathname
+    .split('/')
+    .map((segment) => (segment && maskIfSensitive(decodeURIComponentSafe(segment), false, blur).hidden ? MASK : segment))
+    .join('/');
+  const redactedQuery = new URLSearchParams();
+  new URLSearchParams(parsed.search).forEach((value, key) => redactedQuery.append(key, maskValue(key, value)));
+  parsed.search = redactedQuery.toString();
+  if (parsed.hash.includes('=')) {
+    const redactedHash = new URLSearchParams();
+    new URLSearchParams(parsed.hash.slice(1)).forEach((value, key) => redactedHash.append(key, maskValue(key, value)));
+    parsed.hash = redactedHash.toString();
+  } else if (parsed.hash && maskIfSensitive(decodeURIComponentSafe(parsed.hash.slice(1)), false, blur).hidden) {
+    parsed.hash = MASK;
+  }
+  return parsed.toString();
+}
+

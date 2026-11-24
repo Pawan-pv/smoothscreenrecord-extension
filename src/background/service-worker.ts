@@ -727,6 +727,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // 5c. A cross-origin iframe of the recorded tab: is the tab being recorded?
+  if (message.type === 'FRAME_TRACKING_STATUS') {
+    loadSessionState().then((curr) => {
+      sendResponse({ recording: curr.isRecording && typeof sender.tab?.id === 'number' && sender.tab.id === curr.activeRecordingTabId });
+    });
+    return true;
+  }
+
+  // 5d. Pointer events of a cross-origin iframe (the top page cannot see them):
+  // relayed to the top page of the same tab, which records them in its stream.
+  if (message.type === 'FRAME_TELEMETRY') {
+    const tabId = sender.tab?.id;
+    loadSessionState().then((curr) => {
+      if (!curr.isRecording || typeof tabId !== 'number' || tabId !== curr.activeRecordingTabId || !Array.isArray(message.events)) {
+        sendResponse({ ok: false });
+        return;
+      }
+      try {
+        chrome.tabs.sendMessage(tabId, { type: 'FRAME_TELEMETRY', events: message.events }, { frameId: 0 }, () => {
+          void chrome.runtime?.lastError;
+          sendResponse({ ok: true });
+        });
+      } catch {
+        sendResponse({ ok: false });
+      }
+    });
+    return true;
+  }
+
   // 6. Forward Privacy & Redaction Messages to Tabs
   if (['APPLY_PRIVACY_OPTIONS', 'START_PICKER', 'STOP_PICKER', 'RESET_PRIVACY'].includes(message.type)) {
     // Remember the shield configuration: a page the recorded tab navigates to

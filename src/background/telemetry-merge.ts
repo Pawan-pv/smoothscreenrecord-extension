@@ -35,6 +35,7 @@ export interface SegmentPageInfo {
   width?: number;
   height?: number;
   devicePixelRatio?: number;
+  screenLayout?: RecordingMetadata['screenLayout'];
   brandColors?: RecordingMetadata['brandColors'];
 }
 
@@ -165,6 +166,7 @@ export function mergeTelemetrySegments(input: MergeInput): TelemetryData | null 
   const fm = finalData?.metadata;
   const now = Date.now();
   const durationMs = Math.max(0, Math.round(fm?.durationMs ?? (now - input.referenceOrigin)));
+  const screenLayout = fm?.screenLayout ?? [...ordered].reverse().find((s) => s.page.screenLayout)?.page.screenLayout;
   const metadata: RecordingMetadata = {
     id: input.sessionId || fm?.id || ('rec_' + now),
     ...(input.sessionId || fm?.sessionId ? { sessionId: (input.sessionId || fm?.sessionId) as string } : {}),
@@ -176,6 +178,7 @@ export function mergeTelemetrySegments(input: MergeInput): TelemetryData | null 
     devicePixelRatio: fm?.devicePixelRatio ?? lastPage?.devicePixelRatio ?? 1,
     title: firstPage?.title ?? fm?.title ?? 'Screen Recording',
     url: firstPage?.url ?? fm?.url,
+    ...(screenLayout ? { screenLayout } : {}),
     brandColors: fm?.brandColors ?? [...ordered].reverse().find((s) => s.page.brandColors)?.page.brandColors ?? DEFAULT_BRAND
   };
 

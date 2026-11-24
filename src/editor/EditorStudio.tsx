@@ -16,6 +16,7 @@ import {
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
 import { generateAutoZoomPills, resolveSourcePixelWidth } from '../engine/spring-physics';
+import { toCaptureSpace } from '../engine/capture-space';
 import { CursorSplineEngine } from '../engine/cursor-spline';
 import { AudioProcessor } from '../engine/audio-processor';
 import { SfxSynthesizer } from '../engine/sfx-synthesizer';
@@ -511,7 +512,16 @@ export function EditorStudio() {
     loadInitial();
   }, []);
 
-  const setupLoadedRecording = (blob: Blob, data: TelemetryData, measuredDurationMs?: number, sessionId?: string | null) => {
+  const setupLoadedRecording = (blob: Blob, loadedData: TelemetryData, measuredDurationMs?: number, sessionId?: string | null) => {
+    // A window / entire-screen recording shows the page somewhere inside the picture:
+    // move the page's clicks and cursor onto the recorded frame so auto-zoom lands on them.
+    const loadedTrack = captureEngineRef.current.getTrackSettings();
+    const data = toCaptureSpace(
+      loadedData,
+      loadedData.metadata?.displaySurface || loadedTrack?.displaySurface,
+      loadedTrack?.width,
+      loadedTrack?.height
+    ) ?? loadedData;
     firedSfxRef.current.clear();
     setVideoBlob(blob);
     setTelemetry(data);
@@ -625,10 +635,10 @@ export function EditorStudio() {
     const displaySurface = data.metadata?.displaySurface || captureEngineRef.current.getTrackSettings()?.displaySurface;
     const isPageCapture = displaySurface !== 'window' && displaySurface !== 'monitor';
 
-    // DOM coordinates are meaningful only for a browser-tab capture. A
-    // window/monitor frame has a different coordinate space, so only manual
-    // canvas zooms are offered for that recording.
-    const autoPills = isPageCapture ? generateAutoZoomPills(
+    // DOM coordinates match a browser-tab capture directly. A window/monitor frame
+    // has a different coordinate space: auto-zoom runs once the clicks were moved
+    // onto that frame (toCaptureSpace); otherwise only manual zooms are offered.
+    const autoPills = isPageCapture || data.metadata?.coordinateSpace === 'capture' ? generateAutoZoomPills(
         data.clicks || [],
         data.inputEvents || [],
         safeDuration,
@@ -1267,7 +1277,7 @@ export function EditorStudio() {
   const handleRedetectZooms = () => {
     if (!telemetry) return;
     const displaySurface = telemetry.metadata?.displaySurface;
-    if (displaySurface === 'window' || displaySurface === 'monitor') {
+    if ((displaySurface === 'window' || displaySurface === 'monitor') && telemetry.metadata?.coordinateSpace !== 'capture') {
       setPills([]);
       setSelectedPillId(null);
       showToast({

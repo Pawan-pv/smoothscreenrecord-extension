@@ -84,6 +84,26 @@ export interface ScrollEvent {
   scrollY: number;
 }
 
+/**
+ * Where the recorded page sat on the screen, in screen CSS pixels (DIPs). Lets the editor
+ * place page clicks on a window or entire-screen recording.
+ */
+export interface ScreenLayout {
+  /** Top-left corner of the page viewport on the screen. */
+  viewportLeft: number;
+  viewportTop: number;
+  /** Browser zoom of the page (1 = 100%). */
+  zoom: number;
+  screenLeft: number;
+  screenTop: number;
+  screenWidth: number;
+  screenHeight: number;
+  windowLeft: number;
+  windowTop: number;
+  windowWidth: number;
+  windowHeight: number;
+}
+
 export interface RecordingMetadata {
   id: string;
   /** Recording session id: shared by the video, the telemetry and the editor (M1-08). */
@@ -98,6 +118,13 @@ export interface RecordingMetadata {
   url?: string;
   displaySurface?: 'browser' | 'window' | 'monitor' | string;
   capturedNativeCursor?: CapturedNativeCursor;
+  /** Where the page sat on the screen while recording (absent in older recordings). */
+  screenLayout?: ScreenLayout;
+  /**
+   * 'capture': the coordinates were converted from the page viewport into the recorded
+   * window/screen frame. Absent = page viewport coordinates.
+   */
+  coordinateSpace?: 'capture';
   brandColors?: {
     primary: string;
     secondary: string;

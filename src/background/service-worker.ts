@@ -9,6 +9,8 @@ interface SessionState {
   activeSessionId?: string | null;
 }
 
+import { mergeTelemetrySegments, segmentKey, TelemetrySegment } from './telemetry-merge';
+
 // Memory cache of session state (synced with storage.session to survive worker sleep)
 let state: SessionState = {
   activeRecordingTabId: null,
@@ -69,6 +71,76 @@ async function persistSessionState(partial: Partial<SessionState>): Promise<void
   } finally {
     pendingStateWrites--;
   }
+}
+
+/**
+ * Recording context that must outlive a page load of the recorded tab.
+ * Kept in storage.session so it also survives the service worker idling:
+ * - recordingOriginEpoch: the instant the video's first picture was shown. A
+ *   page that loads mid-recording measures its timestamps against it.
+ * - activePrivacyOptions: the shield categories the user turned on.
+ * - segment index: the keys of the telemetry segments handed over by pages that
+ *   have since been left (navigation / reload).
+ */
+const CTX_ORIGIN_KEY = 'recordingOriginEpoch';
+const CTX_PRIVACY_KEY = 'activePrivacyOptions';
+const SEGMENT_INDEX_KEY = 'smoothstudio_seg_index';
+
+async function readRecordingContext(): Promise<{ originEpoch: number | null; privacyOptions: Record<string, boolean> | null }> {
+  const data: Record<string, any> = await getStorageArea().get([CTX_ORIGIN_KEY, CTX_PRIVACY_KEY]).catch(() => ({}));
+  return {
+    originEpoch: typeof data[CTX_ORIGIN_KEY] === 'number' ? data[CTX_ORIGIN_KEY] : null,
+    privacyOptions: data[CTX_PRIVACY_KEY] && typeof data[CTX_PRIVACY_KEY] === 'object' ? data[CTX_PRIVACY_KEY] : null
+  };
+}
+
+// Segment writes are read-modify-write on the index: serialise them.
+let segmentQueue: Promise<unknown> = Promise.resolve();
+function queueSegmentOp<T>(op: () => Promise<T>): Promise<T> {
+  const next = segmentQueue.then(op, op);
+  segmentQueue = next.catch(() => undefined);
+  return next;
+}
+
+function storeSegment(segment: TelemetrySegment): Promise<boolean> {
+  return queueSegmentOp(async () => {
+    try {
+      const key = segmentKey(segment);
+      const idx: Record<string, any> = await getStorageArea().get([SEGMENT_INDEX_KEY]);
+      const keys: string[] = Array.isArray(idx[SEGMENT_INDEX_KEY]) ? idx[SEGMENT_INDEX_KEY] : [];
+      if (!keys.includes(key)) keys.push(key);
+      await getStorageArea().set({ [key]: segment, [SEGMENT_INDEX_KEY]: keys });
+      return true;
+    } catch (err) {
+      console.warn('[SmoothStudio SW] Failed to store telemetry segment:', err);
+      return false;
+    }
+  });
+}
+
+function readSegments(sessionId: string | null): Promise<TelemetrySegment[]> {
+  return queueSegmentOp(async () => {
+    const idx: Record<string, any> = await getStorageArea().get([SEGMENT_INDEX_KEY]).catch(() => ({}));
+    const keys: string[] = Array.isArray(idx[SEGMENT_INDEX_KEY]) ? idx[SEGMENT_INDEX_KEY] : [];
+    if (keys.length === 0) return [];
+    const stored: Record<string, any> = await getStorageArea().get(keys).catch(() => ({}));
+    return keys
+      .map((k) => stored[k] as TelemetrySegment | undefined)
+      .filter((seg): seg is TelemetrySegment => Boolean(seg) && (seg!.sessionId || null) === (sessionId || null));
+  });
+}
+
+/** Removes the segments of one session, or every segment when no session is named. */
+function clearSegments(sessionId?: string | null): Promise<void> {
+  return queueSegmentOp(async () => {
+    const idx: Record<string, any> = await getStorageArea().get([SEGMENT_INDEX_KEY]).catch(() => ({}));
+    const keys: string[] = Array.isArray(idx[SEGMENT_INDEX_KEY]) ? idx[SEGMENT_INDEX_KEY] : [];
+    const prefix = sessionId === undefined ? null : `smoothstudio_seg:${sessionId}:`;
+    const doomed = prefix ? keys.filter((k) => k.startsWith(prefix)) : keys;
+    const kept = keys.filter((k) => !doomed.includes(k));
+    await getStorageArea().remove(doomed).catch(() => undefined);
+    await getStorageArea().set({ [SEGMENT_INDEX_KEY]: kept }).catch(() => undefined);
+  });
 }
 
 /**
@@ -144,19 +216,40 @@ async function endRecordingSession(expectedSessionId: string | null = null): Pro
     }
     const tabId = curr.activeRecordingTabId;
     let telemetry: any = null;
+    let finalResponse: any = null;
     if (tabId) {
-      telemetry = await new Promise<any>((resolve) => {
+      finalResponse = await new Promise<any>((resolve) => {
         let done = false;
         const finish = (v: any) => { if (!done) { done = true; resolve(v); } };
         try {
           chrome.tabs.sendMessage(tabId, { type: 'STOP_TELEMETRY', sessionId }, (response) => {
             void chrome.runtime?.lastError; // the tab may be gone
-            finish(response?.data || null);
+            finish(response || null);
           });
         } catch { finish(null); }
         setTimeout(() => finish(null), STOP_TELEMETRY_TIMEOUT_MS);
       });
+      telemetry = finalResponse?.data || null;
     }
+    // Pages the recorded tab went through (navigation / reload) handed their
+    // telemetry over in segments: stitch them and the last page into one stream.
+    const handedOver = await readSegments(sessionId);
+    const unacked: TelemetrySegment[] = Array.isArray(finalResponse?.unacked) ? finalResponse.unacked : [];
+    if (handedOver.length > 0 || unacked.length > 0) {
+      const ctx = await readRecordingContext();
+      const all = [...handedOver, ...unacked];
+      const finalOrigin = typeof finalResponse?.originEpoch === 'number' ? finalResponse.originEpoch : null;
+      const referenceOrigin = ctx.originEpoch
+        ?? finalOrigin
+        ?? [...all].sort((a, b) => a.originEpoch - b.originEpoch)[0].originEpoch;
+      telemetry = mergeTelemetrySegments({
+        sessionId,
+        referenceOrigin,
+        segments: all,
+        final: { data: telemetry, originEpoch: finalOrigin }
+      });
+    }
+    await clearSegments(sessionId);
     if (telemetry && telemetry.metadata) {
       telemetry.metadata.sessionId = sessionId || telemetry.metadata.sessionId;
       await chrome.storage.local.set({
@@ -328,6 +421,39 @@ chrome.tabs?.onRemoved?.addListener((tabId) => {
   }).catch(() => undefined);
 });
 
+/**
+ * The recorded tab finished loading a page (navigation or reload): the new page
+ * has none of the old page's state, so it is re-armed here. It joins the
+ * recording that is already running (same session, same origin) and gets the
+ * privacy shield applied again, in every frame.
+ */
+async function rearmRecordedTab(tab: chrome.tabs.Tab): Promise<void> {
+  const curr = await loadSessionState();
+  if (!curr.isRecording || tab.id !== curr.activeRecordingTabId) return;
+  const ctx = await readRecordingContext();
+  if (ctx.privacyOptions) {
+    const shield = await dispatchToTab(tab, { type: 'APPLY_PRIVACY_OPTIONS', options: ctx.privacyOptions });
+    if (!shield.ok) console.warn('[SmoothStudio SW] Privacy shield not re-applied after navigation:', shield.reason);
+  }
+  let originEpoch = ctx.originEpoch;
+  if (originEpoch === null) {
+    const earlier = await readSegments(curr.activeSessionId || null);
+    originEpoch = earlier.length ? Math.min(...earlier.map((seg) => seg.originEpoch)) : Date.now();
+  }
+  const res = await dispatchToTab(tab, {
+    type: 'START_TELEMETRY',
+    originEpoch,
+    sessionId: curr.activeSessionId || null,
+    resume: true
+  });
+  if (!res.ok) console.warn('[SmoothStudio SW] Telemetry not re-armed after navigation:', res.reason);
+}
+
+chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete') return;
+  rearmRecordedTab({ ...tab, id: tab?.id ?? tabId }).catch(() => undefined);
+});
+
 // Initialize on install or startup
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[SmoothStudio] Extension installed and ready.');
@@ -389,13 +515,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     const sessionId: string | null = typeof message.sessionId === 'string' ? message.sessionId : null;
     const dispatchStart = (targetRecordingTabId: number | null) => {
-      persistSessionState({
+      // A new recording starts with no telemetry from an earlier one and with
+      // the provisional origin it was given (RECORDING_LIVE makes it exact).
+      const provisionalOrigin = Number(message.originEpoch);
+      const resetContext = clearSegments().then(() => (
+        Number.isFinite(provisionalOrigin) && provisionalOrigin > 0
+          ? getStorageArea().set({ [CTX_ORIGIN_KEY]: provisionalOrigin })
+          : getStorageArea().remove(CTX_ORIGIN_KEY)
+      )).catch(() => undefined);
+      resetContext.then(() => persistSessionState({
         isRecording: true,
         activeRecordingTabId: targetRecordingTabId,
         activeEditorTabId: editorTabId,
         quality,
         activeSessionId: sessionId
-      }).then(() => {
+      })).then(() => {
         // Broadcast START_TELEMETRY to target tab and active web page tabs.
         // `originEpoch` is the wall-clock timestamp of the first captured video
         // frame: sharing it makes telemetry time and video time use ONE clock.
@@ -447,9 +581,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ status: 'invalid_origin' });
       return true;
     }
-    loadSessionState().then((curr) => {
+    loadSessionState().then(async (curr) => {
       const tabId = curr.activeRecordingTabId;
       const sessionId = typeof message.sessionId === 'string' ? message.sessionId : curr.activeSessionId;
+      // Pages the recorded tab loads from now on measure against this instant.
+      await getStorageArea().set({ [CTX_ORIGIN_KEY]: epoch }).catch(() => undefined);
       if (tabId) {
         chrome.tabs.sendMessage(tabId, { type: 'TIMELINE_ORIGIN', epoch, sessionId }, () => {
           void chrome.runtime?.lastError;
@@ -573,8 +709,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // 5b. A page of the recorded tab hands over what it captured so far. The
+  // page may be unloaded at any moment (navigation, reload): what has been
+  // stored here survives it.
+  if (message.type === 'TELEMETRY_SEGMENT') {
+    const segment = message.segment as TelemetrySegment | undefined;
+    loadSessionState().then(async (curr) => {
+      const belongs = Boolean(segment) && curr.isRecording
+        && typeof sender.tab?.id === 'number' && sender.tab.id === curr.activeRecordingTabId
+        && (segment!.sessionId || null) === (curr.activeSessionId || null);
+      if (!belongs) {
+        sendResponse({ ok: false, reason: 'not_the_recorded_tab' });
+        return;
+      }
+      sendResponse({ ok: await storeSegment(segment!) });
+    });
+    return true;
+  }
+
   // 6. Forward Privacy & Redaction Messages to Tabs
   if (['APPLY_PRIVACY_OPTIONS', 'START_PICKER', 'STOP_PICKER', 'RESET_PRIVACY'].includes(message.type)) {
+    // Remember the shield configuration: a page the recorded tab navigates to
+    // gets it applied again (the page's own state is gone with the old page).
+    if (message.type === 'APPLY_PRIVACY_OPTIONS') {
+      getStorageArea().set({ [CTX_PRIVACY_KEY]: message.options || {} }).catch(() => undefined);
+    } else if (message.type === 'RESET_PRIVACY') {
+      getStorageArea().remove(CTX_PRIVACY_KEY).catch(() => undefined);
+    }
     chrome.tabs.query({}, (tabs) => {
       Promise.all(tabs.filter((tab) => typeof tab.id === 'number').map((tab) => dispatchToTab(tab, message)))
         .then((results) => sendResponse({ status: 'forwarded', results }));

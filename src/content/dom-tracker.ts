@@ -18,6 +18,7 @@ import {
   isSensitiveElement,
   isSensitiveString
 } from './privacy-redactor';
+import { TelemetryBatch, TelemetrySegment, batchIsEmpty } from '../background/telemetry-merge';
 
 // Idempotence: a tab can receive this file again when the service worker repairs
 // a missing receiver. The message listener below is guarded by
@@ -504,12 +505,87 @@ function handleScroll() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Segment hand-over. A navigation or reload destroys this page's memory, so what
+// has been captured is pushed to the service worker every FLUSH_INTERVAL_MS and
+// on pagehide / beforeunload. The service worker stitches the segments back into
+// one stream at stop time. A segment the service worker did not acknowledge is
+// kept (with the SAME seq) and handed over again with the final capture, where
+// (loadId, seq) de-duplicates it.
+// ---------------------------------------------------------------------------
+const FLUSH_INTERVAL_MS = 2000;
+const loadId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+let segmentSeq = 0;
+let flushTimer: ReturnType<typeof setInterval> | null = null;
+let unackedSegments: TelemetrySegment[] = [];
+
+function takeBatch(): TelemetryBatch {
+  const batch: TelemetryBatch = { mousePoints, clicks, pressEvents, keystrokes, inputEvents, typingSessions, scrollEvents };
+  mousePoints = [];
+  clicks = [];
+  pressEvents = [];
+  keystrokes = [];
+  inputEvents = [];
+  typingSessions = [];
+  scrollEvents = [];
+  return batch;
+}
+
+function pageInfo(withBrandColors: boolean) {
+  return {
+    url: window.location.href,
+    title: document.title || 'Screen Recording',
+    width: window.innerWidth,
+    height: window.innerHeight,
+    devicePixelRatio: window.devicePixelRatio || 1,
+    ...(withBrandColors ? { brandColors: extractBrandColors() } : {})
+  };
+}
+
+function sendSegment(segment: TelemetrySegment): void {
+  const drop = () => { /* stays in unackedSegments: handed over again at stop */ };
+  try {
+    chrome.runtime.sendMessage({ type: 'TELEMETRY_SEGMENT', segment }, (response) => {
+      if (chrome.runtime?.lastError || !response || response.ok !== true) { drop(); return; }
+      unackedSegments = unackedSegments.filter((s) => s !== segment);
+    });
+  } catch { drop(); }
+}
+
+export function flushTelemetry(reason: 'interval' | 'pagehide' = 'interval'): void {
+  if (!isRecording || typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) return;
+  // Leaving the page ends the typing burst: finalize it so it is not lost.
+  if (reason === 'pagehide') closeTypingSession();
+  for (const pending of unackedSegments) sendSegment(pending);
+  const batch = takeBatch();
+  if (batchIsEmpty(batch)) return;
+  const segment: TelemetrySegment = {
+    sessionId: sessionId as string,
+    loadId,
+    seq: segmentSeq++,
+    originEpoch,
+    batch,
+    page: pageInfo(reason === 'pagehide')
+  };
+  unackedSegments.push(segment);
+  sendSegment(segment);
+}
+
+function handlePageHide(): void {
+  flushTelemetry('pagehide');
+}
+
 let floatingHudEl: HTMLElement | null = null;
 let timerInterval: number | null = null;
 
 function injectRecordingHud() {
   if (typeof window !== 'undefined' && window.self !== window.top) return;
   if (floatingHudEl || document.getElementById('smoothstudio-floating-hud')) return;
+  if (!document.body) {
+    // A resumed page can be armed before <body> exists.
+    document.addEventListener('DOMContentLoaded', () => { if (isRecording) injectRecordingHud(); }, { once: true });
+    return;
+  }
 
   floatingHudEl = document.createElement('div');
   floatingHudEl.id = 'smoothstudio-floating-hud';
@@ -584,10 +660,15 @@ function injectRecordingHud() {
     };
   }
 
-  const startT = performance.now();
+  // A resumed page joins a recording that is already running: its timer shows
+  // the time since the shared origin, not since this page loaded.
+  const startT = hudLiveSent && originEpoch
+    ? performance.now() - Math.max(0, epochNow() - originEpoch)
+    : performance.now();
   hudTimerEl = timerEl;
   hudTimerStart = startT;
   timerInterval = window.setInterval(renderHudTimer, 1000);
+  renderHudTimer();
 }
 
 /** QA-037: the HUD timer follows the recorder's real live instant. */
@@ -741,7 +822,11 @@ function detachSameOriginIframes() {
   attachedIframeDocs = [];
 }
 
-export function startTracking(originEpochMs?: number, recordingSessionId?: string | null): void {
+export function startTracking(
+  originEpochMs?: number,
+  recordingSessionId?: string | null,
+  options: { resume?: boolean } = {}
+): void {
   const nextSessionId = recordingSessionId || null;
   // A repeated START for the session that is already running is a no-op: a
   // retried message must never erase the telemetry captured so far.
@@ -757,6 +842,7 @@ export function startTracking(originEpochMs?: number, recordingSessionId?: strin
     : epochNow();
   mousePoints = [];
   clicks = [];
+  pressEvents = [];
   keystrokes = [];
   inputEvents = [];
   typingSessions = [];
@@ -764,6 +850,11 @@ export function startTracking(originEpochMs?: number, recordingSessionId?: strin
   lastSampleTime = 0;
   lastScrollTime = 0;
   activeTyping = null;
+  unackedSegments = [];
+  segmentSeq = 0;
+  // A resumed page joins a recording that is already live: the HUD is shown
+  // and the origin is the recording's own, never re-based to this page load.
+  hudLiveSent = Boolean(options.resume);
 
   injectRecordingHud();
 
@@ -778,8 +869,16 @@ export function startTracking(originEpochMs?: number, recordingSessionId?: strin
   window.addEventListener('focusout', handleFocusOut, { passive: true, capture: true });
   window.addEventListener('input', handleInput, { passive: true, capture: true });
   window.addEventListener('scroll', handleScroll, { passive: true, capture: true });
+  window.addEventListener('pagehide', handlePageHide, { capture: true });
+  window.addEventListener('beforeunload', handlePageHide, { capture: true });
   attachSameOriginIframes();
+  if (flushTimer !== null) clearInterval(flushTimer);
+  flushTimer = setInterval(() => flushTelemetry('interval'), FLUSH_INTERVAL_MS);
 
+  if (options.resume) {
+    console.log('[SmoothStudio DOM-Tracker] Tracking resumed after navigation. Session:', nextSessionId);
+    return;
+  }
   armHudLiveSignal();
   console.log('[SmoothStudio DOM-Tracker] Tracking armed. Waiting for the HUD to be on screen. Session:', nextSessionId);
 }
@@ -815,6 +914,12 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
   window.removeEventListener('focusout', handleFocusOut, { capture: true });
   window.removeEventListener('input', handleInput, { capture: true });
   window.removeEventListener('scroll', handleScroll, { capture: true });
+  window.removeEventListener('pagehide', handlePageHide, { capture: true });
+  window.removeEventListener('beforeunload', handlePageHide, { capture: true });
+  if (flushTimer !== null) {
+    clearInterval(flushTimer);
+    flushTimer = null;
+  }
   detachSameOriginIframes();
 
   const durationMs = Math.round(getRelativeTime());
@@ -853,7 +958,7 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage 
   (window as any).__smoothstudio_dom_listener_registered = true;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'START_TELEMETRY') {
-      startTracking(message.originEpoch, message.sessionId);
+      startTracking(message.originEpoch, message.sessionId, { resume: message.resume === true });
       sendResponse({ ok: true, status: 'started' });
       return true;
     } else if (message.type === 'TIMELINE_ORIGIN') {
@@ -871,8 +976,13 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage 
         sendResponse({ status: 'ignored', data: null });
         return true;
       }
+      const origin = originEpoch;
       const data = stopTracking(wanted);
-      sendResponse({ status: 'stopped', data });
+      // `unacked`: segments the service worker may not have stored yet. It
+      // de-duplicates them by (loadId, seq) when it merges the recording.
+      const unacked = unackedSegments;
+      unackedSegments = [];
+      sendResponse({ status: 'stopped', data, originEpoch: origin, unacked });
       return true;
     } else if (message.type === 'GET_BRAND_COLORS') {
       sendResponse({ brandColors: extractBrandColors() });

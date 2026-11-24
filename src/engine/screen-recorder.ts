@@ -20,19 +20,24 @@ import { CapturedNativeCursor } from '../types/telemetry';
  * a native cursor ended up in the picture and must not switch the smooth
  * cursor off. Only an explicit 'always' does.
  *
- * - window / monitor: no page-coordinate relationship, the native cursor is the
- *   cursor of the recording: off.
  * - no DOM mouse telemetry: nothing to draw the cursor from: off.
+ * - window / monitor: on only when the real cursor was left out of the picture
+ *   ('never', or 'unknown' = asked to and Chrome did not say) AND the page's
+ *   coordinates could be placed on the recorded frame (`placeable`). Otherwise the
+ *   real cursor is the cursor of the recording: off.
  * - browser tab with telemetry: on, unless the native cursor is explicitly
  *   'always' captured. The editor toggle lets the user override either way.
  */
 export function shouldEnableCustomCursor(
   capturedNativeCursor: CapturedNativeCursor,
   displaySurface: string | undefined,
-  hasDomCursorTelemetry: boolean
+  hasDomCursorTelemetry: boolean,
+  placeable = true
 ): boolean {
-  if (displaySurface === 'window' || displaySurface === 'monitor') return false;
   if (!hasDomCursorTelemetry) return false;
+  if (displaySurface === 'window' || displaySurface === 'monitor') {
+    return placeable && (capturedNativeCursor === 'never' || capturedNativeCursor === 'unknown');
+  }
   return capturedNativeCursor !== 'always';
 }
 
@@ -45,6 +50,11 @@ export const RECORDING_FAILURE_NO_VIDEO = 'RECORDING_FAILED_NO_VIDEO';
 
 export interface RecorderOptions {
   includeMic: boolean;
+  /**
+   * Window / screen capture: leave the real cursor out of the picture so the editor can
+   * draw the styled cursor (default true). False keeps the real cursor in the video.
+   */
+  styledCursor?: boolean;
   /** Recording session id (M1-08). Generated when omitted. */
   sessionId?: string;
   frameRate?: number;
@@ -128,6 +138,7 @@ export class ScreenCaptureEngine {
   private pendingWrites: Promise<void>[] = [];
   private lastTrackSettings: MediaTrackSettings | null = null;
   private capturedNativeCursor: CapturedNativeCursor = 'unknown';
+  private cursorMode: 'styled' | 'real' = 'styled';
 
   // --- Frame pump state -----------------------------------------------------
   private pumpCanvas: HTMLCanvasElement | null = null;
@@ -271,11 +282,20 @@ export class ScreenCaptureEngine {
       this.lastTrackSettings = vTrack.getSettings ? vTrack.getSettings() : null;
       const displaySurface = (this.lastTrackSettings as any)?.displaySurface;
       // getDisplayMedia cannot know the selected surface until the picker
-      // resolves. Start with cursor:"never" for clean tab recordings, then
-      // explicitly restore the native cursor for a window/monitor capture.
-      // This keeps the captured cursor aligned with the real screen instead
-      // of drawing a DOM cursor at unrelated page coordinates.
-      if (displaySurface === 'window' || displaySurface === 'monitor') {
+      // resolves. Start with cursor:"never" for clean tab recordings. For a
+      // window/monitor capture the user chooses: the styled cursor (keep
+      // "never"; the editor draws the cursor from the page's mouse data) or
+      // the real cursor (restore it, so it stays aligned with the real screen).
+      const nonTab = displaySurface === 'window' || displaySurface === 'monitor';
+      this.cursorMode = nonTab && options.styledCursor === false ? 'real' : 'styled';
+      if (nonTab && this.cursorMode === 'styled') {
+        try {
+          await vTrack.applyConstraints({ cursor: 'never' } as any);
+        } catch (error) {
+          console.warn('[SmoothStudio CaptureEngine] Could not ask Chrome to leave the cursor out:', error);
+        }
+        this.lastTrackSettings = vTrack.getSettings ? vTrack.getSettings() : this.lastTrackSettings;
+      } else if (nonTab) {
         try {
           await vTrack.applyConstraints({ cursor: 'always' } as any);
         } catch (error) {
@@ -287,7 +307,7 @@ export class ScreenCaptureEngine {
       this.capturedNativeCursor = nativeCursor === 'never' || nativeCursor === 'motion' || nativeCursor === 'always'
         ? nativeCursor
         : 'unknown';
-      if ((displaySurface === 'window' || displaySurface === 'monitor') && this.capturedNativeCursor === 'unknown') {
+      if (nonTab && this.cursorMode === 'real' && this.capturedNativeCursor === 'unknown') {
         // Chromium may omit cursor from getSettings even after accepting the
         // constraint. The request still explicitly selected the native path.
         this.capturedNativeCursor = 'always';
@@ -1290,6 +1310,11 @@ export class ScreenCaptureEngine {
 
   public getTrackSettings(): MediaTrackSettings | null {
     return this.lastTrackSettings;
+  }
+
+  /** 'styled' or 'real' (only meaningful for a window / screen capture). */
+  public getCursorMode(): 'styled' | 'real' {
+    return this.cursorMode;
   }
 
   public getCapturedNativeCursor(): CapturedNativeCursor {

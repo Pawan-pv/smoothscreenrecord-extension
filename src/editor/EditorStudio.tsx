@@ -77,7 +77,14 @@ import {
  * Tags telemetry with its recording session (M1-08). Without telemetry an
  * EMPTY record is returned: no click, key or mouse point is ever invented.
  */
-function withSession(tel: TelemetryData | null, sessionId: string, durationMs: number, displaySurface?: string, capturedNativeCursor?: CapturedNativeCursor): TelemetryData {
+function withSession(
+  tel: TelemetryData | null,
+  sessionId: string,
+  durationMs: number,
+  displaySurface?: string,
+  capturedNativeCursor?: CapturedNativeCursor,
+  cursorMode?: 'styled' | 'real'
+): TelemetryData {
   const now = Date.now();
   const base: TelemetryData = tel || {
     metadata: {
@@ -102,7 +109,8 @@ function withSession(tel: TelemetryData | null, sessionId: string, durationMs: n
       id: sessionId,
       sessionId,
       ...(displaySurface ? { displaySurface } : {}),
-      ...(capturedNativeCursor ? { capturedNativeCursor } : {})
+      ...(capturedNativeCursor ? { capturedNativeCursor } : {}),
+      ...(cursorMode && (displaySurface === 'window' || displaySurface === 'monitor') ? { cursorMode } : {})
     }
   };
 }
@@ -465,6 +473,8 @@ export function EditorStudio() {
   const [showRecordPrompt, setShowRecordPrompt] = useState<boolean>(false);
   const [recordTargetTabId, setRecordTargetTabId] = useState<number | undefined>(undefined);
   const [recordIncludeMic, setRecordIncludeMic] = useState<boolean>(true);
+  /** Window / screen capture: draw the styled cursor (the real one is left out). */
+  const [recordStyledCursor, setRecordStyledCursor] = useState<boolean>(true);
   const [hasNoRecording, setHasNoRecording] = useState<boolean>(false);
 
   // Engines
@@ -494,7 +504,7 @@ export function EditorStudio() {
   const firedSfxRef = useRef<Set<string>>(new Set());
   const currentTimeRef = useRef<number>(0);
   const handleStopLiveRecordingRef = useRef<((passedTelemetry?: TelemetryData | null, passedBlob?: Blob | null) => Promise<void>) | null>(null);
-  const handleStartLiveRecordingRef = useRef<((sourceTabId?: number, includeMic?: boolean) => Promise<void>) | null>(null);
+  const handleStartLiveRecordingRef = useRef<((sourceTabId?: number, includeMic?: boolean, styledCursor?: boolean) => Promise<void>) | null>(null);
   const telemetryReceivedRef = useRef<boolean>(false);
   // QA-029: the recorder stays paused until the recorded tab's HUD is on
   // screen. `goLiveRef` is called by the HUD_VISIBLE message (or by a watchdog)
@@ -698,6 +708,7 @@ export function EditorStudio() {
         const shouldIncludeMic = micParam === null ? true : micParam === 'true';
         setRecordTargetTabId(sourceTabId);
         setRecordIncludeMic(shouldIncludeMic);
+        setRecordStyledCursor(urlParams.get('styledCursor') !== 'false');
         setShowRecordPrompt(true);
         return;
       }
@@ -818,7 +829,25 @@ export function EditorStudio() {
       setSelectedPillId(null);
       // Captions are only ever sourced from a REAL transcription supplied with the recording.
       setCaptions(data.captions && data.captions.length > 0 ? data.captions : []);
-      setShowCursor(shouldEnableCustomCursor(capturedNativeCursor, displaySurface, hasDomCursorTelemetry));
+      // A window / screen recording's cursor can only be drawn once the page was placed on its frame.
+      const nonTab = displaySurface === 'window' || displaySurface === 'monitor';
+      const placeable = !nonTab || data.metadata?.coordinateSpace === 'capture';
+      setShowCursor(shouldEnableCustomCursor(capturedNativeCursor, displaySurface, hasDomCursorTelemetry, placeable));
+      if (nonTab && data.metadata?.cursorMode === 'styled') {
+        if (capturedNativeCursor === 'always' || capturedNativeCursor === 'motion') {
+          showToast({
+            type: 'info',
+            title: 'Real cursor recorded',
+            message: 'Chrome kept your real cursor in this screen recording, so the styled cursor is off (it would show twice).'
+          });
+        } else if (!placeable || !hasDomCursorTelemetry) {
+          showToast({
+            type: 'warning',
+            title: 'Cursor could not be placed',
+            message: 'The recorded page was not found on the captured screen, so this recording has no cursor. Record the screen the Chrome window is on, or a Chrome tab.'
+          });
+        }
+      }
       setSilences([]);
       setWaveformPeaks([]);
       setVideoElement(video);
@@ -1179,7 +1208,7 @@ export function EditorStudio() {
   }, [isPlaying, videoElement, isExporting, isExportingGif]);
 
   // Handle Live Screen Recording within the browser tab
-  const handleStartLiveRecording = async (sourceTabId?: number, includeMic = true) => {
+  const handleStartLiveRecording = async (sourceTabId?: number, includeMic = true, styledCursor = recordStyledCursor) => {
     if (exportJobRef.current) {
       showToast({ type: 'info', title: 'Export in progress', message: 'Finish or cancel the export before recording.' });
       return;
@@ -1206,6 +1235,7 @@ export function EditorStudio() {
       }
       await captureEngineRef.current.start({
         includeMic,
+        styledCursor,
         sessionId,
         frameRate: 60,
         onMicWarning: (msg) => {
@@ -1405,7 +1435,14 @@ export function EditorStudio() {
       const sid = sessionId || captureEngineRef.current.getSessionId() || newSessionId();
 
       // 3. Complete telemetry tagged with the session
-      const finalTelemetry = withSession(tel, sid, measuredDur, displaySurface, captureEngineRef.current.getCapturedNativeCursor());
+      const finalTelemetry = withSession(
+        tel,
+        sid,
+        measuredDur,
+        displaySurface,
+        captureEngineRef.current.getCapturedNativeCursor(),
+        captureEngineRef.current.getCursorMode()
+      );
       await saveTelemetry(finalTelemetry).catch((e) => console.warn('[SmoothStudio] Could not persist telemetry:', e));
 
       if (blob && blob.size > 0) {
@@ -2195,7 +2232,7 @@ export function EditorStudio() {
               id="start-capture-prompt-btn"
               onClick={() => {
                 setShowRecordPrompt(false);
-                handleStartLiveRecording(recordTargetTabId, recordIncludeMic);
+                handleStartLiveRecording(recordTargetTabId, recordIncludeMic, recordStyledCursor);
               }}
               className="px-6 py-3 rounded-xl bg-gradient-to-r from-red-600 to-purple-600 hover:from-red-500 hover:to-purple-500 text-white font-semibold text-sm flex items-center gap-2.5 shadow-xl shadow-red-600/30 transition-all cursor-pointer"
             >

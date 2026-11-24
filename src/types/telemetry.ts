@@ -118,6 +118,11 @@ export interface RecordingMetadata {
   url?: string;
   displaySurface?: 'browser' | 'window' | 'monitor' | string;
   capturedNativeCursor?: CapturedNativeCursor;
+  /**
+   * Window / screen recordings: 'styled' = the real cursor was asked to be left out and the
+   * editor draws the styled one; 'real' = the real cursor is in the video. Absent = older recording.
+   */
+  cursorMode?: 'styled' | 'real';
   /** Where the page sat on the screen while recording (absent in older recordings). */
   screenLayout?: ScreenLayout;
   /**

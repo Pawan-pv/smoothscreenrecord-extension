@@ -171,7 +171,7 @@ export function VibePresetsPanel({
   onChangeFramePadding,
   background = { kind: 'backdrop' },
   onChangeBackground,
-  backgroundEffects = { blur: 0, dim: 0 },
+  backgroundEffects = { blur: 0, dim: 0, motion: 0 },
   onChangeBackgroundEffects,
   backgroundColor,
   onSelectBackgroundColor,
@@ -943,6 +943,41 @@ export function VibePresetsPanel({
                 aria-label="Background dim"
               />
             </div>
+          </div>
+        )}
+
+        {(background.kind === 'wallpaper' || background.kind === 'gradient' || background.kind === 'image') && (
+          <div className="space-y-1 pt-1">
+            <div className="flex justify-between text-[11px] text-gray-400">
+              <span>Motion</span>
+              <span className="font-mono text-pink-300">
+                {backgroundEffects.motion <= 0
+                  ? 'Still'
+                  : backgroundEffects.motion < 35
+                    ? 'Calm'
+                    : backgroundEffects.motion < 70
+                      ? 'Flowing'
+                      : 'Lively'}
+              </span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value={backgroundEffects.motion}
+              onChange={(e) => onChangeBackgroundEffects?.({ motion: parseInt(e.target.value, 10) })}
+              className="w-full accent-pink-500"
+              aria-label="Background motion"
+            />
+            <p className="text-[10px] text-gray-500">
+              {background.kind === 'image'
+                ? 'A slow push-in and pan across your image.'
+                : background.kind === 'gradient'
+                  ? 'The gradient slowly sways.'
+                  : 'The light drifts and flows, looping seamlessly.'}{' '}
+              Plays with the video; GIFs keep it still to stay small.
+            </p>
           </div>
         )}
       </div>

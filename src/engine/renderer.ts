@@ -317,8 +317,8 @@ export class StudioRenderer {
     // 1. Background: a static one (color, gradient, wallpaper, image) painted once at this
     // canvas size and cached, or the preset's animated Backdrop Matrix.
     const background = options.background;
-    if (background && backgroundMode(background) === 'static') {
-      this.backgroundCache.draw(ctx, canvasW, canvasH, background);
+    if (background && backgroundMode(background) !== 'backdrop') {
+      this.backgroundCache.draw(ctx, canvasW, canvasH, background, options.backgroundTimeMs ?? currentTimeMs);
     } else {
       this.drawBackdropMatrix(ctx, canvasW, canvasH, preset, options.backgroundTimeMs ?? currentTimeMs, backdropParams);
     }

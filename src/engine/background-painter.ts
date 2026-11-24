@@ -1,12 +1,19 @@
 import type { BackgroundLayer } from '../types/telemetry';
-import { drawWallpaper } from './wallpapers';
+import { drawWallpaper, drawGrain, wallpaperGrain } from './wallpapers';
 
 /**
  * Static backgrounds (solid, image, ...) are painted ONCE per renderer into an
  * offscreen canvas at the output size and copied in every frame. Each renderer
  * (the preview and every export) paints at its own canvas size, so a background
  * is sharp at 1080p and at 4K, and the preview and the exports show the same
- * picture. Only the animated Backdrop Matrix ('backdrop') is drawn per frame.
+ * picture.
+ *
+ * With Motion on, wallpapers, gradients and images animate slowly, as a pure
+ * function of the timeline time (so preview and export match frame for frame):
+ * wallpapers drift and roll, gradients sway, images do a slow Ken Burns push and
+ * pan. Built for 60 fps: a wallpaper is drawn at half resolution (its soft glows
+ * do not need more) with the grain at full resolution on top; an image is
+ * prepared once (cover fit + blur) and only moved per frame.
  */
 
 export interface CoverFitResult {
@@ -62,15 +69,40 @@ export function gradientCss(colors: string[], angle: number, shape: 'linear' | '
     : `linear-gradient(${angle}deg, ${list.join(', ')})`;
 }
 
-/** 'backdrop' = the animated preset backdrop, drawn every frame; 'static' = painted once and cached. */
-export function backgroundMode(layer: BackgroundLayer | null | undefined): 'backdrop' | 'static' {
+/** Wallpapers, gradients and images can move; a solid color stays still. */
+export function backgroundTakesMotion(layer: BackgroundLayer): boolean {
+  const k = layer.spec.kind;
+  return k === 'wallpaper' || k === 'gradient' || k === 'image';
+}
+
+/** Seconds of motion at a timeline time: Motion 40 = real time, 100 = 2.5x, 0 = still. */
+export function backgroundMotionSeconds(layer: BackgroundLayer, timeMs: number): number {
+  const m = Math.max(0, Math.min(100, Number.isFinite(layer.effects?.motion) ? layer.effects.motion : 0));
+  if (m <= 0 || !Number.isFinite(timeMs)) return 0;
+  return (Math.max(0, timeMs) / 1000) * (m / 40);
+}
+
+/**
+ * 'backdrop' = the preset's animated backdrop; 'static' = painted once and cached;
+ * 'animated' = a wallpaper / gradient / image with Motion on, drawn per frame.
+ */
+export function backgroundMode(layer: BackgroundLayer | null | undefined): 'backdrop' | 'static' | 'animated' {
   if (!layer) return 'backdrop';
   const spec = layer.spec;
-  if (spec.kind === 'solid') return spec.color ? 'static' : 'backdrop';
-  if (spec.kind === 'gradient') return spec.colors.length > 0 ? 'static' : 'backdrop';
-  if (spec.kind === 'wallpaper') return 'static';
-  if (spec.kind === 'image') return layer.image ? 'static' : 'backdrop';
-  return 'backdrop';
+  let ready = false;
+  if (spec.kind === 'solid') ready = Boolean(spec.color);
+  else if (spec.kind === 'gradient') ready = spec.colors.length > 0;
+  else if (spec.kind === 'wallpaper') ready = true;
+  else if (spec.kind === 'image') ready = Boolean(layer.image);
+  if (!ready) return 'backdrop';
+  const moving = backgroundTakesMotion(layer) && (layer.effects?.motion ?? 0) > 0;
+  return moving ? 'animated' : 'static';
+}
+
+const TAU = Math.PI * 2;
+/** A slow seamless sway, zero at t = 0 (see wallpapers.ts). */
+function sway(t: number, amplitude: number, period: number, phase = 0): number {
+  return amplitude * (Math.sin((TAU * t) / period + phase) - Math.sin(phase));
 }
 
 function imageSize(img: CanvasImageSource, fallbackW: number, fallbackH: number): { w: number; h: number } {
@@ -92,12 +124,17 @@ export function paintGradient(
   h: number,
   colors: string[],
   angle: number,
-  shape: 'linear' | 'radial'
+  shape: 'linear' | 'radial',
+  center: { x: number; y: number } = { x: 0.5, y: 0.5 }
 ): void {
   const list = colors.length > 0 ? colors : ['#000000'];
   let gradient: CanvasGradient;
   if (shape === 'radial') {
-    gradient = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.hypot(w, h) / 2);
+    const cx = center.x * w;
+    const cy = center.y * h;
+    // Reaches the farthest corner, like CSS farthest-corner.
+    const reach = Math.max(Math.hypot(cx, cy), Math.hypot(w - cx, cy), Math.hypot(cx, h - cy), Math.hypot(w - cx, h - cy));
+    gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, reach);
   } else {
     const rad = ((Number.isFinite(angle) ? angle : 135) * Math.PI) / 180;
     const dx = Math.sin(rad);
@@ -193,14 +230,120 @@ function imageKey(img: CanvasImageSource | null | undefined): number {
   return id;
 }
 
-/** One renderer's cached static background. */
+function dimOver(ctx: CanvasRenderingContext2D, w: number, h: number, layer: BackgroundLayer): void {
+  if (!backgroundTakesEffects(layer)) return;
+  const a = backgroundDimAlpha(layer.effects.dim);
+  if (a <= 0) return;
+  ctx.save();
+  ctx.fillStyle = `rgba(0, 0, 0, ${a})`;
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
+}
+
+function ensureCanvas(c: HTMLCanvasElement | null, w: number, h: number): HTMLCanvasElement {
+  const canvas = c || document.createElement('canvas');
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  return canvas;
+}
+
+/** Ken Burns for images: zoom between these, with a pan smaller than the zoom's spare margin. */
+const KB_MIN = 1.04;
+const KB_MAX = 1.12;
+const KB_PAN = 0.015;
+
+/** One renderer's background: the cached static picture, and the buffers of the animated one. */
 export class BackgroundCache {
   private canvas: HTMLCanvasElement | null = null;
   private key = '';
+  private low: HTMLCanvasElement | null = null;
+  private lowBlur: HTMLCanvasElement | null = null;
+  private stage: HTMLCanvasElement | null = null;
+  private stageKey = '';
+
+  /** Draws the background of this frame: cached when still, animated by the timeline time when moving. */
+  public draw(ctx: CanvasRenderingContext2D, w: number, h: number, layer: BackgroundLayer, timeMs = 0): void {
+    if (backgroundMode(layer) === 'animated') {
+      this.drawAnimated(ctx, w, h, layer, backgroundMotionSeconds(layer, timeMs));
+      return;
+    }
+    this.drawStatic(ctx, w, h, layer);
+  }
+
+  private drawAnimated(ctx: CanvasRenderingContext2D, w: number, h: number, layer: BackgroundLayer, t: number): void {
+    const spec = layer.spec;
+    if (spec.kind === 'gradient') {
+      // A gentle sway of the angle; a radial centre drifts on a slow ellipse.
+      const angle = spec.angle + sway(t, 18, 26);
+      const center = { x: 0.5 + sway(t, 0.12, 30), y: 0.5 + sway(t, 0.09, 41, 1.2) };
+      paintGradient(ctx, w, h, spec.colors, angle, spec.shape, center);
+      return;
+    }
+    if (spec.kind === 'wallpaper') {
+      const lw = Math.max(2, Math.ceil(w / 2));
+      const lh = Math.max(2, Math.ceil(h / 2));
+      this.low = ensureCanvas(this.low, lw, lh);
+      const lctx = this.low.getContext('2d');
+      if (!lctx) return;
+      lctx.clearRect(0, 0, lw, lh);
+      drawWallpaper(lctx, lw, lh, spec.id, t, { grain: false });
+      let source: HTMLCanvasElement = this.low;
+      const blurPx = backgroundBlurPx(layer.effects.blur, lw, lh);
+      if (blurPx >= 0.5) {
+        this.lowBlur = ensureCanvas(this.lowBlur, lw, lh);
+        const bctx = this.lowBlur.getContext('2d');
+        if (bctx) {
+          const margin = blurPx * 3;
+          bctx.save();
+          bctx.clearRect(0, 0, lw, lh);
+          bctx.filter = `blur(${blurPx}px)`;
+          bctx.drawImage(this.low, -margin, -margin, lw + margin * 2, lh + margin * 2);
+          bctx.restore();
+          source = this.lowBlur;
+        }
+      }
+      ctx.save();
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(source, 0, 0, w, h);
+      ctx.restore();
+      drawGrain(ctx, w, h, wallpaperGrain(spec.id));
+      dimOver(ctx, w, h, layer);
+      return;
+    }
+    if (spec.kind === 'image' && layer.image) {
+      // The stage is the image covering a KB_MAX-larger area, blurred once.
+      const sw = Math.ceil(w * KB_MAX);
+      const sh = Math.ceil(h * KB_MAX);
+      const key = `${sw}x${sh}|${imageKey(layer.image)}|${layer.effects.blur}`;
+      if (!this.stage || key !== this.stageKey) {
+        this.stage = ensureCanvas(this.stage, sw, sh);
+        const sctx = this.stage.getContext('2d');
+        if (!sctx) return;
+        sctx.clearRect(0, 0, sw, sh);
+        paintBackground(sctx, sw, sh, { ...layer, effects: { ...layer.effects, dim: 0 } });
+        this.stageKey = key;
+      }
+      // Slow push in and out between KB_MIN and KB_MAX, with a drifting pan.
+      const zoom = KB_MIN + (KB_MAX - KB_MIN) * (0.5 - 0.5 * Math.cos((TAU * t) / 34));
+      const dw = w * zoom;
+      const dh = h * zoom;
+      const dx = (w - dw) / 2 + Math.sin((TAU * t) / 47) * KB_PAN * w;
+      const dy = (h - dh) / 2 + Math.sin((TAU * t) / 39 + 1) * KB_PAN * h;
+      ctx.save();
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(this.stage, dx, dy, dw, dh);
+      ctx.restore();
+      dimOver(ctx, w, h, layer);
+      return;
+    }
+    this.drawStatic(ctx, w, h, layer);
+  }
 
   /** Draws the static background onto ctx, repainting the cache only when the layer or the size changed. */
-  public draw(ctx: CanvasRenderingContext2D, w: number, h: number, layer: BackgroundLayer): void {
-    const key = `${w}x${h}|${JSON.stringify(layer.spec)}|${JSON.stringify(layer.effects)}|${imageKey(layer.image)}`;
+  private drawStatic(ctx: CanvasRenderingContext2D, w: number, h: number, layer: BackgroundLayer): void {
+    const key = `${w}x${h}|${JSON.stringify(layer.spec)}|${layer.effects.blur}|${layer.effects.dim}|${imageKey(layer.image)}`;
     if (!this.canvas || key !== this.key) {
       if (!this.canvas) this.canvas = document.createElement('canvas');
       this.canvas.width = w;

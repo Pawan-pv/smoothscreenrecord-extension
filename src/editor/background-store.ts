@@ -63,7 +63,8 @@ export function loadBackgroundChoice(): { spec: BackgroundSpec; effects: Backgro
       spec: sanitizeBackgroundSpec(saved.spec) ?? fallback.spec,
       effects: {
         blur: clamp100(saved.effects?.blur, DEFAULT_BACKGROUND_EFFECTS.blur),
-        dim: clamp100(saved.effects?.dim, DEFAULT_BACKGROUND_EFFECTS.dim)
+        dim: clamp100(saved.effects?.dim, DEFAULT_BACKGROUND_EFFECTS.dim),
+        motion: clamp100(saved.effects?.motion, DEFAULT_BACKGROUND_EFFECTS.motion)
       }
     };
   } catch {

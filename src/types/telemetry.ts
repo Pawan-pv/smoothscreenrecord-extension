@@ -166,10 +166,12 @@ export type BackgroundSpec =
   | { kind: 'wallpaper'; id: string }
   | { kind: 'image'; uploadId: string };
 
-/** Applied to wallpapers and images. 0..100 each. */
+/** 0..100 each. Blur / dim apply to wallpapers and images; motion to wallpapers, gradients and images. */
 export interface BackgroundEffects {
   blur: number;
   dim: number;
+  /** Speed of the background's slow animation; 0 = still. */
+  motion: number;
 }
 
 /** A background as the renderer draws it: the spec, its effects and (for an image) the decoded picture. */
@@ -179,7 +181,7 @@ export interface BackgroundLayer {
   image?: CanvasImageSource | null;
 }
 
-export const DEFAULT_BACKGROUND_EFFECTS: BackgroundEffects = { blur: 0, dim: 0 };
+export const DEFAULT_BACKGROUND_EFFECTS: BackgroundEffects = { blur: 0, dim: 0, motion: 30 };
 
 export interface TelemetryData {
   metadata: RecordingMetadata;

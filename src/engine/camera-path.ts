@@ -176,6 +176,10 @@ function buildPanTrack(
     velY += (-2 * PAN_OMEGA * velY - PAN_OMEGA * PAN_OMEGA * (camY - focusY)) * dt;
     camX += velX * dt;
     camY += velY * dt;
+    // The spring only approaches its focus asymptotically: once it is within 2e-5 (a
+    // fraction of a pixel) and has stopped, it IS there. A still cursor means a still camera.
+    if (Math.abs(camX - focusX) < 2e-5 && Math.abs(velX) < 1e-3) { camX = focusX; velX = 0; }
+    if (Math.abs(camY - focusY) < 2e-5 && Math.abs(velY) < 1e-3) { camY = focusY; velY = 0; }
   }
 
   return {

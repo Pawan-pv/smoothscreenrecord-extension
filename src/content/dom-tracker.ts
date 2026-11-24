@@ -41,9 +41,25 @@ let pressEvents: PressEvent[] = [];
 let lastMouseX = 0;
 let lastMouseY = 0;
 let lastCursor: CursorStyle = 'default';
+/** performance.now() of the last cursor-style read (elementFromPoint is not free). */
 let lastSampleTime = 0;
 let lastScrollTime = 0;
-const SAMPLE_INTERVAL_MS = 8.33; // ~120Hz sampling
+/**
+ * The cursor path is sampled on a FIXED clock (every 16 ms, 60 Hz), not on every
+ * mousemove: raw mousemove is bursty and its rate depends on the device. Mousemove
+ * only updates the latest pointer position; the sampler records it.
+ */
+const SAMPLE_INTERVAL_MS = 16;
+const CURSOR_STYLE_READ_MS = 50;
+/** No sample before the first real pointer position (never a made-up (0,0)). */
+let hasPointer = false;
+/**
+ * The pointer is over an iframe this page cannot see into: its moves arrive later,
+ * forwarded by the frame (ingestFrameEvents). The sampler pauses meanwhile so it
+ * never records the stale position in between.
+ */
+let pointerInOpaqueFrame = false;
+let sampleTimer: ReturnType<typeof setInterval> | null = null;
 
 export function normalizeCursorStyle(raw: string): CursorStyle {
   const value = (raw || '').trim().toLowerCase();
@@ -354,7 +370,7 @@ function clickDetails(e: MouseEvent, cursor: CursorStyle): Pick<ClickEvent, 'but
   };
 }
 
-// Track mouse position and cursor style at up to 120Hz
+// Mousemove only updates the latest pointer position (and, throttled, its CSS cursor).
 function handleMouseMove(e: MouseEvent) {
   if (!isRecording) return;
   if ((e.target as HTMLElement)?.closest('#smoothstudio-floating-hud')) return;
@@ -363,21 +379,44 @@ function handleMouseMove(e: MouseEvent) {
   notePointer(e, coords.rawX, coords.rawY);
   lastMouseX = coords.x;
   lastMouseY = coords.y;
+  hasPointer = true;
+  pointerInOpaqueFrame = isOpaqueIframe(e.target);
 
   const now = performance.now();
-  if (now - lastSampleTime >= SAMPLE_INTERVAL_MS) {
+  if (now - lastSampleTime >= CURSOR_STYLE_READ_MS) {
     lastSampleTime = now;
-
-    const cursorStyle = readCursorStyle(e);
-    lastCursor = cursorStyle;
-
-    mousePoints.push({
-      t: Math.round(getRelativeTime()),
-      x: coords.x,
-      y: coords.y,
-      c: cursorStyle
-    });
+    lastCursor = readCursorStyle(e);
   }
+}
+
+/** An <iframe> whose document this page cannot reach (cross-origin). */
+function isOpaqueIframe(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLIFrameElement)) return false;
+  try {
+    return !target.contentDocument;
+  } catch {
+    return true;
+  }
+}
+
+/** Fixed-rate sampler: records the latest pointer position every SAMPLE_INTERVAL_MS. */
+function sampleCursor() {
+  if (!isRecording || !hasPointer || !originEpoch || pointerInOpaqueFrame) return;
+  const t = Math.round(getRelativeTime());
+  if (t < 0) return;
+  const last = mousePoints[mousePoints.length - 1];
+  if (last && last.t >= t) return;
+  mousePoints.push({ t, x: lastMouseX, y: lastMouseY, c: lastCursor });
+}
+
+function startCursorSampler() {
+  if (sampleTimer !== null) clearInterval(sampleTimer);
+  sampleTimer = setInterval(sampleCursor, SAMPLE_INTERVAL_MS);
+}
+
+function stopCursorSampler() {
+  if (sampleTimer !== null) clearInterval(sampleTimer);
+  sampleTimer = null;
 }
 
 function handlePress(e: MouseEvent, type: 'down' | 'up') {
@@ -385,7 +424,11 @@ function handlePress(e: MouseEvent, type: 'down' | 'up') {
   if ((e.target as HTMLElement)?.closest('#smoothstudio-floating-hud')) return;
   const coords = normalizeCaptureCoordinates(e);
   notePointer(e, coords.rawX, coords.rawY);
+  lastMouseX = coords.x;
+  lastMouseY = coords.y;
+  hasPointer = true;
   lastCursor = readCursorStyle(e);
+  // A press is an exact event: its position is recorded at its own time, besides the fixed-rate samples.
   mousePoints.push({ t: Math.round(getRelativeTime()), x: coords.x, y: coords.y, c: lastCursor });
   pressEvents.push({ t: Math.round(getRelativeTime()), type, x: coords.x, y: coords.y, button: e.button });
 }
@@ -1162,6 +1205,9 @@ export function startTracking(
   attachSameOriginIframes();
   if (flushTimer !== null) clearInterval(flushTimer);
   flushTimer = setInterval(() => flushTelemetry('interval'), FLUSH_INTERVAL_MS);
+  hasPointer = false;
+  pointerInOpaqueFrame = false;
+  startCursorSampler();
 
   if (options.resume) {
     console.log('[SmoothStudio DOM-Tracker] Tracking resumed after navigation. Session:', nextSessionId);
@@ -1209,6 +1255,7 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
     clearInterval(flushTimer);
     flushTimer = null;
   }
+  stopCursorSampler();
   detachSameOriginIframes();
 
   const durationMs = Math.round(getRelativeTime());

@@ -90,7 +90,7 @@ describe('Auto-zoom pills: temporal bounds are a hard invariant', () => {
     const click: ClickEvent = { t: 1990, x: 900, y: 400, button: 0, targetTag: 'BUTTON' };
     const pills = generateAutoZoomPills([click], [], 2000, VIEWPORT_W, VIEWPORT_H);
     expect(pills).toHaveLength(1);
-    expect(pills[0].startTime).toBe(1670); // 1990 - 320ms lead-in
+    expect(pills[0].startTime).toBe(1690); // 1990 - 300ms lead-in
     expect(pills[0].endTime).toBe(2000);
   });
 
@@ -102,8 +102,8 @@ describe('Auto-zoom pills: temporal bounds are a hard invariant', () => {
     };
     const pills = generateAutoZoomPills([], [input], 10000, VIEWPORT_W, VIEWPORT_H);
     expect(pills).toHaveLength(1);
-    expect(pills[0].startTime).toBe(600);
-    expect(pills[0].endTime).toBe(3200);
+    expect(pills[0].startTime).toBe(650); // 1000 - 350ms typing pre-roll
+    expect(pills[0].endTime).toBe(2800); // 1000 + 1.8s cooldown
   });
 
   it('clamps a late typing lens to the recording end instead of dropping the hold', () => {
@@ -114,7 +114,7 @@ describe('Auto-zoom pills: temporal bounds are a hard invariant', () => {
     };
     const pills = generateAutoZoomPills([], [input], 2000, VIEWPORT_W, VIEWPORT_H);
     expect(pills).toHaveLength(1);
-    expect(pills[0].startTime).toBe(1590);
+    expect(pills[0].startTime).toBe(1640); // 1990 - 350ms typing pre-roll
     expect(pills[0].endTime).toBe(2000);
   });
 

@@ -204,8 +204,8 @@ describe('Auto-Zoom Core Logic: Coordinate Bounds, Dynamic Scaling, & Indicators
 
       // Should coalesce into exactly 1 stable zoom pill rather than 3 jittery pills
       expect(pills.length).toBe(1);
-      // Anticipates click by 320ms for smooth cinematic pre-framing (>= 90% settled at click)
-      expect(pills[0].startTime).toBe(680);
+      // Anticipates click by 300ms for smooth cinematic pre-framing (>= 90% settled at click)
+      expect(pills[0].startTime).toBe(700);
       // Holds across all three clicks plus comfortable margin
       expect(pills[0].endTime).toBeGreaterThanOrEqual(2600);
     });

@@ -19,7 +19,7 @@ import { generateAutoZoomPills, resolveSourcePixelWidth, AUTO_ZOOM_DEFAULT_DEPTH
 import { toCaptureSpace } from '../engine/capture-space';
 import { prepareVideo, studioLoadReducer, LoadStep, LOAD_STEPS } from './studio-load';
 import { nextRecordingPhase, RecordingPhase, RecordingEvent, ExportJob } from './studio-session';
-import { CursorSplineEngine } from '../engine/cursor-spline';
+import { CursorSplineEngine, CursorMotionSettings, DEFAULT_CURSOR_MOTION } from '../engine/cursor-spline';
 import { AudioProcessor } from '../engine/audio-processor';
 import { SfxSynthesizer } from '../engine/sfx-synthesizer';
 import { HardwareMp4Exporter, ExportEncoderInfo } from '../engine/mp4-exporter';
@@ -269,6 +269,7 @@ export function EditorStudio() {
   const [cursorTheme, setCursorTheme] = useState<CursorTheme>('mac-obsidian');
   const [cursorScale, setCursorScale] = useState<number>(1.2);
   const [cursorSmoothing, setCursorSmoothing] = useState<number>(0.6);
+  const [cursorMotion, setCursorMotion] = useState<CursorMotionSettings>(DEFAULT_CURSOR_MOTION);
   const [showCaptions, setShowCaptions] = useState<boolean>(true);
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>('tiktok-bold');
   const [captionBackdrop, setCaptionBackdrop] = useState<number>(70);
@@ -323,9 +324,16 @@ export function EditorStudio() {
       smoothing: cursorSmoothing,
       cutRanges: autoCutSilences ? silences.filter((silence) => silence.markedForCut) : [],
       trimStartMs,
-      trimEndMs
+      trimEndMs,
+      motion: cursorMotion
     });
-  }, [autoCutSilences, cursorSmoothing, silences, trimEndMs, trimStartMs]);
+  }, [autoCutSilences, cursorSmoothing, cursorMotion, silences, trimEndMs, trimStartMs]);
+  /** Applied to the engine right away: the preview re-renders before the effect above runs. */
+  const handleChangeCursorMotion = (change: Partial<CursorMotionSettings>) => {
+    const next = { ...cursorMotion, ...change };
+    cursorEngineRef.current.setOptions({ motion: next });
+    setCursorMotion(next);
+  };
   const animationFrameRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
   // Deduplicates procedural SFX so a single click/keystroke/zoom event never
@@ -1942,6 +1950,8 @@ export function EditorStudio() {
           onChangeCursorScale={setCursorScale}
            cursorSmoothing={cursorSmoothing}
            onChangeCursorSmoothing={setCursorSmoothing}
+           cursorMotion={cursorMotion}
+           onChangeCursorMotion={handleChangeCursorMotion}
            capturedNativeCursor={telemetry?.metadata?.capturedNativeCursor}
           showCaptions={showCaptions}
           onToggleCaptions={setShowCaptions}
@@ -1992,7 +2002,7 @@ export function EditorStudio() {
           showCursor={showCursor}
           showHud={showHud}
           followCursor={followCursor}
-          cameraCursorKey={`${cursorSmoothing}|${telemetry?.metadata?.id ?? ''}|${telemetry?.mousePoints?.length ?? 0}`}
+          cameraCursorKey={`${cursorSmoothing}|${JSON.stringify(cursorMotion)}|${telemetry?.metadata?.id ?? ''}|${telemetry?.mousePoints?.length ?? 0}`}
           metadata={telemetry?.metadata}
           cursorTheme={cursorTheme}
           cursorScale={cursorScale}

@@ -19,11 +19,10 @@ import {
   isSensitiveString
 } from './privacy-redactor';
 
-// A tab can receive this file again when the service worker repairs a missing
-// content-script receiver. Keep the module idempotent in that case.
-if (typeof window !== 'undefined' && !(window as any).__smoothstudioDomTrackerLoaded) {
-  (window as any).__smoothstudioDomTrackerLoaded = true;
-}
+// Idempotence: a tab can receive this file again when the service worker repairs
+// a missing receiver. The message listener below is guarded by
+// `__smoothstudio_dom_listener_registered`, so a second evaluation never adds a
+// second listener.
 
 let isRecording = false;
 let startTime = 0;

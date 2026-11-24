@@ -5,12 +5,9 @@ export interface PrivacyOptions {
   interactivePicker: boolean;
 }
 
-// The service worker may inject this file into an already-open tab. The guard
-// is intentionally separate from the listener guard so repeated injection
-// cannot create a second content-script instance.
-if (typeof window !== 'undefined' && !(window as any).__smoothstudioPrivacyRedactorLoaded) {
-  (window as any).__smoothstudioPrivacyRedactorLoaded = true;
-}
+// Idempotence: the service worker may inject this file again into an open tab
+// (all frames). The message listener at the bottom is guarded by
+// `__smoothstudio_privacy_listener`, so a repeat evaluation adds no second listener.
 
 let isPickerActive = false;
 let hoveredElement: HTMLElement | null = null;

@@ -295,9 +295,17 @@ async function dispatchToTab(tab: chrome.tabs.Tab, message: any): Promise<TabDis
   if (!isMissingReceiver(first.reason)) return { tabId, ok: false, reason: first.reason };
 
   try {
+    // The shield must cover every frame (the manifest registers it with
+    // all_frames), so a repaired tab gets it in cross-origin iframes too.
+    // The tracker is top-frame only: its message listener is top-frame only
+    // and sub-frames must never emit a second stream of mouse telemetry.
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ['content/privacy-redactor.js']
+    });
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ['content/privacy-redactor.js', 'content/dom-tracker.js']
+      files: ['content/dom-tracker.js']
     });
   } catch (error) {
     return { tabId, ok: false, reason: 'injection_failed' };

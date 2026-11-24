@@ -469,6 +469,8 @@ export function EditorStudio() {
   const [showRecordPrompt, setShowRecordPrompt] = useState<boolean>(false);
   const [recordTargetTabId, setRecordTargetTabId] = useState<number | undefined>(undefined);
   const [recordIncludeMic, setRecordIncludeMic] = useState<boolean>(true);
+  /** The tab whose page is tracked for clicks in the current / last recording (from the service worker). */
+  const trackedTabIdRef = useRef<number | null>(null);
   const [hasNoRecording, setHasNoRecording] = useState<boolean>(false);
 
   // Engines
@@ -812,8 +814,8 @@ export function EditorStudio() {
         const knownUrl = loadedData.metadata?.url;
         if (knownUrl) {
           explain(knownUrl);
-        } else if (typeof recordTargetTabId === 'number' && typeof chrome !== 'undefined' && chrome.tabs?.get) {
-          chrome.tabs.get(recordTargetTabId, (tab) => {
+        } else if (typeof (recordTargetTabId ?? trackedTabIdRef.current) === 'number' && typeof chrome !== 'undefined' && chrome.tabs?.get) {
+          chrome.tabs.get((recordTargetTabId ?? trackedTabIdRef.current) as number, (tab) => {
             void chrome.runtime?.lastError;
             explain(tab?.url);
           });
@@ -1342,6 +1344,7 @@ export function EditorStudio() {
         }, () => {
           void chrome.runtime?.lastError;
         });
+        trackedTabIdRef.current = typeof sourceTabId === 'number' ? sourceTabId : null;
         chrome.runtime.sendMessage(
           {
             type: 'START_STUDIO_RECORDING',
@@ -1349,8 +1352,31 @@ export function EditorStudio() {
             focusTarget: Boolean(sourceTabId),
             sessionId
           },
-          () => {
-            void chrome.runtime?.lastError;
+          (response) => {
+            if (chrome.runtime?.lastError || !response) return;
+            // Clicks are only tracked on the page of ONE normal Chrome tab. Say so now when
+            // that page cannot be tracked, not after the recording turns out to have no zooms.
+            const tabId = typeof response.activeRecordingTabId === 'number' ? response.activeRecordingTabId : null;
+            trackedTabIdRef.current = tabId;
+            const results: Array<{ ok?: boolean; reason?: string }> = Array.isArray(response.telemetry) ? response.telemetry : [];
+            if (tabId !== null && results.some((r) => r && r.ok)) return;
+            const warn = (page: string | null) => showToast({
+              type: 'warning',
+              title: 'Clicks will not be tracked',
+              message: page
+                ? `Chrome does not let extensions work on ${page}, so this recording will have no auto-zoom. Click inside a normal website instead.`
+                : tabId === null
+                  ? 'No normal website is open. Clicks are tracked only inside a web page in a Chrome tab: open your site, then record again for auto-zoom.'
+                  : 'The page being recorded did not respond. Refresh it (after reloading the extension) and record again for auto-zoom.'
+            });
+            if (tabId !== null && chrome.tabs?.get) {
+              chrome.tabs.get(tabId, (tab) => {
+                void chrome.runtime?.lastError;
+                warn(untrackablePage(tab?.url));
+              });
+            } else {
+              warn(null);
+            }
           }
         );
       }

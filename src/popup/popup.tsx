@@ -14,7 +14,8 @@ const isLikelyWebTab = (t?: chrome.tabs.Tab): boolean => {
   // If url is known, ensure it is http/https (skip chrome://, chrome-extension://, etc.)
   // If url is undefined (due to omitted "tabs" permission), assume valid web tab
   if (t.url) {
-    return t.url.startsWith('http://') || t.url.startsWith('https://');
+    // https but closed to extensions (Chrome Web Store, New Tab): clicks there cannot be tracked.
+    return (t.url.startsWith('http://') || t.url.startsWith('https://')) && !untrackablePage(t.url);
   }
   return true;
 };
@@ -178,7 +179,8 @@ export function PopupApp() {
         } else {
           // If the active tab is not an HTTP/HTTPS page (e.g. popup opened as its own tab), find the target web tab
           chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }, (webTabs) => {
-            const chosen = webTabs?.find((t) => t.active) || webTabs?.[webTabs.length - 1] || currentActive;
+            const trackable = (webTabs || []).filter((t) => isLikelyWebTab(t));
+            const chosen = trackable.find((t) => t.active) || trackable[trackable.length - 1] || currentActive;
             launchWithTarget(chosen);
           });
         }

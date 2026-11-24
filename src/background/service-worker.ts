@@ -10,6 +10,7 @@ interface SessionState {
 }
 
 import { mergeTelemetrySegments, segmentKey, TelemetrySegment } from './telemetry-merge';
+import { untrackablePage } from '../engine/restricted-pages';
 
 // Memory cache of session state (synced with storage.session to survive worker sleep)
 let state: SessionState = {
@@ -349,8 +350,10 @@ type TabDispatchResult = {
   response?: any;
 };
 
+/** A normal web page an extension may run on (the Chrome Web Store, for one, is https but off-limits). */
 function isWebTab(tab: chrome.tabs.Tab): boolean {
-  return !tab.url || tab.url.startsWith('http://') || tab.url.startsWith('https://');
+  if (!tab.url) return true;
+  return (tab.url.startsWith('http://') || tab.url.startsWith('https://')) && !untrackablePage(tab.url);
 }
 
 function isMissingReceiver(reason: string | undefined): boolean {
@@ -567,17 +570,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (recordingTabId) {
       dispatchStart(recordingTabId);
     } else {
-      chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }, (webTabs) => {
-        const chosen = webTabs?.find((t) => t.active) || webTabs?.[0];
-        if (chosen?.id) {
-          dispatchStart(chosen.id);
-        } else {
-          // Fallback when URL query is restricted or empty: pick active tab
-          chrome.tabs.query({ active: true }, (activeTabs) => {
-            const fallback = activeTabs?.find((t) => t.id !== editorTabId) || activeTabs?.[0];
-            dispatchStart(fallback?.id || null);
-          });
+      // No tab named: track a page clicks CAN be tracked on. The tab in front in the last
+      // focused window first, then the active web tab of any window, then any web tab.
+      // Never the editor, and never a page Chrome closes to extensions (Web Store, chrome://):
+      // those would record no clicks at all.
+      const trackable = (t: chrome.tabs.Tab) => typeof t.id === 'number' && t.id !== editorTabId && Boolean(t.url) && isWebTab(t);
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }, (focused) => {
+        const inFront = (focused || []).find(trackable);
+        if (inFront?.id) {
+          dispatchStart(inFront.id);
+          return;
         }
+        chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }, (webTabs) => {
+          const candidates = (webTabs || []).filter(trackable);
+          const chosen = candidates.find((t) => t.active) || candidates[0];
+          dispatchStart(chosen?.id ?? null);
+        });
       });
     }
     return true;

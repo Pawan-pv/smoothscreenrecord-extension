@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
+import { untrackablePage } from '../engine/restricted-pages';
 import { Video, Mic, EyeOff, Shield, Sparkles, Sliders, ExternalLink } from 'lucide-react';
 import { ensureDevChromeMocks } from '../engine/dev-environment';
 import { loadPrivacyPrefs, savePrivacyPrefs } from '../engine/privacy-prefs';
@@ -25,6 +26,16 @@ export function PopupApp() {
   const [blurRevenue, setBlurRevenue] = useState(true);
   const [blurApiKeys, setBlurApiKeys] = useState(true);
   const [pickerActive, setPickerActive] = useState(false);
+  /** The current tab is a page Chrome lets no extension track (Web Store, chrome:// ...). */
+  const [untrackable, setUntrackable] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof chrome === 'undefined' || !chrome.tabs?.query) return;
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (chrome.runtime?.lastError) return;
+      setUntrackable(untrackablePage(tabs?.[0]?.url));
+    });
+  }, []);
   // Shown when the privacy shield could not be attached to the page being recorded.
   const [shieldNotice, setShieldNotice] = useState<{ text: string; proceed?: () => void } | null>(null);
 
@@ -267,6 +278,13 @@ export function PopupApp() {
               Dismiss
             </button>
           </div>
+        </div>
+      )}
+
+      {untrackable && (
+        <div className="mb-3 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] leading-relaxed text-amber-200">
+          Chrome does not let extensions work on {untrackable}, so clicks here cannot be tracked: the recording will have
+          no auto-zoom and no styled cursor. Open a normal website to record with auto-zoom.
         </div>
       )}
 

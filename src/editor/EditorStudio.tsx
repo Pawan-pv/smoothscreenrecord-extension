@@ -21,6 +21,7 @@ import {
 import { VIBE_PRESETS } from '../engine/renderer';
 import { generateAutoZoomPills, resolveSourcePixelWidth, AUTO_ZOOM_DEFAULT_DEPTH, AUTO_ZOOM_CONFIG } from '../engine/spring-physics';
 import { toCaptureSpace, captureSpaceProblem } from '../engine/capture-space';
+import { untrackablePage } from '../engine/restricted-pages';
 import { prepareVideo, studioLoadReducer, LoadStep, LOAD_STEPS } from './studio-load';
 import { nextRecordingPhase, RecordingPhase, RecordingEvent, ExportJob } from './studio-session';
 import { CursorSplineEngine, CursorMotionSettings, DEFAULT_CURSOR_MOTION } from '../engine/cursor-spline';
@@ -116,16 +117,19 @@ export interface AutoZoomSettings {
 }
 
 const AUTO_ZOOM_SETTINGS_KEY = 'smoothstudio.autoZoom';
+const AUTO_ZOOM_SETTINGS_VERSION = 2;
 
 function loadAutoZoomSettings(): AutoZoomSettings {
   const defaults: AutoZoomSettings = { enabled: true, depth: AUTO_ZOOM_DEFAULT_DEPTH, speedMs: AUTO_ZOOM_CONFIG.LEAD_IN_MS };
   try {
     const saved = JSON.parse(localStorage.getItem(AUTO_ZOOM_SETTINGS_KEY) || 'null');
     if (!saved || typeof saved !== 'object') return defaults;
+    // Settings saved before v2 hold the old default speeds (600 / 400 ms): they become the new 200 ms default.
+    const oldDefault = saved.v !== AUTO_ZOOM_SETTINGS_VERSION && (saved.speedMs === 600 || saved.speedMs === 400);
     return {
       enabled: typeof saved.enabled === 'boolean' ? saved.enabled : defaults.enabled,
       depth: Number.isFinite(saved.depth) && saved.depth > 1 ? saved.depth : defaults.depth,
-      speedMs: Number.isFinite(saved.speedMs) && saved.speedMs > 0 ? saved.speedMs : defaults.speedMs
+      speedMs: !oldDefault && Number.isFinite(saved.speedMs) && saved.speedMs > 0 ? saved.speedMs : defaults.speedMs
     };
   } catch {
     return defaults;
@@ -172,7 +176,7 @@ export function EditorStudio() {
   const setAutoZoomSettings = (settings: AutoZoomSettings) => {
     autoZoomSettingsRef.current = settings;
     setAutoZoomSettingsState(settings);
-    try { localStorage.setItem(AUTO_ZOOM_SETTINGS_KEY, JSON.stringify(settings)); } catch { /* storage unavailable */ }
+    try { localStorage.setItem(AUTO_ZOOM_SETTINGS_KEY, JSON.stringify({ ...settings, v: AUTO_ZOOM_SETTINGS_VERSION })); } catch { /* storage unavailable */ }
   };
   const [durationMs, setDurationMs] = useState<number>(10000);
   const [trimStartMs, setTrimStartMs] = useState<number>(0);
@@ -792,6 +796,31 @@ export function EditorStudio() {
       cursorEngineRef.current.setData(data.mousePoints || [], data.clicks || [], data.pressEvents || []);
       // A window / screen recording whose page cannot be placed gets no auto zooms: say why
       // instead of silently showing none.
+      // No click and no mouse data at all: nothing to zoom on. Say why rather than show an empty timeline.
+      if ((loadedData.clicks || []).length === 0 && (loadedData.mousePoints || []).length === 0) {
+        const explain = (url?: string | null) => {
+          const blocked = untrackablePage(url);
+          console.warn('[SmoothStudio] No clicks or mouse movement were recorded.', { url: url || '(unknown)', blocked });
+          showToast({
+            type: 'warning',
+            title: 'No clicks were recorded',
+            message: blocked
+              ? `Chrome does not let extensions work on ${blocked}, so clicks there cannot be tracked and there is no auto-zoom. Record a normal website.`
+              : 'Nothing was tracked on the recorded page, so there is no auto-zoom. Reload the extension, refresh the page you record, then record again (or add zooms by hand).'
+          });
+        };
+        const knownUrl = loadedData.metadata?.url;
+        if (knownUrl) {
+          explain(knownUrl);
+        } else if (typeof recordTargetTabId === 'number' && typeof chrome !== 'undefined' && chrome.tabs?.get) {
+          chrome.tabs.get(recordTargetTabId, (tab) => {
+            void chrome.runtime?.lastError;
+            explain(tab?.url);
+          });
+        } else {
+          explain(null);
+        }
+      }
       const placementProblem = captureSpaceProblem(loadedData, loadedSurface, media.width, media.height);
       if (placementProblem && (loadedData.clicks || []).length > 0) {
         console.warn('[SmoothStudio] Auto-zoom is off for this recording:', placementProblem, {

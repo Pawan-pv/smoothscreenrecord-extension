@@ -949,55 +949,59 @@ function injectRecordingHud() {
     backdrop-filter: blur(12px);
   `;
 
-  floatingHudEl.innerHTML = `
-    <div style="display:flex; align-items:center; gap:8px;">
-      <span style="width:10px; height:10px; border-radius:50%; background:#EF4444; display:inline-block; animation: smoothstudio-pulse 1.4s infinite;"></span>
-      <span id="smoothstudio-timer" style="font-family:monospace; font-weight:600; color:#F3F4F6;">00:00</span>
-    </div>
-    <div style="width:1px; height:16px; background:rgba(255,255,255,0.15);"></div>
-    <button id="smoothstudio-stop-btn" style="background:#8B5CF6; color:#FFF; border:none; border-radius:9999px; padding:4px 12px; font-size:12px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:6px;">
-      Stop & Edit
-    </button>
-    <style>
-      @keyframes smoothstudio-pulse {
-        0%, 100% { opacity: 1; transform: scale(1); }
-        50% { opacity: 0.4; transform: scale(0.85); }
-      }
-      #smoothstudio-stop-btn:hover { background: #7C3AED; }
-    </style>
+  // Built with DOM APIs, never innerHTML: pages that enforce Trusted Types (Gemini, Gmail,
+  // YouTube, Docs...) throw on string HTML, also from an extension's content script.
+  const live = document.createElement('div');
+  live.style.cssText = 'display:flex; align-items:center; gap:8px;';
+  const dot = document.createElement('span');
+  dot.style.cssText = 'width:10px; height:10px; border-radius:50%; background:#EF4444; display:inline-block; animation: smoothstudio-pulse 1.4s infinite;';
+  const timerEl = document.createElement('span');
+  timerEl.id = 'smoothstudio-timer';
+  timerEl.style.cssText = 'font-family:monospace; font-weight:600; color:#F3F4F6;';
+  timerEl.textContent = '00:00';
+  live.append(dot, timerEl);
+  const divider = document.createElement('div');
+  divider.style.cssText = 'width:1px; height:16px; background:rgba(255,255,255,0.15);';
+  const stopBtn = document.createElement('button');
+  stopBtn.id = 'smoothstudio-stop-btn';
+  stopBtn.type = 'button';
+  stopBtn.style.cssText = 'background:#8B5CF6; color:#FFF; border:none; border-radius:9999px; padding:4px 12px; font-size:12px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:6px;';
+  stopBtn.textContent = 'Stop & Edit';
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes smoothstudio-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+    #smoothstudio-stop-btn:hover { background: #7C3AED; }
   `;
+  floatingHudEl.append(live, divider, stopBtn, style);
 
   document.body.appendChild(floatingHudEl);
 
-  const timerEl = document.getElementById('smoothstudio-timer');
-  const stopBtn = document.getElementById('smoothstudio-stop-btn');
-
-  if (stopBtn) {
-    stopBtn.onclick = (e) => {
-      e.stopPropagation();
-      if (typeof chrome !== 'undefined' && chrome.runtime) {
-        console.log('[SmoothStudio DOM-Tracker] HUD stop clicked at epoch', Date.now());
-        const sendStop = (remaining: number) => {
-          chrome.runtime.sendMessage(
-            { type: 'STOP_STUDIO_RECORDING', ...(sessionId ? { sessionId } : {}) },
-            (response) => {
-              if (chrome.runtime?.lastError || !response) {
-                if (remaining > 0) {
-                  setTimeout(() => sendStop(remaining - 1), 100);
-                } else {
-                  // Visible HUD feedback: no ack from service worker after retries.
-                  const btn = document.getElementById('smoothstudio-stop-btn');
-                  if (btn) btn.textContent = 'Stopping...';
-                  console.warn('[SmoothStudio DOM-Tracker] HUD stop: no ack from service worker after retries');
-                }
+  stopBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (typeof chrome !== 'undefined' && chrome.runtime) {
+      console.log('[SmoothStudio DOM-Tracker] HUD stop clicked at epoch', Date.now());
+      const sendStop = (remaining: number) => {
+        chrome.runtime.sendMessage(
+          { type: 'STOP_STUDIO_RECORDING', ...(sessionId ? { sessionId } : {}) },
+          (response) => {
+            if (chrome.runtime?.lastError || !response) {
+              if (remaining > 0) {
+                setTimeout(() => sendStop(remaining - 1), 100);
+              } else {
+                // Visible HUD feedback: no ack from service worker after retries.
+                stopBtn.textContent = 'Stopping...';
+                console.warn('[SmoothStudio DOM-Tracker] HUD stop: no ack from service worker after retries');
               }
             }
-          );
-        };
-        sendStop(3);
-      }
-    };
-  }
+          }
+        );
+      };
+      sendStop(3);
+    }
+  };
 
   // A resumed page joins a recording that is already running: its timer shows
   // the time since the shared origin, not since this page loaded.
@@ -1205,8 +1209,9 @@ export function startTracking(
   hudLiveSent = Boolean(options.resume);
   timelineOriginFixed = Boolean(options.resume);
 
-  injectRecordingHud();
-
+  // Tracking first: the listeners, the sampler and the hand-over are set up before
+  // anything touches the page's DOM, so a page that rejects our HUD (or anything
+  // else) can never leave a recording without clicks.
   window.addEventListener('mousemove', handleMouseMove, { passive: true, capture: true });
   window.addEventListener('pointerdown', handlePointerDown, { passive: true, capture: true });
   window.addEventListener('pointerup', handlePointerUp, { passive: true, capture: true });
@@ -1221,12 +1226,22 @@ export function startTracking(
   window.addEventListener('pagehide', handlePageHide, { capture: true });
   window.addEventListener('beforeunload', handlePageHide, { capture: true });
   document.addEventListener('visibilitychange', handleVisibilityChange);
-  attachSameOriginIframes();
   if (flushTimer !== null) clearInterval(flushTimer);
   flushTimer = setInterval(() => flushTelemetry('interval'), FLUSH_INTERVAL_MS);
   hasPointer = false;
   pointerInOpaqueFrame = false;
   startCursorSampler();
+  try {
+    attachSameOriginIframes();
+  } catch (err) {
+    console.warn('[SmoothStudio DOM-Tracker] Same-origin iframes not attached:', String(err));
+  }
+  // Decoration last: without the HUD the recording still records every click.
+  try {
+    injectRecordingHud();
+  } catch (err) {
+    console.warn('[SmoothStudio DOM-Tracker] Recording HUD could not be shown on this page (tracking continues):', String(err));
+  }
 
   if (options.resume) {
     console.log('[SmoothStudio DOM-Tracker] Tracking resumed after navigation. Session:', nextSessionId);
@@ -1316,8 +1331,13 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage 
   (window as any).__smoothstudio_dom_listener_registered = true;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'START_TELEMETRY') {
-      startTracking(message.originEpoch, message.sessionId, { resume: message.resume === true });
-      sendResponse({ ok: true, status: 'started' });
+      try {
+        startTracking(message.originEpoch, message.sessionId, { resume: message.resume === true });
+        sendResponse({ ok: true, status: 'started' });
+      } catch (err) {
+        console.error('[SmoothStudio DOM-Tracker] Tracking could not start:', err);
+        sendResponse({ ok: false, status: 'failed', reason: err instanceof Error ? err.message : String(err) });
+      }
       return true;
     } else if (message.type === 'TIMELINE_ORIGIN') {
       applyTimelineOrigin(message.epoch, message.sessionId);

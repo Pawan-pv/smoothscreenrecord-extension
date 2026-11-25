@@ -4,7 +4,7 @@ import { autoZoomScaleCap } from '../engine/spring-physics';
 import { DEFAULT_TRANSITION_MS, ZOOM_SPEEDS } from '../engine/camera-path';
 import { AUTO_ZOOM_DEPTHS } from '../engine/spring-physics';
 import type { AutoZoomSettings } from './EditorStudio';
-import { Scissors, Plus, Trash2, Eye, Box, Sliders, Subtitles, RotateCcw, Sparkles } from 'lucide-react';
+import { Scissors, Plus, Trash2, Eye, Box, Sliders, Subtitles, RotateCcw, Sparkles, ZoomIn } from 'lucide-react';
 
 interface MagneticTimelineProps {
   durationMs: number;
@@ -80,6 +80,18 @@ export function MagneticTimeline({
   onResetTrim
 }: MagneticTimelineProps) {
   const timelineRef = useRef<HTMLDivElement>(null);
+  /** Pixel width of the track: narrow zoom pills show a clean duration instead of a clipped label. */
+  const [timelineWidth, setTimelineWidth] = useState(0);
+  useEffect(() => {
+    const el = timelineRef.current;
+    if (!el) return;
+    const update = () => setTimelineWidth(el.getBoundingClientRect().width);
+    update();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   const [internalSelectedPillId, setInternalSelectedPillId] = useState<string | null>(null);
   const currentSelectedPillId = selectedPillId !== undefined ? selectedPillId : internalSelectedPillId;
   const setSelectedPillId = (id: string | null) => {
@@ -620,6 +632,13 @@ export function MagneticTimeline({
             const left = getPercent(pill.startTime);
             const width = Math.max(2, getPercent(pill.endTime) - left);
             const isSelected = pill.id === currentSelectedPillId;
+            const durationLabel = `${((pill.endTime - pill.startTime) / 1000).toFixed(1)}s`;
+            const fullLabel = pill.label || `Zoom ${pill.targetScale.toFixed(1)}x`;
+            // A narrow pill shows a clean duration (and a zoom glyph when it fits) instead
+            // of a clipped "Clic..." label; the full label stays in the tooltip/inspector.
+            const pillPx = timelineWidth > 0 ? (width / 100) * timelineWidth : Infinity;
+            const showLabel = pillPx >= 110;
+            const showGlyph = pillPx >= 70;
 
             return (
               <div
@@ -627,6 +646,7 @@ export function MagneticTimeline({
                 data-zoom-pill={pill.id}
                 data-start-time={pill.startTime}
                 data-end-time={pill.endTime}
+                title={`${fullLabel} · ${durationLabel}`}
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -647,16 +667,20 @@ export function MagneticTimeline({
                   title="Drag to adjust start time"
                 />
 
-                <div className="flex items-center gap-1.5 truncate">
-                  <span className="text-[11px] font-semibold text-white truncate">
-                    {pill.label || `Zoom ${pill.targetScale.toFixed(1)}x`}
-                  </span>
-                  {pill.tiltX !== 0 && <Box className="w-3 h-3 text-purple-200" />}
-                  {pill.spotlight && <Eye className="w-3 h-3 text-amber-300" />}
+                <div className="flex items-center gap-1.5 min-w-0 truncate">
+                  {showLabel ? (
+                    <>
+                      <span className="text-[11px] font-semibold text-white truncate">{fullLabel}</span>
+                      {pill.tiltX !== 0 && <Box className="w-3 h-3 shrink-0 text-purple-200" />}
+                      {pill.spotlight && <Eye className="w-3 h-3 shrink-0 text-amber-300" />}
+                    </>
+                  ) : showGlyph ? (
+                    <ZoomIn className="w-3 h-3 shrink-0 text-purple-200" />
+                  ) : null}
                 </div>
 
-                <span className="text-[9px] font-mono text-purple-200/80 ml-1">
-                  {((pill.endTime - pill.startTime) / 1000).toFixed(1)}s
+                <span className="text-[9px] font-mono text-purple-200/80 ml-1 shrink-0">
+                  {durationLabel}
                 </span>
 
                 {/* Right Drag Resize Handle */}

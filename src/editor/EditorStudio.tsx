@@ -20,11 +20,13 @@ import {
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
 import { generateAutoZoomPills, resolveSourcePixelWidth, AUTO_ZOOM_DEFAULT_DEPTH, AUTO_ZOOM_CONFIG } from '../engine/spring-physics';
+import { DEFAULT_TRANSITION_MS, ZOOM_SPEEDS } from '../engine/camera-path';
 import { toCaptureSpace, captureSpaceProblem } from '../engine/capture-space';
 import { untrackablePage } from '../engine/restricted-pages';
 import { prepareVideo, studioLoadReducer, LoadStep, LOAD_STEPS } from './studio-load';
 import { nextRecordingPhase, RecordingPhase, RecordingEvent, ExportJob } from './studio-session';
 import { CursorSplineEngine, CursorMotionSettings, DEFAULT_CURSOR_MOTION } from '../engine/cursor-spline';
+import { CURSOR_ENGINE, CursorEngineKind } from '../engine/cursor-solve';
 import {
   loadBackgroundChoice,
   saveBackgroundChoice,
@@ -117,15 +119,39 @@ export interface AutoZoomSettings {
 }
 
 const AUTO_ZOOM_SETTINGS_KEY = 'smoothstudio.autoZoom';
-const AUTO_ZOOM_SETTINGS_VERSION = 2;
+const AUTO_ZOOM_SETTINGS_VERSION = 3;
+
+/** Which cursor engine draws the cursor ('spline' or 'solve'): kept between sessions for the A/B. */
+const CURSOR_ENGINE_KEY = 'smoothstudio.cursorEngine';
+/** One-time upgrade marker: installs saved on the old default move to 'solve' once. */
+const CURSOR_ENGINE_VERSION_KEY = 'smoothstudio.cursorEngineVersion';
+const CURSOR_ENGINE_VERSION = '2';
+
+function loadCursorEngine(): CursorEngineKind {
+  try {
+    if (localStorage.getItem(CURSOR_ENGINE_VERSION_KEY) !== CURSOR_ENGINE_VERSION) {
+      // Existing installs upgrade cleanly to the new default. A manual switch back to
+      // 'spline' is saved afterwards and respected (the version marker stays put).
+      localStorage.setItem(CURSOR_ENGINE_VERSION_KEY, CURSOR_ENGINE_VERSION);
+      localStorage.setItem(CURSOR_ENGINE_KEY, CURSOR_ENGINE);
+      return CURSOR_ENGINE;
+    }
+    const saved = localStorage.getItem(CURSOR_ENGINE_KEY);
+    return saved === 'spline' || saved === 'solve' ? saved : CURSOR_ENGINE;
+  } catch {
+    return CURSOR_ENGINE;
+  }
+}
 
 function loadAutoZoomSettings(): AutoZoomSettings {
-  const defaults: AutoZoomSettings = { enabled: true, depth: AUTO_ZOOM_DEFAULT_DEPTH, speedMs: AUTO_ZOOM_CONFIG.LEAD_IN_MS };
+  const defaults: AutoZoomSettings = { enabled: true, depth: AUTO_ZOOM_DEFAULT_DEPTH, speedMs: DEFAULT_TRANSITION_MS };
   try {
     const saved = JSON.parse(localStorage.getItem(AUTO_ZOOM_SETTINGS_KEY) || 'null');
     if (!saved || typeof saved !== 'object') return defaults;
-    // Settings saved before v2 hold the old default speeds (600 / 400 ms): they become the new 200 ms default.
-    const oldDefault = saved.v !== AUTO_ZOOM_SETTINGS_VERSION && (saved.speedMs === 600 || saved.speedMs === 400);
+    // Settings saved before v3 hold the old five-speed ladder (200/250/400/600/900):
+    // those are not current presets, so they migrate to the new Smooth default.
+    const knownPreset = ZOOM_SPEEDS.some((s) => s.ms === saved.speedMs);
+    const oldDefault = saved.v !== AUTO_ZOOM_SETTINGS_VERSION && !knownPreset;
     return {
       enabled: typeof saved.enabled === 'boolean' ? saved.enabled : defaults.enabled,
       depth: Number.isFinite(saved.depth) && saved.depth > 1 ? saved.depth : defaults.depth,
@@ -427,6 +453,7 @@ export function EditorStudio() {
   const [cursorScale, setCursorScale] = useState<number>(1.2);
   const [cursorSmoothing, setCursorSmoothing] = useState<number>(0.6);
   const [cursorMotion, setCursorMotion] = useState<CursorMotionSettings>(DEFAULT_CURSOR_MOTION);
+  const [cursorEngineKind, setCursorEngineKind] = useState<CursorEngineKind>(loadCursorEngine);
   const [showCaptions, setShowCaptions] = useState<boolean>(true);
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>('tiktok-bold');
   const [captionBackdrop, setCaptionBackdrop] = useState<number>(70);
@@ -474,7 +501,7 @@ export function EditorStudio() {
   const [hasNoRecording, setHasNoRecording] = useState<boolean>(false);
 
   // Engines
-  const cursorEngineRef = useRef<CursorSplineEngine>(new CursorSplineEngine());
+  const cursorEngineRef = useRef<CursorSplineEngine>(new CursorSplineEngine([], [], [], { engine: cursorEngineKind }));
   const audioProcessorRef = useRef<AudioProcessor>(new AudioProcessor());
   const sfxSynthesizerRef = useRef<SfxSynthesizer>(new SfxSynthesizer(true));
   const captureEngineRef = useRef<ScreenCaptureEngine>(new ScreenCaptureEngine());
@@ -484,14 +511,20 @@ export function EditorStudio() {
       cutRanges: autoCutSilences ? silences.filter((silence) => silence.markedForCut) : [],
       trimStartMs,
       trimEndMs,
-      motion: cursorMotion
+      motion: cursorMotion,
+      engine: cursorEngineKind
     });
-  }, [autoCutSilences, cursorSmoothing, cursorMotion, silences, trimEndMs, trimStartMs]);
+  }, [autoCutSilences, cursorSmoothing, cursorMotion, cursorEngineKind, silences, trimEndMs, trimStartMs]);
   /** Applied to the engine right away: the preview re-renders before the effect above runs. */
   const handleChangeCursorMotion = (change: Partial<CursorMotionSettings>) => {
     const next = { ...cursorMotion, ...change };
     cursorEngineRef.current.setOptions({ motion: next });
     setCursorMotion(next);
+  };
+  const handleChangeCursorEngine = (kind: CursorEngineKind) => {
+    cursorEngineRef.current.setOptions({ engine: kind });
+    setCursorEngineKind(kind);
+    try { localStorage.setItem(CURSOR_ENGINE_KEY, kind); } catch { /* storage unavailable */ }
   };
   const animationFrameRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
@@ -1079,7 +1112,7 @@ export function EditorStudio() {
     }
     const newPill: ZoomPill = {
       id: 'pill_' + Date.now(),
-      startTime: Math.max(0, playhead - settings.speedMs),
+      startTime: Math.max(0, playhead - AUTO_ZOOM_CONFIG.LEAD_IN_MS),
       endTime: Math.min(durationMs, playhead + 2500),
       targetX: x as number,
       targetY: y as number,
@@ -2192,6 +2225,8 @@ export function EditorStudio() {
            onChangeCursorSmoothing={setCursorSmoothing}
            cursorMotion={cursorMotion}
            onChangeCursorMotion={handleChangeCursorMotion}
+           cursorEngineKind={cursorEngineKind}
+           onChangeCursorEngine={handleChangeCursorEngine}
            capturedNativeCursor={telemetry?.metadata?.capturedNativeCursor}
           showCaptions={showCaptions}
           onToggleCaptions={setShowCaptions}
@@ -2250,7 +2285,7 @@ export function EditorStudio() {
           showCursor={showCursor}
           showHud={showHud}
           followCursor={followCursor}
-          cameraCursorKey={`${cursorSmoothing}|${JSON.stringify(cursorMotion)}|${telemetry?.metadata?.id ?? ''}|${telemetry?.mousePoints?.length ?? 0}`}
+          cameraCursorKey={`${cursorEngineKind}|${cursorSmoothing}|${JSON.stringify(cursorMotion)}|${telemetry?.metadata?.id ?? ''}|${telemetry?.mousePoints?.length ?? 0}`}
           metadata={telemetry?.metadata}
           cursorTheme={cursorTheme}
           cursorScale={cursorScale}

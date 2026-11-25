@@ -1,5 +1,6 @@
 import { MousePoint, ClickEvent, CursorTheme, PressEvent, CursorStyle } from '../types/telemetry';
 import { createSpring, dampingFor, SPRING_STEP_MS } from './spring';
+import { CURSOR_ENGINE, CursorEngineKind, CursorSolveTrack, solveCursorTrack } from './cursor-solve';
 
 export interface InterpolatedCursor {
   x: number;
@@ -44,6 +45,35 @@ export const CURSOR_TIGHT_STIFFNESS = 6000;
 export const CURSOR_LOOSE_STIFFNESS = 100;
 /** Lean in degrees per px/s of horizontal speed (1500 px/s = 12 deg). */
 export const CURSOR_TILT_GAIN = 0.008;
+
+/**
+ * Shape-aware lean: full tilt around the hotspot for the arrow / hand, none for the
+ * I-beam, half around the palm for grab / grabbing.
+ *
+ * The pivot is in the cursor's local units, measured from the drawn paths:
+ * drawHandCursor translates (-4,-1) and scales 0.85 around a hand whose palm centre
+ * is (12, 18.5) -> (6.2, 14.7); drawGrabbingCursor adds a 0.9 scale -> (5.6, 13.2).
+ */
+export const CURSOR_STYLE_MOTION: Record<string, { tilt: number; pivot: readonly [number, number] }> = {
+  default: { tilt: 1, pivot: [0, 0] },
+  pointer: { tilt: 1, pivot: [0, 0] },
+  text: { tilt: 0, pivot: [0, 0] },
+  grab: { tilt: 0.5, pivot: [6.2, 14.7] },
+  grabbing: { tilt: 0.5, pivot: [5.6, 13.2] }
+};
+const CURSOR_STYLE_FALLBACK = { tilt: 1, pivot: [0, 0] as const };
+
+/** Glide trail / motion blur: starts at 800 px/s, full at 1200 px/s (1920-frame pixels). */
+export const CURSOR_BLUR_ONSET_PX_S = 800;
+export const CURSOR_BLUR_FULL_PX_S = 1200;
+/** No streak across a cut or a jump back onto the page. */
+const CURSOR_BLUR_JUMP_GUARD_MS = 120;
+
+function blurRamp(speedPxPerSecond: number): number {
+  const t = Math.max(0, Math.min(1, (speedPxPerSecond - CURSOR_BLUR_ONSET_PX_S) / (CURSOR_BLUR_FULL_PX_S - CURSOR_BLUR_ONSET_PX_S)));
+  return t * t * (3 - 2 * t);
+}
+
 const CURSOR_TILT_STIFFNESS = 300;
 const CURSOR_PRESS_STIFFNESS = 900;
 /** Below 1: the press spring overshoots a little on release. */
@@ -62,6 +92,9 @@ export const CURSOR_BREAK_MS = 250;
 export const CURSOR_LEAVE_FADE_MS = 120;
 /** The smoothing evaluates the recorded path on an even grid of this step (ms). */
 const FILTER_GRID_MS = 4;
+/** Solve engine: the click pin is only a safety net (the solve already passes through every click). */
+const SOLVE_CLICK_PIN_MS = 20;
+const SOLVE_CLICK_PIN_WARN_PX = 1;
 
 export interface CursorSplineOptions {
   smoothing?: number;
@@ -69,6 +102,8 @@ export interface CursorSplineOptions {
   trimStartMs?: number;
   trimEndMs?: number;
   motion?: Partial<CursorMotionSettings>;
+  /** 'spline': smoothing filters + spline + x/y springs. 'solve': one constrained minimum-jerk solve (cursor-solve.ts). */
+  engine?: CursorEngineKind;
 }
 
 /** Default stillness before the cursor fades out. */
@@ -103,6 +138,13 @@ function hermiteTime(
   return (2 * s3 - 3 * s2 + 1) * p1 + (s3 - 2 * s2 + s) * h * m1 + (-2 * s3 + 3 * s2) * p2 + (s3 - s2) * h * m2;
 }
 
+/** The drawn cursor, stepped once at a fixed 120 Hz over the recording and read by time. */
+interface MotionTrack {
+  t0: number; steps: number; x: Float64Array; y: Float64Array; vx: Float64Array; vy: Float64Array; tilt: Float64Array; press: Float64Array;
+  /** jumpAt[s]: the time the cursor jumped (re-entry, removed silence) between step s-1 and step s; NaN when it did not. */
+  jumpAt: Float64Array;
+}
+
 export class CursorSplineEngine {
   private mousePoints: MousePoint[] = [];
   private filteredMousePoints: MousePoint[] = [];
@@ -125,7 +167,12 @@ export class CursorSplineEngine {
    * 120 Hz over the recording and read by time. Rebuilt lazily when the data, the
    * filter, the cuts or the motion settings change.
    */
-  private motionTrack: { t0: number; steps: number; x: Float64Array; y: Float64Array; vx: Float64Array; vy: Float64Array; tilt: Float64Array; press: Float64Array } | null = null;
+  private motionTrack: MotionTrack | null = null;
+  private engineKind: CursorEngineKind = CURSOR_ENGINE;
+  /** 'solve' engine: the solved path. Depends only on the samples, clicks, presses and smoothing (not on cuts or motion). */
+  private solveTrack: CursorSolveTrack | null = null;
+  /** 'solve' engine: per click, how far (dx, dy) the solved path is from it at its time (NaN = not on the track). */
+  private clickPinError: Float64Array | null = null;
 
   constructor(mousePoints: MousePoint[] = [], clicks: ClickEvent[] = [], pressEvents: PressEvent[] = [], options: CursorSplineOptions = {}) {
     this.setData(mousePoints, clicks, pressEvents, options);
@@ -135,6 +182,7 @@ export class CursorSplineEngine {
     this.mousePoints = [...mousePoints].sort((a, b) => a.t - b.t);
     this.filterDirty = true;
     this.motionTrack = null;
+    this.solveTrack = null;
     this.reentryTimes = [];
     for (let i = 1; i < this.mousePoints.length; i++) {
       if (this.isBreakBefore(i)) this.reentryTimes.push(this.mousePoints[i].t);
@@ -176,9 +224,17 @@ export class CursorSplineEngine {
   }
 
   public setOptions(options: CursorSplineOptions = {}): void {
+    if ((options.engine === 'spline' || options.engine === 'solve') && options.engine !== this.engineKind) {
+      this.engineKind = options.engine;
+      this.motionTrack = null;
+    }
     if (typeof options.smoothing === 'number' && Number.isFinite(options.smoothing)) {
       const next = Math.max(0, Math.min(1, options.smoothing));
-      if (next !== this.smoothing) this.filterDirty = true;
+      if (next !== this.smoothing) {
+        this.filterDirty = true;
+        this.solveTrack = null;
+        this.motionTrack = null;
+      }
       this.smoothing = next;
     }
     if (options.cutRanges) {
@@ -205,7 +261,8 @@ export class CursorSplineEngine {
         this.motionTrack = null;
       }
     }
-    if (this.filterDirty) {
+    // The spline's filters are only built for the spline (switching back to it builds them then).
+    if (this.filterDirty && this.engineKind === 'spline') {
       this.rebuildFilteredMousePoints();
       this.filterDirty = false;
       this.motionTrack = null;
@@ -420,13 +477,16 @@ export class CursorSplineEngine {
    * pinned onto a click as it lands.
    */
   public getCursorAt(timeMs: number): InterpolatedCursor {
+    if (this.engineKind === 'solve') return this.getSolvedCursorAt(timeMs, true);
     const tracked = this.getTrackedCursorAt(timeMs);
     const track = this.ensureMotionTrack();
     if (!track || !Number.isFinite(timeMs)) return tracked;
     const f = (timeMs - track.t0) / SPRING_STEP_MS;
     if (f <= 0 || f >= track.steps) return tracked;
     const i = Math.floor(f);
-    const r = f - i;
+    // A jump between these two steps: the cursor is on one side of it, never drawn in between.
+    const jump = track.jumpAt[i + 1];
+    const r = Number.isNaN(jump) ? f - i : timeMs < jump ? 0 : 1;
     const read = (a: Float64Array) => a[i] + (a[i + 1] - a[i]) * r;
     const pinned = this.pinToClick(timeMs, read(track.x), read(track.y));
     const vx = read(track.vx);
@@ -486,17 +546,20 @@ export class CursorSplineEngine {
     const t0 = this.mousePoints[0].t;
     const t1 = this.mousePoints[this.mousePoints.length - 1].t + CURSOR_SETTLE_MS;
     const steps = Math.max(1, Math.ceil((t1 - t0) / SPRING_STEP_MS));
-    const x = new Float64Array(steps + 1);
-    const y = new Float64Array(steps + 1);
-    const vx = new Float64Array(steps + 1);
-    const vy = new Float64Array(steps + 1);
+    // 'solve': the path (and its velocity) comes from the solve; only tilt and press are springs.
+    const solved = this.engineKind === 'solve' ? this.ensureSolveTrack(t0, steps) : null;
+    const x = solved ? solved.x : new Float64Array(steps + 1);
+    const y = solved ? solved.y : new Float64Array(steps + 1);
+    const vx = solved ? solved.vx : new Float64Array(steps + 1);
+    const vy = solved ? solved.vy : new Float64Array(steps + 1);
     const tilt = new Float64Array(steps + 1);
     const press = new Float64Array(steps + 1);
+    const jumpAt = solved ? solved.jumpAt : new Float64Array(steps + 1).fill(NaN);
 
     const k = CURSOR_TIGHT_STIFFNESS + (CURSOR_LOOSE_STIFFNESS - CURSOR_TIGHT_STIFFNESS) * (m.sway / 100);
-    const start = this.getTrackedCursorAt(t0);
-    const sx = createSpring(k, dampingFor(k), start.x);
-    const sy = createSpring(k, dampingFor(k), start.y);
+    const start = solved ? null : this.getTrackedCursorAt(t0);
+    const sx = createSpring(k, dampingFor(k), start ? start.x : 0);
+    const sy = createSpring(k, dampingFor(k), start ? start.y : 0);
     const st = createSpring(CURSOR_TILT_STIFFNESS, dampingFor(CURSOR_TILT_STIFFNESS), 0);
     const sp = createSpring(CURSOR_PRESS_STIFFNESS, dampingFor(CURSOR_PRESS_STIFFNESS, CURSOR_PRESS_DAMPING_RATIO), 0);
     const pxPerUnit = this.mousePoints.every((p) => Math.abs(p.x) <= 1.01 && Math.abs(p.y) <= 1.01) ? 1920 : 1;
@@ -506,41 +569,174 @@ export class CursorSplineEngine {
     let nextReentry = 0;
     for (let s = 0; s <= steps; s++) {
       const t = t0 + s * SPRING_STEP_MS;
-      const target = this.getTrackedCursorAt(t);
-      // The pointer came back onto the page: the cursor is there at once, it does not glide in.
-      let reentered = false;
-      while (nextReentry < this.reentryTimes.length && this.reentryTimes[nextReentry] <= t) {
-        nextReentry++;
-        reentered = true;
+      let leanVelocity: number;
+      if (solved) {
+        leanVelocity = solved.vx[s];
+      } else {
+        const target = this.getTrackedCursorAt(t);
+        // The pointer came back onto the page: the cursor is there at once, it does not glide in.
+        let reentered = false;
+        while (nextReentry < this.reentryTimes.length && this.reentryTimes[nextReentry] <= t) {
+          jumpAt[s] = this.reentryTimes[nextReentry];
+          nextReentry++;
+          reentered = true;
+        }
+        if (reentered) {
+          sx.snap(target.x);
+          sy.snap(target.y);
+        }
+        // A cut is a jump of the playhead: the cursor is there at once, it does not fly across.
+        const cut = this.cutRanges.find((range) => t >= range.startTime && t <= range.endTime + 80);
+        if (cut) {
+          if (cut.startTime > t - SPRING_STEP_MS) jumpAt[s] = cut.startTime;
+          sx.snap(target.x);
+          sy.snap(target.y);
+        }
+        x[s] = sx.value;
+        y[s] = sy.value;
+        vx[s] = sx.velocity;
+        vy[s] = sy.velocity;
+        sx.step(target.x, dt);
+        sy.step(target.y, dt);
+        leanVelocity = sx.velocity;
       }
-      if (reentered) {
-        sx.snap(target.x);
-        sy.snap(target.y);
-      }
-      // A cut is a jump of the playhead: the cursor is there at once, it does not fly across.
-      if (this.cutRanges.some((range) => t >= range.startTime && t <= range.endTime + 80)) {
-        sx.snap(target.x);
-        sy.snap(target.y);
-      }
-      x[s] = sx.value;
-      y[s] = sy.value;
-      vx[s] = sx.velocity;
-      vy[s] = sy.velocity;
       tilt[s] = st.value;
       press[s] = sp.value;
-      sx.step(target.x, dt);
-      sy.step(target.y, dt);
       // Velocity-driven lean: speed to the right leans right, clamped to the user's angle.
-      const lean = m.tiltEnabled ? Math.max(-m.maxTiltDeg, Math.min(m.maxTiltDeg, sx.velocity * pxPerUnit * CURSOR_TILT_GAIN)) : 0;
+      const lean = m.tiltEnabled ? Math.max(-m.maxTiltDeg, Math.min(m.maxTiltDeg, leanVelocity * pxPerUnit * CURSOR_TILT_GAIN)) : 0;
       st.step(lean, dt);
       sp.step(m.pressEnabled && pressed(t) ? m.pressDepth : 0, dt);
     }
-    this.motionTrack = { t0, steps, x, y, vx, vy, tilt, press };
+    this.motionTrack = { t0, steps, x, y, vx, vy, tilt, press, jumpAt };
+    if (solved) this.clickPinError = this.measureClickPinError(this.motionTrack);
     return this.motionTrack;
+  }
+
+  /** 'solve' engine: the solved path on the track grid, solved once per data / smoothing change. */
+  private ensureSolveTrack(t0: number, steps: number): CursorSolveTrack {
+    if (this.solveTrack && this.solveTrack.x.length === steps + 1) return this.solveTrack;
+    const n = this.mousePoints.length;
+    // On-page stretches, by the same break rule as everything else (leave marker or CURSOR_BREAK_MS gap).
+    const stretches: Array<[number, number]> = [];
+    let first = 0;
+    for (let i = 1; i <= n; i++) {
+      if (i === n || this.isBreakBefore(i)) {
+        stretches.push([first, i - 1]);
+        first = i;
+      }
+    }
+    const constraints = [...this.clicks, ...this.pressEvents]
+      .filter((e) => Number.isFinite(e.t) && Number.isFinite(e.x) && Number.isFinite(e.y))
+      .map((e) => ({ t: e.t, x: e.x, y: e.y }))
+      .sort((a, b) => a.t - b.t);
+    const normalized = this.mousePoints.every((p) => Math.abs(p.x) <= 1.01 && Math.abs(p.y) <= 1.01);
+    this.solveTrack = solveCursorTrack({
+      points: this.mousePoints,
+      stretches,
+      constraints,
+      t0,
+      stepMs: SPRING_STEP_MS,
+      steps,
+      smoothing: this.smoothing,
+      pxX: normalized ? 1920 : 1,
+      pxY: normalized ? 1080 : 1
+    });
+    const tm = this.solveTrack.timing;
+    console.info(`[SmoothStudio] Cursor solve: ${tm.samples} samples in ${stretches.length} stretch(es), ${tm.totalMs.toFixed(1)} ms (factor ${tm.factorMs.toFixed(1)} ms, x ${tm.solveXMs.toFixed(1)} ms, y ${tm.solveYMs.toFixed(1)} ms).`);
+    return this.solveTrack;
+  }
+
+  /** Read the cursor track at a time: linear between steps, never across a jump (re-entry, cut). */
+  private readTrack(track: MotionTrack, timeMs: number): { x: number; y: number; vx: number; vy: number } {
+    const f = (timeMs - track.t0) / SPRING_STEP_MS;
+    if (!(f > 0)) return { x: track.x[0], y: track.y[0], vx: 0, vy: 0 };
+    if (f >= track.steps) return { x: track.x[track.steps], y: track.y[track.steps], vx: 0, vy: 0 };
+    const i = Math.floor(f);
+    const jump = track.jumpAt[i + 1];
+    const r = Number.isNaN(jump) ? f - i : timeMs < jump ? 0 : 1;
+    const read = (a: Float64Array) => a[i] + (a[i + 1] - a[i]) * r;
+    return { x: read(track.x), y: read(track.y), vx: read(track.vx), vy: read(track.vy) };
+  }
+
+  /**
+   * 'solve' engine: the solve passes through every click, so the click pin is only a
+   * safety net. Per click: how far the solved path is from it as it lands. Warns when
+   * any is more than SOLVE_CLICK_PIN_WARN_PX (the pin would then visibly move the cursor).
+   */
+  private measureClickPinError(track: MotionTrack): Float64Array {
+    const err = new Float64Array(this.clicks.length * 2).fill(NaN);
+    const normalized = this.mousePoints.every((p) => Math.abs(p.x) <= 1.01 && Math.abs(p.y) <= 1.01);
+    const sx = normalized ? 1920 : 1;
+    const sy = normalized ? 1080 : 1;
+    let worst = 0;
+    let over = 0;
+    const tEnd = track.t0 + track.steps * SPRING_STEP_MS;
+    this.clicks.forEach((c, i) => {
+      if (!Number.isFinite(c.t) || c.t < track.t0 || c.t > tEnd) return;
+      const p = this.readTrack(track, c.t);
+      err[2 * i] = c.x - p.x;
+      err[2 * i + 1] = c.y - p.y;
+      const px = Math.hypot(err[2 * i] * sx, err[2 * i + 1] * sy);
+      if (px > SOLVE_CLICK_PIN_WARN_PX) over++;
+      worst = Math.max(worst, px);
+    });
+    if (over > 0) {
+      console.warn(`[SmoothStudio] Cursor solve: ${over} click(s) missed by more than ${SOLVE_CLICK_PIN_WARN_PX} px (worst ${worst.toFixed(2)} px); the ±${SOLVE_CLICK_PIN_MS} ms click pin corrects them.`);
+    }
+    return err;
+  }
+
+  /** 'solve' engine: the drawn cursor (and, without the pin, the camera's path). */
+  private getSolvedCursorAt(timeMs: number, clickPin: boolean): InterpolatedCursor {
+    let opacity = this.getCursorOpacityAt(timeMs);
+    const track = this.ensureMotionTrack();
+    if (!track || !Number.isFinite(timeMs)) return { x: 0, y: 0, style: 'default', vx: 0, vy: 0, speed: 0, opacity };
+    // A removed silence: the playhead jumps over it and the cursor fades back in (as with the spline).
+    const seamCut = this.cutRanges.find((range) => timeMs >= range.startTime && timeMs <= range.endTime + 80);
+    if (seamCut) opacity *= timeMs <= seamCut.endTime ? 0 : Math.min(1, (timeMs - seamCut.endTime) / 80);
+    const p = this.readTrack(track, timeMs);
+    let x = p.x;
+    let y = p.y;
+    if (clickPin && this.clickPinError) {
+      // Nearest click within ±SOLVE_CLICK_PIN_MS: shift by the solve's miss at that click, faded in and out.
+      let lo = 0;
+      let hi = this.clicks.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (this.clicks[mid].t < timeMs - SOLVE_CLICK_PIN_MS) lo = mid + 1; else hi = mid;
+      }
+      let best = -1;
+      for (let i = lo; i < this.clicks.length && this.clicks[i].t <= timeMs + SOLVE_CLICK_PIN_MS; i++) {
+        if (Number.isNaN(this.clickPinError[2 * i])) continue;
+        if (best < 0 || Math.abs(this.clicks[i].t - timeMs) < Math.abs(this.clicks[best].t - timeMs)) best = i;
+      }
+      if (best >= 0) {
+        const nrm = 1 - Math.abs(this.clicks[best].t - timeMs) / SOLVE_CLICK_PIN_MS;
+        const w = nrm * nrm * (3 - 2 * nrm);
+        x += this.clickPinError[2 * best] * w;
+        y += this.clickPinError[2 * best + 1] * w;
+      }
+    }
+    return { x, y, style: this.styleAt(timeMs), vx: p.vx, vy: p.vy, speed: Math.hypot(p.vx, p.vy), opacity };
+  }
+
+  /** The recorded CSS cursor at a time (the sample at or before it). */
+  private styleAt(timeMs: number): string {
+    const pts = this.mousePoints;
+    let lo = 0;
+    let hi = pts.length - 1;
+    let found = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (pts[mid].t <= timeMs) { found = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return pts[found]?.c || 'default';
   }
 
   /** The tracked (filtered, unsprung) cursor path: what the drawn cursor and the camera chase. */
   public getTrackedCursorAt(timeMs: number): InterpolatedCursor {
+    // The solve has no spring: the drawn cursor and the camera follow the same solved path.
+    if (this.engineKind === 'solve') return this.getSolvedCursorAt(timeMs, false);
     const opacity = this.getCursorOpacityAt(timeMs);
 
     if (this.mousePoints.length === 0) {
@@ -557,9 +753,14 @@ export class CursorSplineEngine {
 
     const seamCut = this.cutRanges.find((range) => timeMs >= range.startTime && timeMs <= range.endTime + 80);
     if (seamCut) {
-      const postCutIndex = points.findIndex((point) => point.t >= seamCut.endTime);
-      const postCut = postCutIndex >= 0 ? points[postCutIndex] : points[points.length - 1];
-      const rawPostCut = postCutIndex >= 0 ? this.mousePoints[postCutIndex] : this.mousePoints[this.mousePoints.length - 1];
+      // The first sample at or after the cut's end (binary search: this runs for every spring step inside a cut).
+      let lo = 0;
+      let hi = this.mousePoints.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (this.mousePoints[mid].t < seamCut.endTime) lo = mid + 1; else hi = mid;
+      }
+      const rawPostCut = this.mousePoints[lo];
       const seamProgress = timeMs <= seamCut.endTime ? 0 : Math.min(1, (timeMs - seamCut.endTime) / 80);
       return {
         x: rawPostCut.x,
@@ -687,18 +888,27 @@ export class CursorSplineEngine {
   public getTrailAt(timeMs: number, maxSamples = 4, outputFps = 60): InterpolatedCursor[] {
     if (outputFps <= 20) return [];
     const current = this.getCursorAt(timeMs);
-    if (current.speed * 1920 <= 350 || current.opacity <= 0.001) return [];
+    if (current.opacity <= 0.001) return [];
+    const speedPx = current.x <= 1.0 ? current.speed * 1920 : current.speed;
+    const blur = blurRamp(speedPx);
+    if (blur <= 0.001) return [];
     const trail: InterpolatedCursor[] = [];
     const sampleMs = 1000 / Math.max(30, outputFps);
     for (let i = 1; i <= maxSamples; i++) {
       const sampleTime = timeMs - sampleMs * i;
-      if (this.cutRanges.some((range) => sampleTime <= range.endTime + 120 && timeMs >= range.startTime)) return [];
+      if (this.cutRanges.some((range) => sampleTime <= range.endTime + CURSOR_BLUR_JUMP_GUARD_MS && timeMs >= range.startTime)) return [];
       // No streak across a jump back onto the page.
       if (this.reentryTimes.some((r) => r > sampleTime && r <= timeMs)) return trail;
       const sample = this.getCursorAt(sampleTime);
-      trail.push({ ...sample, opacity: current.opacity * (1 - i / (maxSamples + 1)) * 0.24 });
+      trail.push({ ...sample, opacity: current.opacity * (1 - i / (maxSamples + 1)) * 0.24 * blur });
     }
     return trail;
+  }
+
+  /** True next to a cut or a jump back onto the page: no motion streak there. */
+  private motionJumpNear(timeMs: number): boolean {
+    if (this.cutRanges.some((range) => timeMs >= range.startTime && timeMs <= range.endTime + CURSOR_BLUR_JUMP_GUARD_MS)) return true;
+    return this.reentryTimes.some((r) => r > timeMs - CURSOR_BLUR_JUMP_GUARD_MS && r <= timeMs);
   }
 
   // Draw crisp 4K vector cursor and physics click ripple rings at specific screen coordinates
@@ -713,7 +923,8 @@ export class CursorSplineEngine {
     theme: CursorTheme = 'mac-obsidian',
     cursorScale: number = 1.0,
     canvasScale: number = 1.0,
-    trailPoints: Array<{ x: number; y: number; opacity: number }> = []
+    trailPoints: Array<{ x: number; y: number; opacity: number }> = [],
+    outputFps: number = 60
   ): void {
     ctx.save();
 
@@ -773,11 +984,13 @@ export class CursorSplineEngine {
       ctx.restore();
     }
 
-    // Handles normalized (0..1) speeds (scaled to ~1920px equivalent) as well as legacy pixel speeds
+    // Handles normalized (0..1) speeds (scaled to ~1920px equivalent) as well as legacy pixel speeds.
+    // Onset 800 px/s, full 1200 px/s; never on a <=20 fps GIF or across a cut / re-entry.
     const effectiveSpeed = cursor.x <= 1.0 ? cursor.speed * 1920 : cursor.speed;
-    if (effectiveSpeed > 350) {
+    const blur = outputFps <= 20 || this.motionJumpNear(currentTimeMs) ? 0 : blurRamp(effectiveSpeed);
+    if (blur > 0.001) {
       ctx.save();
-      const blurLen = Math.min(24, effectiveSpeed * 0.02) * cursorScale * outputScale;
+      const blurLen = Math.min(24, effectiveSpeed * 0.02) * cursorScale * outputScale * blur;
       const angle = Math.atan2(cursor.vy, cursor.vx);
       ctx.beginPath();
       ctx.moveTo(screenX, screenY);
@@ -788,14 +1001,16 @@ export class CursorSplineEngine {
       ctx.strokeStyle = theme === 'neon-glow' ? 'rgba(168, 85, 247, 0.45)' : 'rgba(255, 255, 255, 0.25)';
       ctx.lineWidth = 4 * cursorScale * outputScale;
       ctx.lineCap = 'round';
+      ctx.globalAlpha = Math.min(1, ctx.globalAlpha * blur);
       ctx.stroke();
       ctx.restore();
     }
 
     // 3. Render High-Resolution Vector Cursor (screen space: its size never follows the zoom)
     ctx.translate(screenX, screenY);
-    const tiltDeg = this.getTiltAt(currentTimeMs);
-    if (Math.abs(tiltDeg) > 0.01) ctx.rotate((tiltDeg * Math.PI) / 180); // leans about its hotspot
+    const styleMotion = CURSOR_STYLE_MOTION[cursor.style] || CURSOR_STYLE_FALLBACK;
+    // Shape-aware lean: full around the hotspot, none for text, half around the palm for grab.
+    const tiltDeg = styleMotion.tilt * this.getTiltAt(currentTimeMs);
     if (pressScale < 0.985) {
       ctx.beginPath();
       ctx.arc(0, 0, 18 * cursorScale * outputScale, 0, Math.PI * 2);
@@ -805,8 +1020,16 @@ export class CursorSplineEngine {
       ctx.stroke();
       ctx.globalAlpha = Math.max(0, Math.min(1, cursorOpacity));
     }
-    if (cursorScale * pressScale * outputScale !== 1.0) {
-      ctx.scale(cursorScale * pressScale * outputScale, cursorScale * pressScale * outputScale);
+    const styleScale = cursorScale * pressScale * outputScale;
+    if (Math.abs(tiltDeg) > 0.01) {
+      const [pivotX, pivotY] = styleMotion.pivot;
+      // Rotate about the style's pivot: T(p*s) S(s) R T(-p).
+      ctx.translate(pivotX * styleScale, pivotY * styleScale);
+      ctx.scale(styleScale, styleScale);
+      ctx.rotate((tiltDeg * Math.PI) / 180);
+      ctx.translate(-pivotX, -pivotY);
+    } else if (styleScale !== 1.0) {
+      ctx.scale(styleScale, styleScale);
     }
 
     // Subtle drop shadow for vector cursor

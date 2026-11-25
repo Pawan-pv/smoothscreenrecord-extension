@@ -15,6 +15,7 @@ import {
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
 import type { CursorMotionSettings } from '../engine/cursor-spline';
+import type { CursorEngineKind } from '../engine/cursor-solve';
 import { GRADIENT_PRESETS, gradientCss } from '../engine/background-painter';
 import { WALLPAPERS, getWallpaperThumbnail } from '../engine/wallpapers';
 
@@ -78,6 +79,8 @@ interface VibePresetsPanelProps {
   onChangeCursorSmoothing: (value: number) => void;
   cursorMotion: CursorMotionSettings;
   onChangeCursorMotion: (change: Partial<CursorMotionSettings>) => void;
+  cursorEngineKind: CursorEngineKind;
+  onChangeCursorEngine: (kind: CursorEngineKind) => void;
   capturedNativeCursor?: CapturedNativeCursor;
   showCaptions: boolean;
   onToggleCaptions: (val: boolean) => void;
@@ -148,6 +151,8 @@ export function VibePresetsPanel({
   onChangeCursorSmoothing,
   cursorMotion,
   onChangeCursorMotion,
+  cursorEngineKind,
+  onChangeCursorEngine,
   capturedNativeCursor,
   showCaptions,
   onToggleCaptions,
@@ -1042,6 +1047,20 @@ export function VibePresetsPanel({
           />
         </div>
         <div className="space-y-1">
+          <label className="flex justify-between items-center text-[11px] text-gray-400">
+            <span>Cursor engine</span>
+            <select
+              value={cursorEngineKind}
+              onChange={(e) => onChangeCursorEngine(e.target.value === 'solve' ? 'solve' : 'spline')}
+              className="bg-transparent border border-white/10 rounded px-1 py-0.5 text-[11px] text-purple-300"
+              aria-label="Cursor engine"
+            >
+              <option value="solve">Solve (default)</option>
+              <option value="spline">Spline (classic)</option>
+            </select>
+          </label>
+        </div>
+        <div className="space-y-1">
           <div className="flex justify-between text-[11px] text-gray-400">
             <span>Cursor Smoothing</span>
             <span className="text-purple-300">{cursorSmoothing < 0.34 ? 'Crisp' : cursorSmoothing < 0.75 ? 'Smooth' : 'Cinematic'}</span>
@@ -1062,7 +1081,7 @@ export function VibePresetsPanel({
         <div className="space-y-1">
           <div className="flex justify-between text-[11px] text-gray-400">
             <span>Sway</span>
-            <span className="text-purple-300">{cursorMotion.sway < 34 ? 'Tight' : cursorMotion.sway < 67 ? 'Natural' : 'Languid'} · {Math.round(cursorMotion.sway)}</span>
+            <span className="text-purple-300">{cursorEngineKind === 'solve' ? 'No effect with Solve' : `${cursorMotion.sway < 34 ? 'Tight' : cursorMotion.sway < 67 ? 'Natural' : 'Languid'} · ${Math.round(cursorMotion.sway)}`}</span>
           </div>
           <input
             type="range"
@@ -1070,8 +1089,9 @@ export function VibePresetsPanel({
             max="100"
             step="1"
             value={cursorMotion.sway}
+            disabled={cursorEngineKind === 'solve'}
             onChange={(e) => onChangeCursorMotion({ sway: parseFloat(e.target.value) })}
-            className="w-full accent-purple-500"
+            className="w-full accent-purple-500 disabled:opacity-40"
             aria-label="Cursor Sway"
           />
         </div>

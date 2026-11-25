@@ -22,6 +22,9 @@ import {
   FramingMode
 } from './framing-math';
 
+/** Keep the drawn cursor just inside the frame: the real pointer can reach the last pixel. */
+const CURSOR_RENDER_CLAMP = 0.002;
+
 // Ken Perlin's quintic smootherstep: zero 1st & 2nd derivatives at both ends
 function smootherstep(t: number): number {
   const c = Math.max(0, Math.min(1, t));
@@ -559,8 +562,8 @@ export class StudioRenderer {
 
         const rawCursorX = cursor.x <= 1.0 ? cursor.x : (metaW > 0 ? cursor.x / metaW : cursor.x);
         const rawCursorY = cursor.y <= 1.0 ? cursor.y : (metaH > 0 ? cursor.y / metaH : cursor.y);
-        const normCursorX = Math.max(0.01, Math.min(0.99, rawCursorX));
-        const normCursorY = Math.max(0.01, Math.min(0.99, rawCursorY));
+        const normCursorX = Math.max(CURSOR_RENDER_CLAMP, Math.min(1 - CURSOR_RENDER_CLAMP, rawCursorX));
+        const normCursorY = Math.max(CURSOR_RENDER_CLAMP, Math.min(1 - CURSOR_RENDER_CLAMP, rawCursorY));
         const projectedCursor = projectSourceToCanvas(normCursorX, normCursorY, frameLayout);
         const cursorScreenX = projectedCursor.x - windowX;
         const cursorScreenY = projectedCursor.y - windowY;
@@ -570,8 +573,11 @@ export class StudioRenderer {
         for (const click of cursorEngine.getClicks()) {
           const elapsed = currentTimeMs - click.t;
           if (elapsed >= 0 && elapsed <= 500) {
-            const clickNormX = click.x <= 1.0 ? click.x : (metaW > 0 ? click.x / metaW : click.x);
-            const clickNormY = click.y <= 1.0 ? click.y : (metaH > 0 ? click.y / metaH : click.y);
+            // The ripple sits on the SOLVED cursor at t_click, the same point the press
+            // squish and the drawn cursor land on (the solve passes through the click).
+            const solvedClick = cursorEngine.getCursorAt(click.t);
+            const clickNormX = solvedClick.x <= 1.0 ? solvedClick.x : (metaW > 0 ? solvedClick.x / metaW : solvedClick.x);
+            const clickNormY = solvedClick.y <= 1.0 ? solvedClick.y : (metaH > 0 ? solvedClick.y / metaH : solvedClick.y);
             const projectedClick = projectSourceToCanvas(clickNormX, clickNormY, frameLayout);
             const rx = projectedClick.x - windowX;
             const ry = projectedClick.y - windowY;
@@ -595,12 +601,13 @@ export class StudioRenderer {
             const trailX = trailCursor.x <= 1.0 ? trailCursor.x : (metaW > 0 ? trailCursor.x / metaW : trailCursor.x);
             const trailY = trailCursor.y <= 1.0 ? trailCursor.y : (metaH > 0 ? trailCursor.y / metaH : trailCursor.y);
             const projected = projectSourceToCanvas(
-              Math.max(0.01, Math.min(0.99, trailX)),
-              Math.max(0.01, Math.min(0.99, trailY)),
+              Math.max(CURSOR_RENDER_CLAMP, Math.min(1 - CURSOR_RENDER_CLAMP, trailX)),
+              Math.max(CURSOR_RENDER_CLAMP, Math.min(1 - CURSOR_RENDER_CLAMP, trailY)),
               frameLayout
             );
             return { x: projected.x - windowX, y: projected.y - windowY, opacity: trailCursor.opacity };
-          })
+          }),
+          options.outputFps || 60
         );
       }
 

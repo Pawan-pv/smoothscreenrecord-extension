@@ -7,7 +7,7 @@ export interface PrivacyOptions {
 
 // Idempotence: the service worker may inject this file again into an open tab
 // (all frames). The message listener at the bottom is guarded by
-// `__smoothstudio_privacy_listener`, so a repeat evaluation adds no second listener.
+// `smoothstudioPrivacyListener`, so a repeat evaluation adds no second listener.
 
 let isPickerActive = false;
 let hoveredElement: HTMLElement | null = null;
@@ -549,8 +549,8 @@ export const unredactSensitiveData = resetRedactions;
 export const restoreRedactions = resetRedactions;
 
 // Extension message listener
-if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage && !(window as any).__smoothstudio_privacy_listener) {
-  (window as any).__smoothstudio_privacy_listener = true;
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage && !(window as any).smoothstudioPrivacyListener) {
+  (window as any).smoothstudioPrivacyListener = true;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'APPLY_PRIVACY_OPTIONS') {
       const count = applyAutoRedaction(message.options || {});

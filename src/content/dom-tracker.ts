@@ -24,7 +24,7 @@ import { TelemetryBatch, TelemetrySegment, batchIsEmpty } from '../background/te
 
 // Idempotence: a tab can receive this file again when the service worker repairs
 // a missing receiver. The message listener below is guarded by
-// `__smoothstudio_dom_listener_registered`, so a second evaluation never adds a
+// `smoothstudioDomListenerRegistered`, so a second evaluation never adds a
 // second listener.
 
 let isRecording = false;
@@ -1393,8 +1393,8 @@ export function stopTracking(expectedSessionId: string | null = null): Telemetry
 }
 
 // Chrome extension message listener (only on top-level frame)
-if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage && (typeof window === 'undefined' || window.self === window.top) && !(window as any).__smoothstudio_dom_listener_registered) {
-  (window as any).__smoothstudio_dom_listener_registered = true;
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage && (typeof window === 'undefined' || window.self === window.top) && !(window as any).smoothstudioDomListenerRegistered) {
+  (window as any).smoothstudioDomListenerRegistered = true;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'START_TELEMETRY') {
       try {
@@ -1442,8 +1442,8 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage 
 
 // Cross-origin iframes: hand pointer events to the top page while it records.
 // They never answer a message (the top page does), and never keep telemetry of their own.
-if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage && isUnreachableFrame() && !(window as any).__smoothstudio_frame_listener_registered) {
-  (window as any).__smoothstudio_frame_listener_registered = true;
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage && isUnreachableFrame() && !(window as any).smoothstudioFrameListenerRegistered) {
+  (window as any).smoothstudioFrameListenerRegistered = true;
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === 'START_TELEMETRY') startFrameForwarding();
     else if (message?.type === 'STOP_TELEMETRY') stopFrameForwarding();

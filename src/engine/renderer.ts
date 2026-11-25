@@ -9,11 +9,13 @@ import {
   CursorTheme,
   BackdropMatrixParams,
   BackgroundLayer,
-  ShadowMode
+  ShadowMode,
+  ClickEvent
 } from '../types/telemetry';
 import { BackgroundCache, backgroundMode } from './background-painter';
 import { CameraState } from './spring-physics';
-import { CursorSplineEngine, InterpolatedCursor } from './cursor-spline';
+import { CursorSplineEngine, InterpolatedCursor, ActiveRipple, CLICK_RIPPLE_DURATION_MS, CLICK_RIPPLE_FLASH_MS, CLICK_RIPPLE_ECHO_MS, CLICK_DOUBLE_ECHO_MS } from './cursor-spline';
+import { ClickEffectStyle } from '../types/telemetry';
 import {
   computeFrameLayout,
   computeFrameVisualStyle,
@@ -213,7 +215,14 @@ export interface RenderFrameOptions {
   showCursor: boolean;
   outputFps?: number;
   showHud: boolean;
-  metadata?: { width: number; height: number };
+  metadata?: {
+    width: number;
+    height: number;
+    /** 'browser' | 'window' | 'monitor' | ... from getDisplayMedia track settings. */
+    displaySurface?: string;
+    /** Set by toCaptureSpace when clicks/cursor were mapped onto the recorded frame. */
+    coordinateSpace?: 'capture';
+  };
   cursorTheme?: CursorTheme;
   cursorScale?: number;
   captions?: CaptionBlock[];
@@ -234,6 +243,13 @@ export interface RenderFrameOptions {
   framingMode?: FramingMode;
   shadowMode?: ShadowMode;
   backgroundTimeMs?: number;
+  /** Studio click-effect style for the ripple; absent = preset.clickEffectStyle ?? 'ring'. */
+  clickEffectStyle?: ClickEffectStyle;
+  /** Click ripple accent color; absent = preset.clickColor ?? preset.cursorRingColor. */
+  clickColor?: string;
+  /** Playhead range of the timeline being rendered: ripple sources outside it are suppressed. */
+  trimStartMs?: number;
+  trimEndMs?: number;
 }
 
 export { computeCoverFit } from './background-painter';
@@ -261,7 +277,7 @@ export function getAspectDimensions(aspect: AspectRatioType, targetWidth = 1920)
 export class StudioRenderer {
   private offscreenVideoCanvas: HTMLCanvasElement;
   private offscreenVideoCtx: CanvasRenderingContext2D;
-  private activeRipplesScratch: { x: number; y: number; progress: number }[] = [];
+  private activeRipplesScratch: ActiveRipple[] = [];
   private backgroundCache = new BackgroundCache();
 
   // Pre-allocated static cosmic star coordinates for zero-allocation 60fps starfield
@@ -554,11 +570,97 @@ export class StudioRenderer {
         );
       }
 
-      // 7. Render High-Resolution Vector Cursor and Click Ripples
+      // 7a. Click ripples: independent of the vector cursor. On an aligned window/monitor
+      // capture the native OS cursor is already in the picture (showCursor = false), yet
+      // the clicks are placed correctly, so Ring/Double/Halo must still draw.
+      const surface = metadata?.displaySurface;
+      const clicksAligned = (surface !== 'window' && surface !== 'monitor') || metadata?.coordinateSpace === 'capture';
+      const metaW = metadata?.width || sourceW;
+      const metaH = metadata?.height || sourceH;
+
+      // Studio click-effect styles: options first, then the preset, then the default.
+      const rippleStyle: ClickEffectStyle = options.clickEffectStyle || preset.clickEffectStyle || 'ring';
+      const rawClickColor = options.clickColor || preset.clickColor;
+      const rippleColor = rawClickColor === 'auto' || rawClickColor == null ? preset.cursorRingColor : rawClickColor;
+
+      // Trim bounds passed in by Preview and the exporters (0/absent = untrimmed).
+      const trimStart = typeof options.trimStartMs === 'number' && options.trimStartMs > 0 ? options.trimStartMs : null;
+      const trimEnd = typeof options.trimEndMs === 'number' && options.trimEndMs > 0 ? options.trimEndMs : null;
+
+      // Double-click clarity: clickCount >= 2, or a second click within 350 ms / 25 px of the first.
+      const isDoubleClick = (click: ClickEvent): boolean => {
+        if (typeof click.clickCount === 'number' && click.clickCount >= 2) return true;
+        for (const other of cursorEngine.getClicks()) {
+          if (other === click) continue;
+          // Only an EARLIER click can make this one a double-click (the 2nd/3rd click,
+          // never the 1st): a negative delta is not a pairing.
+          const dt = click.t - other.t;
+          if (dt <= 0 || dt > 350) continue;
+          // Clicks on opposite sides of a removed silence are not a double-click.
+          if (cursorEngine.hasCutBetween(other.t, click.t)) continue;
+          // Normalized coordinates are per-frame: scale deltas by the page size for the 25 px check.
+          const ox = other.x <= 1.01 ? other.x * metaW : other.x;
+          const oy = other.y <= 1.01 ? other.y * metaH : other.y;
+          const cx = click.x <= 1.01 ? click.x * metaW : click.x;
+          const cy = click.y <= 1.01 ? click.y * metaH : click.y;
+          if (Math.hypot(ox - cx, oy - cy) <= 25) return true;
+        }
+        return false;
+      };
+
+      // One scale for the rings and the vector cursor alike.
+      const outputScale = Math.max(0.75, Math.min(2, Math.max(canvasW, canvasH) / 1920));
+      const rippleScale = outputScale * Math.max(1, Math.sqrt(cursorScale || 1.0));
+      this.activeRipplesScratch.length = 0;
+      if (rippleStyle !== 'none' && (showCursor || clicksAligned)) {
+        // Compute active click ripple positions in window screen coordinates (zero GC churn via scratch array).
+        // With the vector cursor on, the ripple sits on the SOLVED cursor at t_click (the same
+        // point the press squish and the drawn cursor land on). With it off, the ring sits
+        // directly on the recorded click point, which is where the native OS cursor clicked.
+        for (const click of cursorEngine.getClicks()) {
+          const elapsed = currentTimeMs - click.t;
+          // Keep the active window at 520 ms so both echo rings finish after the 440 ms primary.
+          if (elapsed < 0 || elapsed > 520) continue;
+          // Cut-seam & trim safety: never draw an orphaned ripple across a cut, or outside the trim range.
+          if (cursorEngine.hasCutBetween(click.t, currentTimeMs)) continue;
+          if (trimStart !== null && click.t < trimStart) continue;
+          if (trimEnd !== null && click.t > trimEnd) continue;
+
+          const anchor = showCursor ? cursorEngine.getCursorAt(click.t) : click;
+          const clickNormX = anchor.x <= 1.0 ? anchor.x : (metaW > 0 ? anchor.x / metaW : anchor.x);
+          const clickNormY = anchor.y <= 1.0 ? anchor.y : (metaH > 0 ? anchor.y / metaH : anchor.y);
+          const projectedClick = projectSourceToCanvas(clickNormX, clickNormY, frameLayout);
+          const rx = projectedClick.x - windowX;
+          const ry = projectedClick.y - windowY;
+          this.activeRipplesScratch.push({
+            x: rx,
+            y: ry,
+            progress: elapsed / CLICK_RIPPLE_DURATION_MS,
+            style: rippleStyle,
+            color: rippleColor,
+            double: isDoubleClick(click),
+            flash: elapsed < CLICK_RIPPLE_FLASH_MS ? 1 - elapsed / CLICK_RIPPLE_FLASH_MS : 0,
+            // Both echoes finish cleanly inside the 520 ms active window (primary 440 ms):
+            // echo ends at 80 + 440 = 520 ms, doubleEcho at 65 + 440 = 505 ms. No clamping:
+            // p >= 1 early-returns in the ring drawer.
+            echo: rippleStyle === 'double-ring' && elapsed >= CLICK_RIPPLE_ECHO_MS
+              ? (elapsed - CLICK_RIPPLE_ECHO_MS) / CLICK_RIPPLE_DURATION_MS
+              : 0,
+            doubleEcho: isDoubleClick(click) && elapsed >= CLICK_DOUBLE_ECHO_MS
+              ? (elapsed - CLICK_DOUBLE_ECHO_MS) / CLICK_RIPPLE_DURATION_MS
+              : 0
+          });
+        }
+        if (this.activeRipplesScratch.length > 0) {
+          cursorEngine.drawRipples(ctx, this.activeRipplesScratch, rippleScale, rippleStyle);
+        }
+      }
+
+      // 7b. Render High-Resolution Vector Cursor. Ripples are already drawn (step 7a):
+      // pass undefined so they are drawn exactly once, and only the cursor, trail, blur,
+      // 2.5D press squish and shadow compression live behind showCursor.
       if (showCursor) {
         const cursor = cursorEngine.getCursorAt(currentTimeMs);
-        const metaW = metadata?.width || sourceW;
-        const metaH = metadata?.height || sourceH;
 
         const rawCursorX = cursor.x <= 1.0 ? cursor.x : (metaW > 0 ? cursor.x / metaW : cursor.x);
         const rawCursorY = cursor.y <= 1.0 ? cursor.y : (metaH > 0 ? cursor.y / metaH : cursor.y);
@@ -568,34 +670,17 @@ export class StudioRenderer {
         const cursorScreenX = projectedCursor.x - windowX;
         const cursorScreenY = projectedCursor.y - windowY;
 
-        // Compute active click ripple positions in window screen coordinates (zero GC churn via scratch array)
-        this.activeRipplesScratch.length = 0;
-        for (const click of cursorEngine.getClicks()) {
-          const elapsed = currentTimeMs - click.t;
-          if (elapsed >= 0 && elapsed <= 500) {
-            // The ripple sits on the SOLVED cursor at t_click, the same point the press
-            // squish and the drawn cursor land on (the solve passes through the click).
-            const solvedClick = cursorEngine.getCursorAt(click.t);
-            const clickNormX = solvedClick.x <= 1.0 ? solvedClick.x : (metaW > 0 ? solvedClick.x / metaW : solvedClick.x);
-            const clickNormY = solvedClick.y <= 1.0 ? solvedClick.y : (metaH > 0 ? solvedClick.y / metaH : solvedClick.y);
-            const projectedClick = projectSourceToCanvas(clickNormX, clickNormY, frameLayout);
-            const rx = projectedClick.x - windowX;
-            const ry = projectedClick.y - windowY;
-            this.activeRipplesScratch.push({ x: rx, y: ry, progress: elapsed / 500 });
-          }
-        }
-
         cursorEngine.drawCursorAt(
           ctx,
           cursor,
           cursorScreenX,
           cursorScreenY,
           currentTimeMs,
-          preset.cursorRingColor,
-          this.activeRipplesScratch,
+          rippleColor,
+          undefined,
           cursorTheme || 'mac-obsidian',
           cursorScale || 1.0,
-          Math.max(0.75, Math.min(2, Math.max(canvasW, canvasH) / 1920)),
+          outputScale,
           // The trail goes through the same projection as the cursor (smart-fill crops the source).
           cursorEngine.getTrailAt(currentTimeMs, 4, options.outputFps || 60).map((trailCursor) => {
             const trailX = trailCursor.x <= 1.0 ? trailCursor.x : (metaW > 0 ? trailCursor.x / metaW : trailCursor.x);
@@ -607,7 +692,8 @@ export class StudioRenderer {
             );
             return { x: projected.x - windowX, y: projected.y - windowY, opacity: trailCursor.opacity };
           }),
-          options.outputFps || 60
+          options.outputFps || 60,
+          rippleStyle
         );
       }
 

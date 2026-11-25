@@ -185,8 +185,8 @@ export function calculateIsometricTilt(targetX: number, targetY: number, scale: 
 //   3. MERGE    overlapping segments become one (keyframes concatenated).
 //   4. NOISE    a segment shorter than MIN_SHOT_MS is dropped.
 // ---------------------------------------------------------------------------
-export const AUTO_ZOOM_DEPTHS = [1.25, 1.5, 2, 2.5] as const;
-export const AUTO_ZOOM_DEFAULT_DEPTH = 1.5;
+export const AUTO_ZOOM_DEPTHS = [1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.8] as const;
+export const AUTO_ZOOM_DEFAULT_DEPTH = 2;
 
 /** Every tunable of the auto-zoom clustering, in one place. */
 export const AUTO_ZOOM_CONFIG = {

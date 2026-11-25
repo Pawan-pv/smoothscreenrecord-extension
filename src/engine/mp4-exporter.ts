@@ -10,7 +10,8 @@ import {
   CursorTheme,
   FramingMode,
   ShadowMode,
-  BackgroundLayer
+  BackgroundLayer,
+  ClickEffectStyle
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
 import { buildCameraPath } from './camera-path';
@@ -69,6 +70,10 @@ export interface ExportOptions {
   metadata?: { width: number; height: number };
   cursorTheme?: CursorTheme;
   cursorScale?: number;
+  /** Studio click-effect style for click ripples (identical to the preview). */
+  clickEffectStyle?: ClickEffectStyle;
+  /** Click ripple accent color; 'auto' uses the cursor theme's ring color. */
+  clickColor?: string;
   captions?: CaptionBlock[];
   captionStyle?: CaptionStyle;
   captionBackdrop?: number;
@@ -310,6 +315,10 @@ export class HardwareMp4Exporter {
           metadata: options.metadata,
           cursorTheme: options.cursorTheme,
           cursorScale: options.cursorScale,
+          clickEffectStyle: options.clickEffectStyle,
+          clickColor: options.clickColor,
+          trimStartMs: effTrimStart,
+          trimEndMs: effTrimEnd,
           captions: options.captions,
           captionStyle: options.captionStyle,
           captionBackdrop: options.captionBackdrop,
@@ -352,6 +361,10 @@ export class HardwareMp4Exporter {
         metadata: options.metadata,
         cursorTheme: options.cursorTheme,
         cursorScale: options.cursorScale,
+        clickEffectStyle: options.clickEffectStyle,
+        clickColor: options.clickColor,
+        trimStartMs: effTrimStart,
+        trimEndMs: effTrimEnd,
         captions: options.captions,
         captionStyle: options.captionStyle,
         captionBackdrop: options.captionBackdrop,
@@ -406,6 +419,13 @@ export class HardwareMp4Exporter {
     metadata?: { width: number; height: number };
     cursorTheme?: CursorTheme;
     cursorScale?: number;
+    /** Studio click-effect style for click ripples (identical to the preview). */
+    clickEffectStyle?: ClickEffectStyle;
+    /** Click ripple accent color; 'auto' uses the cursor theme's ring color. */
+    clickColor?: string;
+    /** Playhead range of the export; ripple sources outside are suppressed. */
+    trimStartMs?: number;
+    trimEndMs?: number;
     captions?: CaptionBlock[];
     captionStyle?: CaptionStyle;
     captionBackdrop?: number;
@@ -455,6 +475,10 @@ export class HardwareMp4Exporter {
       metadata,
       cursorTheme,
       cursorScale,
+      clickEffectStyle,
+      clickColor,
+      trimStartMs,
+      trimEndMs,
       captions,
       captionStyle,
       captionBackdrop,
@@ -605,6 +629,10 @@ export class HardwareMp4Exporter {
         metadata,
         cursorTheme,
         cursorScale,
+        clickEffectStyle,
+        clickColor,
+        trimStartMs,
+        trimEndMs,
         captions,
         captionStyle,
         captionBackdrop,
@@ -735,6 +763,13 @@ export class HardwareMp4Exporter {
     metadata?: { width: number; height: number };
     cursorTheme?: CursorTheme;
     cursorScale?: number;
+    /** Studio click-effect style for click ripples (identical to the preview). */
+    clickEffectStyle?: ClickEffectStyle;
+    /** Click ripple accent color; 'auto' uses the cursor theme's ring color. */
+    clickColor?: string;
+    /** Playhead range of the export; ripple sources outside are suppressed. */
+    trimStartMs?: number;
+    trimEndMs?: number;
     captions?: CaptionBlock[];
     captionStyle?: CaptionStyle;
     captionBackdrop?: number;
@@ -776,6 +811,10 @@ export class HardwareMp4Exporter {
       metadata,
       cursorTheme,
       cursorScale,
+      clickEffectStyle,
+      clickColor,
+      trimStartMs,
+      trimEndMs,
       captions,
       captionStyle,
       captionBackdrop,
@@ -867,6 +906,10 @@ export class HardwareMp4Exporter {
         metadata,
         cursorTheme,
         cursorScale,
+        clickEffectStyle,
+        clickColor,
+        trimStartMs,
+        trimEndMs,
         captions,
         captionStyle,
         captionBackdrop,

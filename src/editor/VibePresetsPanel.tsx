@@ -11,10 +11,11 @@ import {
   FramingMode,
   ShadowMode,
   BackgroundSpec,
-  BackgroundEffects
+  BackgroundEffects,
+  ClickEffectStyle
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
-import type { CursorMotionSettings } from '../engine/cursor-spline';
+import { STUDIO_CLICK_COLORS, type CursorMotionSettings } from '../engine/cursor-spline';
 import type { CursorEngineKind } from '../engine/cursor-solve';
 import { GRADIENT_PRESETS, gradientCss } from '../engine/background-painter';
 import { WALLPAPERS, getWallpaperThumbnail } from '../engine/wallpapers';
@@ -79,6 +80,10 @@ interface VibePresetsPanelProps {
   onChangeCursorSmoothing: (value: number) => void;
   cursorMotion: CursorMotionSettings;
   onChangeCursorMotion: (change: Partial<CursorMotionSettings>) => void;
+  clickEffectStyle: ClickEffectStyle;
+  onChangeClickEffectStyle: (style: ClickEffectStyle) => void;
+  clickColor: string;
+  onChangeClickColor: (color: string) => void;
   cursorEngineKind: CursorEngineKind;
   onChangeCursorEngine: (kind: CursorEngineKind) => void;
   capturedNativeCursor?: CapturedNativeCursor;
@@ -151,6 +156,10 @@ export function VibePresetsPanel({
   onChangeCursorSmoothing,
   cursorMotion,
   onChangeCursorMotion,
+  clickEffectStyle,
+  onChangeClickEffectStyle,
+  clickColor,
+  onChangeClickColor,
   cursorEngineKind,
   onChangeCursorEngine,
   capturedNativeCursor,
@@ -188,6 +197,13 @@ export function VibePresetsPanel({
   onSelectRecentUpload,
   onDeleteRecentUpload
 }: VibePresetsPanelProps) {
+  // Mirrors the renderer: on an aligned window/monitor capture the native cursor is
+  // visible (vector cursor off), but click coordinates are placed on the frame, so
+  // click ripples still draw.
+  const clicksAligned = (metadata?.displaySurface !== 'window' && metadata?.displaySurface !== 'monitor')
+    || metadata?.coordinateSpace === 'capture';
+  const ripplesActive = showCursor || clicksAligned;
+
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = ''; // the same file can be picked again
@@ -1079,6 +1095,11 @@ export function VibePresetsPanel({
 
         {/* Cursor motion: sway spring, tilt, click press, hide when idle */}
         <div className="space-y-1">
+          {!showCursor && (
+            <p className="text-[10px] leading-snug text-gray-500">
+              Requires Vector Cursor (auto-enabled on Chrome Tab captures).
+            </p>
+          )}
           <div className="flex justify-between text-[11px] text-gray-400">
             <span>Sway</span>
             <span className="text-purple-300">{cursorEngineKind === 'solve' ? 'No effect with Solve' : `${cursorMotion.sway < 34 ? 'Tight' : cursorMotion.sway < 67 ? 'Natural' : 'Languid'} · ${Math.round(cursorMotion.sway)}`}</span>
@@ -1095,7 +1116,7 @@ export function VibePresetsPanel({
             aria-label="Cursor Sway"
           />
         </div>
-        <div className="space-y-1">
+        <div className={`space-y-1${!showCursor ? ' opacity-50' : ''}`}>
           <label className="flex justify-between items-center text-[11px] text-gray-400">
             <span>Tilt with speed</span>
             <input type="checkbox" checked={cursorMotion.tiltEnabled} onChange={(e) => onChangeCursorMotion({ tiltEnabled: e.target.checked })} />
@@ -1116,7 +1137,7 @@ export function VibePresetsPanel({
             aria-label="Cursor Max Tilt"
           />
         </div>
-        <div className="space-y-1">
+        <div className={`space-y-1${!showCursor ? ' opacity-50' : ''}`}>
           <label className="flex justify-between items-center text-[11px] text-gray-400">
             <span>Click press</span>
             <input type="checkbox" checked={cursorMotion.pressEnabled} onChange={(e) => onChangeCursorMotion({ pressEnabled: e.target.checked })} />
@@ -1128,7 +1149,7 @@ export function VibePresetsPanel({
           <input
             type="range"
             min="0.05"
-            max="0.35"
+            max="0.40"
             step="0.01"
             value={cursorMotion.pressDepth}
             disabled={!cursorMotion.pressEnabled}
@@ -1137,7 +1158,75 @@ export function VibePresetsPanel({
             aria-label="Cursor Press Depth"
           />
         </div>
-        <div className="space-y-1">
+
+        {/* Click Effect Style — inside the Cursor settings, alongside the Click Press toggle/depth */}
+        <div className={`space-y-1${!ripplesActive ? ' opacity-50' : ''}`}>
+          <div className="flex justify-between text-[11px] text-gray-400">
+            <span>Click Effect</span>
+            <span className="text-purple-300">
+              {clickEffectStyle === 'double-ring' ? 'Double' : clickEffectStyle === 'halo' ? 'Halo' : clickEffectStyle === 'none' ? 'None' : 'Ring'}
+            </span>
+          </div>
+          <div className="grid grid-cols-4 gap-1 text-[10px]">
+            {(['ring', 'double-ring', 'halo', 'none'] as const).map((style) => (
+              <button
+                key={style}
+                type="button"
+                onClick={() => onChangeClickEffectStyle(style)}
+                className={`p-1.5 rounded-lg border text-center transition-colors ${
+                  clickEffectStyle === style
+                    ? 'bg-purple-600/25 border-purple-500 text-white font-medium'
+                    : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                }`}
+                title={
+                  style === 'ring'
+                    ? 'Studio Ring (default): crisp expanding ring + soft-core flash'
+                    : style === 'double-ring'
+                      ? 'Sonar: primary ring + staggered echo for high-visibility tutorials'
+                      : style === 'halo'
+                        ? 'Soft Pulse: translucent radial bloom, no hard stroke'
+                        : 'Squish Only: no ring or halo, just the 2.5D press'
+                }
+              >
+                {style === 'double-ring' ? 'Double' : style === 'halo' ? 'Halo' : style === 'none' ? 'None' : 'Ring'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Click Accent Color */}
+        <div className={`space-y-1${!ripplesActive ? ' opacity-50' : ''}`}>
+          <div className="flex justify-between text-[11px] text-gray-400">
+            <span>Click Accent Color</span>
+            <span className="text-purple-300">{clickColor === 'auto' ? 'Auto' : clickColor}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => onChangeClickColor('auto')}
+              className={`px-2 py-1 rounded-lg border text-[10px] transition-colors ${
+                clickColor === 'auto'
+                  ? 'bg-purple-600/25 border-purple-500 text-white font-medium'
+                  : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+              }`}
+            >
+              Auto
+            </button>
+            {STUDIO_CLICK_COLORS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => onChangeClickColor(c)}
+                className={`w-5 h-5 rounded-full border transition-all ${
+                  clickColor === c ? 'border-white scale-110 shadow-sm shadow-white/50' : 'border-white/20 hover:scale-105'
+                }`}
+                style={{ backgroundColor: c }}
+                title={c}
+              />
+            ))}
+          </div>
+        </div>
+        <div className={`space-y-1${!showCursor ? ' opacity-50' : ''}`}>
           <label className="flex justify-between items-center text-[11px] text-gray-400">
             <span>Hide when idle</span>
             <input type="checkbox" checked={cursorMotion.hideWhenIdle} onChange={(e) => onChangeCursorMotion({ hideWhenIdle: e.target.checked })} />
@@ -1284,7 +1373,9 @@ export function VibePresetsPanel({
           <div id="cursor-mode-hint" className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-[11px] text-indigo-200 flex items-start gap-2 leading-relaxed">
             <Info className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
             <span>
-              Window/monitor capture keeps the native cursor and disables DOM Auto Zoom. Add zooms manually, or share a browser tab for cinematic cursor tracking.
+              {metadata?.coordinateSpace === 'capture'
+                ? 'Window/monitor capture keeps the native cursor, so the vector cursor and its 2.5D press squish stay off to avoid a double cursor. Auto-Zoom and Click Ripples remain active on the placed click points. Share a Chrome Tab for the full smooth vector cursor and press squish.'
+                : 'Window/monitor capture keeps the native cursor. Record a Chrome Tab (or the screen the Chrome window is on) for vector cursor tracking, and add zooms manually if the clicks could not be placed.'}
             </span>
           </div>
         )}

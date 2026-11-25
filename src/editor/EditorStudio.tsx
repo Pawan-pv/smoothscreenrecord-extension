@@ -16,7 +16,8 @@ import {
   BackgroundSpec,
   BackgroundEffects,
   BackgroundLayer,
-  DEFAULT_BACKGROUND_EFFECTS
+  DEFAULT_BACKGROUND_EFFECTS,
+  ClickEffectStyle
 } from '../types/telemetry';
 import { VIBE_PRESETS } from '../engine/renderer';
 import { generateAutoZoomPills, resolveSourcePixelWidth, AUTO_ZOOM_DEFAULT_DEPTH, AUTO_ZOOM_CONFIG } from '../engine/spring-physics';
@@ -119,13 +120,32 @@ export interface AutoZoomSettings {
 }
 
 const AUTO_ZOOM_SETTINGS_KEY = 'smoothstudio.autoZoom';
-const AUTO_ZOOM_SETTINGS_VERSION = 3;
+const AUTO_ZOOM_SETTINGS_VERSION = 4;
 
 /** Which cursor engine draws the cursor ('spline' or 'solve'): kept between sessions for the A/B. */
 const CURSOR_ENGINE_KEY = 'smoothstudio.cursorEngine';
 /** One-time upgrade marker: installs saved on the old default move to 'solve' once. */
 const CURSOR_ENGINE_VERSION_KEY = 'smoothstudio.cursorEngineVersion';
 const CURSOR_ENGINE_VERSION = '2';
+
+/** Click ripple style + accent color, remembered with the other cursor choices. */
+const CLICK_EFFECT_KEY = 'smoothstudio.clickEffect';
+type ClickEffectSettings = { style: ClickEffectStyle; color: string };
+
+function loadClickEffect(): ClickEffectSettings {
+  const defaults: ClickEffectSettings = { style: 'ring', color: 'auto' };
+  try {
+    const saved = JSON.parse(localStorage.getItem(CLICK_EFFECT_KEY) || 'null');
+    if (!saved || typeof saved !== 'object') return defaults;
+    const styles: ClickEffectStyle[] = ['ring', 'double-ring', 'halo', 'none'];
+    return {
+      style: styles.includes(saved.style) ? saved.style : defaults.style,
+      color: typeof saved.color === 'string' ? saved.color : defaults.color
+    };
+  } catch {
+    return defaults;
+  }
+}
 
 function loadCursorEngine(): CursorEngineKind {
   try {
@@ -152,9 +172,15 @@ function loadAutoZoomSettings(): AutoZoomSettings {
     // those are not current presets, so they migrate to the new Smooth default.
     const knownPreset = ZOOM_SPEEDS.some((s) => s.ms === saved.speedMs);
     const oldDefault = saved.v !== AUTO_ZOOM_SETTINGS_VERSION && !knownPreset;
+    // v4 raises the default depth from 1.5x to 2x. Migrate that old default once;
+    // any other depth the user chose (1.25, 1.75, 2.5, 2.8, ...) is kept as-is.
+    const savedVersion = Number.isFinite(saved.v) ? (saved.v as number) : 0;
+    const oldDefaultDepth = savedVersion < AUTO_ZOOM_SETTINGS_VERSION && saved.depth === 1.5;
     return {
       enabled: typeof saved.enabled === 'boolean' ? saved.enabled : defaults.enabled,
-      depth: Number.isFinite(saved.depth) && saved.depth > 1 ? saved.depth : defaults.depth,
+      depth: oldDefaultDepth
+        ? defaults.depth
+        : (Number.isFinite(saved.depth) && saved.depth > 1 ? saved.depth : defaults.depth),
       speedMs: !oldDefault && Number.isFinite(saved.speedMs) && saved.speedMs > 0 ? saved.speedMs : defaults.speedMs
     };
   } catch {
@@ -453,6 +479,21 @@ export function EditorStudio() {
   const [cursorScale, setCursorScale] = useState<number>(1.2);
   const [cursorSmoothing, setCursorSmoothing] = useState<number>(0.6);
   const [cursorMotion, setCursorMotion] = useState<CursorMotionSettings>(DEFAULT_CURSOR_MOTION);
+  /** Studio click-effect style and color (wired to Preview + MP4 + GIF identically). */
+  const [clickEffect, setClickEffect] = useState<ClickEffectSettings>(loadClickEffect);
+  /** Studio click-effect style for click ripples. */
+  const clickEffectStyle = clickEffect.style;
+  /** Click ripple accent color ('auto' adapts to the cursor theme's ring color). */
+  const clickColor = clickEffect.color;
+  const clickEffectRef = useRef(clickEffect);
+  const updateClickEffect = (change: Partial<ClickEffectSettings>) => {
+    const next = { ...clickEffectRef.current, ...change };
+    clickEffectRef.current = next;
+    setClickEffect(next);
+    try { localStorage.setItem(CLICK_EFFECT_KEY, JSON.stringify(next)); } catch { /* storage unavailable */ }
+  };
+  const setClickEffectStyle = (style: ClickEffectStyle) => updateClickEffect({ style });
+  const setClickColor = (color: string) => updateClickEffect({ color });
   const [cursorEngineKind, setCursorEngineKind] = useState<CursorEngineKind>(loadCursorEngine);
   const [showCaptions, setShowCaptions] = useState<boolean>(true);
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>('tiktok-bold');
@@ -1770,6 +1811,8 @@ export function EditorStudio() {
         metadata: telemetry?.metadata,
         cursorTheme,
         cursorScale,
+        clickEffectStyle,
+        clickColor,
         captions,
         captionStyle,
         captionBackdrop,
@@ -1853,6 +1896,8 @@ export function EditorStudio() {
         metadata: telemetry?.metadata,
         cursorTheme,
         cursorScale,
+        clickEffectStyle,
+        clickColor,
         captions,
         captionStyle,
         captionBackdrop,
@@ -2225,6 +2270,10 @@ export function EditorStudio() {
            onChangeCursorSmoothing={setCursorSmoothing}
            cursorMotion={cursorMotion}
            onChangeCursorMotion={handleChangeCursorMotion}
+           clickEffectStyle={clickEffectStyle}
+           onChangeClickEffectStyle={setClickEffectStyle}
+           clickColor={clickColor}
+           onChangeClickColor={setClickColor}
            cursorEngineKind={cursorEngineKind}
            onChangeCursorEngine={handleChangeCursorEngine}
            capturedNativeCursor={telemetry?.metadata?.capturedNativeCursor}
@@ -2289,6 +2338,10 @@ export function EditorStudio() {
           metadata={telemetry?.metadata}
           cursorTheme={cursorTheme}
           cursorScale={cursorScale}
+          clickEffectStyle={clickEffectStyle}
+          clickColor={clickColor}
+          trimStartMs={trimStartMs}
+          trimEndMs={trimEndMs}
           captions={captions}
           captionStyle={captionStyle}
           captionBackdrop={captionBackdrop}

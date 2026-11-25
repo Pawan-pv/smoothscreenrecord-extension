@@ -9,7 +9,8 @@ import {
   CursorTheme,
   BackdropMatrixParams,
   ShadowMode,
-  BackgroundLayer
+  BackgroundLayer,
+  ClickEffectStyle
 } from '../types/telemetry';
 import { StudioRenderer, RenderFrameOptions, getAspectDimensions } from '../engine/renderer';
 import { CameraState } from '../engine/spring-physics';
@@ -72,6 +73,13 @@ interface CanvasPreviewProps {
   background?: BackgroundLayer | null;
   framingMode?: FramingMode;
   shadowMode?: ShadowMode;
+  /** Studio click-effect style for click ripples (identical for preview and exports). */
+  clickEffectStyle?: ClickEffectStyle;
+  /** Click ripple accent color; 'auto' uses the cursor theme's ring color. */
+  clickColor?: string;
+  /** Trim bounds of the timeline being rendered (0 = untrimmed): ripple sources outside are suppressed. */
+  trimStartMs?: number;
+  trimEndMs?: number;
   onCanvasClickToAddZoom?: (normalizedX: number, normalizedY: number) => void;
 }
 
@@ -98,6 +106,10 @@ export function CanvasPreview({
   metadata,
   cursorTheme,
   cursorScale,
+  clickEffectStyle,
+  clickColor,
+  trimStartMs,
+  trimEndMs,
   captions,
   captionStyle,
   captionBackdrop,
@@ -226,6 +238,10 @@ export function CanvasPreview({
     opts.metadata = metadata;
     opts.cursorTheme = cursorTheme;
     opts.cursorScale = cursorScale;
+    opts.clickEffectStyle = clickEffectStyle;
+    opts.clickColor = clickColor;
+    opts.trimStartMs = trimStartMs;
+    opts.trimEndMs = trimEndMs;
     opts.captions = captions;
     opts.captionStyle = captionStyle;
     opts.captionBackdrop = captionBackdrop;
@@ -365,6 +381,10 @@ export function CanvasPreview({
     metadata,
     cursorTheme,
     cursorScale,
+    clickEffectStyle,
+    clickColor,
+    trimStartMs,
+    trimEndMs,
     captions,
     captionStyle,
     captionBackdrop,

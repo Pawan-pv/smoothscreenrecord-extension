@@ -173,6 +173,13 @@ export type CaptionStyle = 'tiktok-bold' | 'apple-keynote' | 'minimal-pill' | 'c
 
 export type CursorTheme = 'mac-obsidian' | 'neon-glow' | 'minimal-white';
 
+/**
+ * Style of the click ripple drawn at a click: the default 'ring' is the Studio Ring;
+ * 'double-ring' adds a staggered secondary echo, 'halo' is a soft radial pulse,
+ * and 'none' draws no ring or halo (squish only).
+ */
+export type ClickEffectStyle = 'ring' | 'double-ring' | 'halo' | 'none';
+
 export type FramingMode = 'smart-fill' | 'fit';
 
 /** What fills the canvas behind the recording window. */
@@ -276,6 +283,10 @@ export interface VibePreset {
   shadowBlur: number;
   shadowColor: string;
   cursorRingColor: string;
+  /** Studio click-effect style shown at clicks (absent = the default 'ring'). */
+  clickEffectStyle?: ClickEffectStyle;
+  /** Click ripple accent color; 'auto' (default) adapts to cursorRingColor. */
+  clickColor?: string;
   keycapTheme: 'dark' | 'light' | 'glass';
   backdrop?: BackdropMatrixParams;
 }

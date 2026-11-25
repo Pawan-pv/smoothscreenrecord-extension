@@ -465,6 +465,99 @@ const perf = { perAxis: 0, total: 0, factor: 0, build: 0, runs: [] };
 }
 
 // ---------------------------------------------------------------------------
+// 11-15. Click press physics: attack, tap floor, release pop, double-click, cuts
+// ---------------------------------------------------------------------------
+{
+  const stillPts = points(361, () => ({ x: 0.5, y: 0.5 }));
+  const makePress = (events, options = {}) =>
+    new CursorSplineEngine(stillPts, [], events, { engine: 'solve', ...options });
+
+  // 11. Fast attack: the exact critically damped spring, not an Euler approximation.
+  const attackEngine = makePress([
+    { t: 1000, type: 'down', x: 0.5, y: 0.5, button: 0 },
+    { t: 1200, type: 'up', x: 0.5, y: 0.5, button: 0 }
+  ]);
+  const attack25 = attackEngine.getPressProgressAt(1025);
+  const attack35 = attackEngine.getPressProgressAt(1035);
+  check('11. click press: fast attack (>=80% at 25 ms, >=90% at 35 ms)',
+    `progress at 25 ms ${(attack25 * 100).toFixed(1)}% (need >= 80%); at 35 ms ${(attack35 * 100).toFixed(1)}% (need >= 90%)`,
+    attack25 >= 0.80 && attack35 >= 0.90);
+
+  // 12. Trackpad tap floor: a 4 ms tap is narrower than one 120 Hz step and must not be skipped.
+  const tapEngine = makePress([
+    { t: 1000, type: 'down', x: 0.5, y: 0.5, button: 0 },
+    { t: 1004, type: 'up', x: 0.5, y: 0.5, button: 0 }
+  ]);
+  let tapMin = 1;
+  for (let t = 1000; t <= 1110; t += 0.5) tapMin = Math.min(tapMin, tapEngine.getPressScaleAt(t));
+  check('12. click press: 4 ms trackpad tap still reaches <= 0.76 press scale',
+    `min pressScale ${tapMin.toFixed(4)} (need <= 0.76, not skipped)`, tapMin <= 0.76);
+
+  // 13. Release: one clean underdamped pop past 1.0, then settle.
+  const releaseEngine = makePress([
+    { t: 1000, type: 'down', x: 0.5, y: 0.5, button: 0 },
+    { t: 1105, type: 'up', x: 0.5, y: 0.5, button: 0 }
+  ]);
+  let overshoot = 0;
+  for (let t = 1105; t <= 1355; t += 0.5) overshoot = Math.max(overshoot, releaseEngine.getPressScaleAt(t));
+  const settled = releaseEngine.getPressScaleAt(1355);
+  check('13. click press: release overshoot ~1.025x and settle by +250 ms',
+    `max pressScale ${overshoot.toFixed(4)} (need 1.015..1.04); at release+250 ms ${settled.toFixed(4)} (need |x-1| <= 0.005)`,
+    overshoot >= 1.015 && overshoot <= 1.04 && Math.abs(settled - 1) <= 0.005);
+
+  // 14. Double-click separation: click 1 fully compresses, the trough rebounds, click 2 compresses.
+  // Includes the click events so the orphan-click fallback is exercised too.
+  const doubleEngine = new CursorSplineEngine(stillPts, [
+    { t: 1000, x: 0.5, y: 0.5, button: 0, targetTag: 'button' },
+    { t: 1170, x: 0.5, y: 0.5, button: 0, targetTag: 'button' }
+  ], [
+    { t: 1000, type: 'down', x: 0.5, y: 0.5, button: 0 },
+    { t: 1004, type: 'up', x: 0.5, y: 0.5, button: 0 },
+    { t: 1170, type: 'down', x: 0.5, y: 0.5, button: 0 },
+    { t: 1174, type: 'up', x: 0.5, y: 0.5, button: 0 }
+  ], { engine: 'solve' });
+  let click1Min = 1, troughMax = 0, click2Min = 1;
+  for (let t = 1000; t <= 1105; t += 0.5) click1Min = Math.min(click1Min, doubleEngine.getPressScaleAt(t));
+  for (let t = 1105; t <= 1170; t += 0.5) troughMax = Math.max(troughMax, doubleEngine.getPressScaleAt(t));
+  for (let t = 1170; t <= 1275; t += 0.5) click2Min = Math.min(click2Min, doubleEngine.getPressScaleAt(t));
+  check('14. click press: 170 ms double-click separation',
+    `click 1 min ${click1Min.toFixed(4)} (<= 0.76); trough max ${troughMax.toFixed(4)} (>= 0.92); click 2 min ${click2Min.toFixed(4)} (<= 0.76)`,
+    click1Min <= 0.76 && troughMax >= 0.92 && click2Min <= 0.76);
+
+  // 14b. Brisk real double-click: up1 (1020) lands before down2 (1120). Click 1's
+  // 105 ms tap floor must still be clamped by MIN_DOUBLE_GAP_MS so the two presses
+  // stay separate instead of merging into one long squish.
+  const briskEngine = new CursorSplineEngine(stillPts, [
+    { t: 1000, x: 0.5, y: 0.5, button: 0, targetTag: 'button' },
+    { t: 1120, x: 0.5, y: 0.5, button: 0, targetTag: 'button' }
+  ], [
+    { t: 1000, type: 'down', x: 0.5, y: 0.5, button: 0 },
+    { t: 1020, type: 'up', x: 0.5, y: 0.5, button: 0 },
+    { t: 1120, type: 'down', x: 0.5, y: 0.5, button: 0 },
+    { t: 1140, type: 'up', x: 0.5, y: 0.5, button: 0 }
+  ], { engine: 'solve' });
+  let briskClick1Min = 1, briskTroughMax = 0, briskClick2Min = 1;
+  for (let t = 1000; t <= 1065; t += 0.5) briskClick1Min = Math.min(briskClick1Min, briskEngine.getPressScaleAt(t));
+  for (let t = 1065; t <= 1120; t += 0.5) briskTroughMax = Math.max(briskTroughMax, briskEngine.getPressScaleAt(t));
+  for (let t = 1120; t <= 1225; t += 0.5) briskClick2Min = Math.min(briskClick2Min, briskEngine.getPressScaleAt(t));
+  check('14b. click press: 120 ms brisk double-click (up1 before down2)',
+    `click 1 min ${briskClick1Min.toFixed(4)} (<= 0.76); trough max ${briskTroughMax.toFixed(4)} (>= 0.92); click 2 min ${briskClick2Min.toFixed(4)} (<= 0.76)`,
+    briskClick1Min <= 0.76 && briskTroughMax >= 0.92 && briskClick2Min <= 0.76);
+
+  // 15. Cut-seam isolation: the press spring resets at a removed-silence cut.
+  const cutEngine = new CursorSplineEngine(stillPts, [], [
+    { t: 1000, type: 'down', x: 0.5, y: 0.5, button: 0 },
+    { t: 1400, type: 'up', x: 0.5, y: 0.5, button: 0 }
+  ], { engine: 'solve', cutRanges: [{ startTime: 1050, endTime: 1150 }] });
+  const beforeCut = cutEngine.getPressScaleAt(1040);
+  let afterCutDeviation = 0;
+  for (let t = 1050; t <= 1300; t += 0.5) afterCutDeviation = Math.max(afterCutDeviation, Math.abs(cutEngine.getPressScaleAt(t) - 1));
+  check('15. click press: no press bleed across a cut seam',
+    `before cut pressScale ${beforeCut.toFixed(4)} (< 0.8); max |pressScale-1| from the cut ${afterCutDeviation.toExponential(2)} (<= 0.001)`,
+    beforeCut < 0.8 && afterCutDeviation <= 0.001);
+}
+
+// ---------------------------------------------------------------------------
 // Report metrics: BOTH engines on ONE synthetic recording
 //   still + tremor | 800 px/s ramp | still | 300 px flick | still, with clicks
 // ---------------------------------------------------------------------------

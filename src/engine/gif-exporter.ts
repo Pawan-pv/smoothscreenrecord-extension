@@ -10,7 +10,8 @@ import {
   CursorTheme,
   FramingMode,
   ShadowMode,
-  BackgroundLayer
+  BackgroundLayer,
+  ClickEffectStyle
 } from '../types/telemetry';
 import { StudioRenderer, getAspectDimensions } from './renderer';
 import { buildCameraPath } from './camera-path';
@@ -50,6 +51,10 @@ export interface GifExportOptions {
   metadata?: { width: number; height: number };
   cursorTheme?: CursorTheme;
   cursorScale?: number;
+  /** Studio click-effect style for click ripples (identical to the preview). */
+  clickEffectStyle?: ClickEffectStyle;
+  /** Click ripple accent color; 'auto' uses the cursor theme's ring color. */
+  clickColor?: string;
   captions?: CaptionBlock[];
   captionStyle?: CaptionStyle;
   captionBackdrop?: number;
@@ -244,6 +249,8 @@ export class HardwareGifExporter {
       metadata,
       cursorTheme,
       cursorScale,
+      clickEffectStyle,
+      clickColor,
       captions,
       captionStyle,
       captionBackdrop,
@@ -486,6 +493,10 @@ export class HardwareGifExporter {
           metadata,
           cursorTheme,
           cursorScale,
+          clickEffectStyle,
+          clickColor,
+          trimStartMs: effTrimStart,
+          trimEndMs: effTrimEnd,
           captions,
           captionStyle,
           captionBackdrop,

@@ -1,4 +1,4 @@
-import { MousePoint, ClickEvent, CursorTheme, PressEvent, CursorStyle } from '../types/telemetry';
+import { MousePoint, ClickEvent, CursorTheme, PressEvent, CursorStyle, ClickEffectStyle } from '../types/telemetry';
 import { createSpring, dampingFor, SPRING_STEP_MS } from './spring';
 import { CURSOR_ENGINE, CursorEngineKind, CursorSolveTrack, solveCursorTrack } from './cursor-solve';
 
@@ -12,6 +12,30 @@ export interface InterpolatedCursor {
   opacity: number;
 }
 
+/**
+ * One click ripple being drawn. `x`/`y` are in window (screen) space — the renderer
+ * anchors them at the solved click coordinate, so the ripple stays glued to the
+ * clicked button even when the cursor immediately flies away.
+ */
+export interface ActiveRipple {
+  x: number;
+  y: number;
+  /** 0..1: 0 at the click, 1 when finished (each style defines its own duration). */
+  progress: number;
+  /** Ripple effect style; falls back to the engine's clickEffectStyle. */
+  style?: ClickEffectStyle;
+  /** Resolved accent color of the ripple (the cursor theme's ring color when 'auto'). */
+  color?: string;
+  /** Double-click distinction: a tighter, slightly brighter accent echo ring. */
+  double?: boolean;
+  /** Impact flash at the click: 0 = off, 1..0 over the first ~180 ms. */
+  flash?: number;
+  /** Secondary ring for 'double-ring': 0..1 staggered ~80 ms after the click. */
+  echo?: number;
+  /** Double-click accent echo ring: 0..1 staggered ~65 ms after the click. */
+  doubleEcho?: number;
+}
+
 /** How the drawn cursor moves (user settings). */
 export interface CursorMotionSettings {
   /** 0 = tight tracking, barely smoothed; 100 = long languid glides with more lag. */
@@ -22,7 +46,7 @@ export interface CursorMotionSettings {
   maxTiltDeg: number;
   /** Squash the cursor while the button is down (with a little overshoot on release). */
   pressEnabled: boolean;
-  /** How deep the press squashes: 0.15 = scale 0.85. */
+  /** How deep the press squashes: 0.26 = scale 0.74 at full press. */
   pressDepth: number;
   /** Fade the cursor out when the real cursor has been still. */
   hideWhenIdle: boolean;
@@ -35,7 +59,7 @@ export const DEFAULT_CURSOR_MOTION: CursorMotionSettings = {
   tiltEnabled: true,
   maxTiltDeg: 12,
   pressEnabled: true,
-  pressDepth: 0.15,
+  pressDepth: 0.26,
   hideWhenIdle: true,
   idleDelayMs: 1500
 };
@@ -75,12 +99,35 @@ function blurRamp(speedPxPerSecond: number): number {
 }
 
 const CURSOR_TILT_STIFFNESS = 300;
-const CURSOR_PRESS_STIFFNESS = 900;
-/** Below 1: the press spring overshoots a little on release. */
-const CURSOR_PRESS_DAMPING_RATIO = 0.55;
+/** Fast, critically damped attack: ~83.5% squish at 25 ms, ~93% at 33 ms. */
+const PRESS_ATTACK_OMEGA = 130;
+/** Springy release: underdamped, for one clean ~1.025x pop-back past the resting size. */
+const PRESS_RELEASE_OMEGA = 36;
+const PRESS_RELEASE_ZETA = 0.6;
+
+/**
+ * Minimum visible press hold. Real trackpad taps are 1–15 ms and can fall between two
+ * 120 Hz samples; real mouse clicks release at mouseup. Every fast click therefore holds
+ * at least this long so it stays solidly compressed when the ripple fires and at 15 fps.
+ */
+const MIN_TAP_HOLD_MS = 105;
+/** Clean release trough between two rapid presses: never less than this gap. */
+const MIN_DOUBLE_GAP_MS = 55;
+/** A rapid double tap keeps at least this much (or half the gap) before its release. */
+const MIN_RAPID_HOLD_MS = 45;
+/** Studio click-effect: the primary ring duration (renderer collects for 520 ms so echoes finish). */
+export const CLICK_RIPPLE_DURATION_MS = 440;
+/** Bright core impact dot at t_click, in ms from the click. */
+export const CLICK_RIPPLE_FLASH_MS = 180;
+/** Secondary ring for 'double-ring', staggered 80 ms after t_click. */
+export const CLICK_RIPPLE_ECHO_MS = 80;
+/** Double-click accent echo ring, staggered 65 ms after t_click. */
+export const CLICK_DOUBLE_ECHO_MS = 65;
+/** Clean studio accent swatches for click ripples ('Auto' is the cursor theme's ring color). */
+export const STUDIO_CLICK_COLORS = ['#A855F7', '#38BDF8', '#F43F5E', '#FACC15', '#10B981'];
 /** A click without press events counts as held this long around its time. */
-const CLICK_PRESS_BEFORE_MS = 40;
-const CLICK_PRESS_AFTER_MS = 60;
+const CLICK_PRESS_BEFORE_MS = 25;
+const CLICK_PRESS_AFTER_MS = 95;
 /** Movement smaller than this (px of a 1920 frame) from where the cursor last moved is jitter, not activity: no flicker. */
 export const CURSOR_IDLE_EPS_PX = 6;
 export const CURSOR_IDLE_FADE_MS = 200;
@@ -515,25 +562,68 @@ export class CursorSplineEngine {
    */
   private buildPressedLookup(): (t: number) => boolean {
     const intervals: Array<[number, number]> = [];
+    const clampToCut = (start: number, end: number): number => {
+      if (!this.hasCutBetween(start, end)) return end;
+      const seam = this.cutRanges.find((range) => range.startTime > start && range.startTime <= end);
+      return seam ? Math.min(end, seam.startTime) : start + 1;
+    };
     const presses = this.pressEvents.filter((p) => Number.isFinite(p.t));
-    if (presses.length > 0) {
-      let down: number | null = null;
-      for (const p of presses) {
-        if (p.type === 'down') { if (down === null) down = p.t; }
-        else if (down !== null) { intervals.push([down, Math.max(p.t, down + 1)]); down = null; }
+    for (let i = 0; i < presses.length; i++) {
+      const p = presses[i];
+      if (p.type !== 'down') continue;
+      const down = p.t;
+      // The first closing 'up', and the next 'down' even if it comes after that 'up':
+      // a brisk real double-click (100-145 ms) must still clamp click 1's 105 ms
+      // minimum hold so it cannot collide with click 2. A next 'down' without an 'up'
+      // (a lost release) is the ceiling for this press.
+      let nextDown: number | null = null;
+      let end: number | null = null;
+      for (let j = i + 1; j < presses.length; j++) {
+        const q = presses[j];
+        if (!(q.t > down)) continue;
+        if (q.type === 'up' && end === null) { end = q.t; continue; }
+        if (q.type === 'down') { nextDown = q.t; break; }
       }
-      if (down !== null) intervals.push([down, down + 200]);
-    } else {
-      for (const c of this.clicks) {
-        if (Number.isFinite(c.t)) intervals.push([c.t - CLICK_PRESS_BEFORE_MS, c.t + CLICK_PRESS_AFTER_MS]);
+      if (end !== null) {
+        // Preserve real long holds/drags, but guarantee every fast tap holds >= 105 ms.
+        end = Math.max(end, down + MIN_TAP_HOLD_MS);
+      } else {
+        end = down + Math.max(200, MIN_TAP_HOLD_MS);
       }
+      // Keep rapid taps visibly separate instead of merging into one long squish.
+      if (nextDown !== null) {
+        const maxBeforeNext = Math.max(
+          down + Math.min(MIN_RAPID_HOLD_MS, (nextDown - down) * 0.5),
+          nextDown - MIN_DOUBLE_GAP_MS
+        );
+        end = Math.min(end, maxBeforeNext);
+      }
+      end = clampToCut(down, end);
+      intervals.push([down, Math.max(end, down + 1)]);
+    }
+    // Orphan click fallback: a click with no press interval in its ±80 ms neighbourhood
+    // still gets a short synthetic press (trackpad taps often report no press events).
+    for (const c of this.clicks) {
+      if (!Number.isFinite(c.t)) continue;
+      const covered = intervals.some(([start, end]) => start <= c.t + 80 && end >= c.t - 80);
+      if (covered) continue;
+      const start = c.t - CLICK_PRESS_BEFORE_MS;
+      const end = clampToCut(start, c.t + CLICK_PRESS_AFTER_MS);
+      intervals.push([start, Math.max(end, start + 1)]);
     }
     intervals.sort((a, b) => a[0] - b[0]);
+    // Sorted and non-overlapping: merge any synthetic interval that lands inside a press.
+    const merged: Array<[number, number]> = [];
+    for (const interval of intervals) {
+      const last = merged[merged.length - 1];
+      if (last && interval[0] <= last[1]) last[1] = Math.max(last[1], interval[1]);
+      else merged.push([interval[0], interval[1]]);
+    }
     let i = 0;
     return (t) => {
-      while (i < intervals.length && intervals[i][1] <= t) i++;
-      for (let j = i; j < intervals.length && intervals[j][0] <= t; j++) {
-        if (t < intervals[j][1]) return true;
+      while (i < merged.length && merged[i][1] <= t) i++;
+      for (let j = i; j < merged.length && merged[j][0] <= t; j++) {
+        if (t < merged[j][1]) return true;
       }
       return false;
     };
@@ -561,16 +651,57 @@ export class CursorSplineEngine {
     const sx = createSpring(k, dampingFor(k), start ? start.x : 0);
     const sy = createSpring(k, dampingFor(k), start ? start.y : 0);
     const st = createSpring(CURSOR_TILT_STIFFNESS, dampingFor(CURSOR_TILT_STIFFNESS), 0);
-    const sp = createSpring(CURSOR_PRESS_STIFFNESS, dampingFor(CURSOR_PRESS_STIFFNESS, CURSOR_PRESS_DAMPING_RATIO), 0);
+    // Exact closed-form press spring on the fixed 120 Hz step:
+    // attack (target > 0) is critically damped (omega 130 rad/s); release (target = 0)
+    // is underdamped (omega 36 rad/s, zeta 0.60) for one clean pop-back past 1.0.
+    // Both are solved analytically per step, so they are unconditionally stable at 120 Hz.
+    const dt = SPRING_STEP_MS / 1000;
+    const h = dt;
+    const eDown = Math.exp(-PRESS_ATTACK_OMEGA * h);
+    const alphaUp = PRESS_RELEASE_ZETA * PRESS_RELEASE_OMEGA;
+    const wdUp = PRESS_RELEASE_OMEGA * Math.sqrt(1 - PRESS_RELEASE_ZETA * PRESS_RELEASE_ZETA);
+    const eUp = Math.exp(-alphaUp * h);
+    const cUp = Math.cos(wdUp * h);
+    const sUp = Math.sin(wdUp * h);
+    let pressPos = 0;
+    let pressVel = 0;
+    const pressStep = (target: number): void => {
+      if (target > 0) {
+        const d = pressPos - target;
+        const a = pressVel + PRESS_ATTACK_OMEGA * d;
+        pressPos = target + eDown * (d + a * h);
+        pressVel = eDown * (pressVel - PRESS_ATTACK_OMEGA * a * h);
+      } else {
+        const A = pressPos;
+        const B = (pressVel + alphaUp * pressPos) / wdUp;
+        pressPos = eUp * (A * cUp + B * sUp);
+        pressVel = eUp * ((-alphaUp * A + wdUp * B) * cUp + (-alphaUp * B - wdUp * A) * sUp);
+      }
+      if (!Number.isFinite(pressPos) || !Number.isFinite(pressVel)) {
+        pressPos = target;
+        pressVel = 0;
+      }
+    };
     const pxPerUnit = this.mousePoints.every((p) => Math.abs(p.x) <= 1.01 && Math.abs(p.y) <= 1.01) ? 1920 : 1;
     const pressed = this.buildPressedLookup();
-    const dt = SPRING_STEP_MS / 1000;
 
     let nextReentry = 0;
     for (let s = 0; s <= steps; s++) {
       const t = t0 + s * SPRING_STEP_MS;
+      // A removed-silence cut is a discontinuity: reset the press spring so a release
+      // pop never bleeds across the seam.
+      const cut = this.cutRanges.find((range) => t >= range.startTime && t <= range.endTime + 80);
+      if (cut) {
+        pressPos = 0;
+        pressVel = 0;
+      }
       let leanVelocity: number;
       if (solved) {
+        // A jump back onto the page is a discontinuity too (the solve path jumps there).
+        if (this.reentryTimes.some((r) => r > t - SPRING_STEP_MS && r <= t)) {
+          pressPos = 0;
+          pressVel = 0;
+        }
         leanVelocity = solved.vx[s];
       } else {
         const target = this.getTrackedCursorAt(t);
@@ -584,9 +715,10 @@ export class CursorSplineEngine {
         if (reentered) {
           sx.snap(target.x);
           sy.snap(target.y);
+          pressPos = 0;
+          pressVel = 0;
         }
         // A cut is a jump of the playhead: the cursor is there at once, it does not fly across.
-        const cut = this.cutRanges.find((range) => t >= range.startTime && t <= range.endTime + 80);
         if (cut) {
           if (cut.startTime > t - SPRING_STEP_MS) jumpAt[s] = cut.startTime;
           sx.snap(target.x);
@@ -601,11 +733,11 @@ export class CursorSplineEngine {
         leanVelocity = sx.velocity;
       }
       tilt[s] = st.value;
-      press[s] = sp.value;
+      press[s] = pressPos;
       // Velocity-driven lean: speed to the right leans right, clamped to the user's angle.
       const lean = m.tiltEnabled ? Math.max(-m.maxTiltDeg, Math.min(m.maxTiltDeg, leanVelocity * pxPerUnit * CURSOR_TILT_GAIN)) : 0;
       st.step(lean, dt);
-      sp.step(m.pressEnabled && pressed(t) ? m.pressDepth : 0, dt);
+      pressStep(m.pressEnabled && pressed(t) ? m.pressDepth : 0);
     }
     this.motionTrack = { t0, steps, x, y, vx, vy, tilt, press, jumpAt };
     if (solved) this.clickPinError = this.measureClickPinError(this.motionTrack);
@@ -880,9 +1012,26 @@ export class CursorSplineEngine {
     return this.mousePoints.length > 0 ? this.getTrackedCursorAt(timeMs) : null;
   }
 
-  /** Scale of the drawn cursor from the press spring (1 = not pressed; slightly above 1 on the release overshoot). */
+  /**
+   * Press intensity at a time: 0 = unpressed, 1 = full press depth, allowed to go
+   * slightly negative on release (the press spring settles below 0 there).
+   */
+  public getPressProgressAt(timeMs: number): number {
+    const depth = this.motion.pressDepth;
+    return depth > 0 ? this.readMotion(timeMs, 'press') / depth : 0;
+  }
+
+  /**
+   * Scale of the drawn cursor from the press spring: 1 = not pressed, ~0.74 at full
+   * press (pressDepth 0.26); slightly above 1 on the release overshoot.
+   */
   public getPressScaleAt(timeMs: number): number {
-    return 1 - this.readMotion(timeMs, 'press');
+    return 1 - this.motion.pressDepth * this.getPressProgressAt(timeMs);
+  }
+
+  /** True when a removed-silence cut lies between `startMs` and `endMs` (the playhead crossed it, or the click itself is inside a cut range). */
+  public hasCutBetween(startMs: number, endMs: number): boolean {
+    return this.cutRanges.some((r) => (r.startTime > startMs && r.startTime <= endMs) || (startMs >= r.startTime && startMs <= r.endTime));
   }
 
   public getTrailAt(timeMs: number, maxSamples = 4, outputFps = 60): InterpolatedCursor[] {
@@ -911,7 +1060,25 @@ export class CursorSplineEngine {
     return this.reentryTimes.some((r) => r > timeMs - CURSOR_BLUR_JUMP_GUARD_MS && r <= timeMs);
   }
 
-  // Draw crisp 4K vector cursor and physics click ripple rings at specific screen coordinates
+  /**
+   * Draw the active click ripples on their own. This is what lets Ring/Double/Halo
+   * survive when the vector cursor is off (a Window/Monitor capture where the native
+   * OS cursor is already in the picture): the renderer draws ripples in its own step,
+   * before the cursor, and passes `undefined` to drawCursorAt so nothing draws twice.
+   */
+  public drawRipples(
+    ctx: CanvasRenderingContext2D,
+    activeRipples: ActiveRipple[],
+    rippleScale: number,
+    fallbackStyle: ClickEffectStyle = 'ring'
+  ): void {
+    if (!activeRipples || activeRipples.length === 0) return;
+    for (const ripple of activeRipples) {
+      this.drawClickRipple(ctx, { ...ripple, style: ripple.style || fallbackStyle }, rippleScale);
+    }
+  }
+
+  // Draw crisp 4K vector cursor and Studio click ripple rings at specific screen coordinates
   public drawCursorAt(
     ctx: CanvasRenderingContext2D,
     cursor: InterpolatedCursor,
@@ -919,42 +1086,23 @@ export class CursorSplineEngine {
     screenY: number,
     currentTimeMs: number,
     ringColor: string = '#8B5CF6',
-    activeRipples?: { x: number; y: number; progress: number }[],
+    activeRipples?: ActiveRipple[],
     theme: CursorTheme = 'mac-obsidian',
     cursorScale: number = 1.0,
     canvasScale: number = 1.0,
     trailPoints: Array<{ x: number; y: number; opacity: number }> = [],
-    outputFps: number = 60
+    outputFps: number = 60,
+    clickEffectStyle: ClickEffectStyle = 'ring'
   ): void {
     ctx.save();
 
-    // 1. Draw Active Click Ripples
-    if (activeRipples && activeRipples.length > 0) {
-      for (const ripple of activeRipples) {
-        const progress = ripple.progress;
-        const radius = (10 + progress * 34) * Math.min(1.4, Math.max(0.8, cursorScale));
-        const alpha = Math.max(0, (1 - progress) * 0.85);
-
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2);
-        ctx.strokeStyle = ringColor;
-        ctx.lineWidth = 2.5 * (1 - progress * 0.5);
-        ctx.globalAlpha = alpha;
-        ctx.shadowColor = ringColor;
-        ctx.shadowBlur = 12;
-        ctx.stroke();
-
-        // Inner solid dot pop
-        if (progress < 0.4) {
-          ctx.beginPath();
-          ctx.arc(ripple.x, ripple.y, 4 * (1 - progress * 2), 0, Math.PI * 2);
-          ctx.fillStyle = '#FFFFFF';
-          ctx.fill();
-        }
-        ctx.restore();
-      }
-    }
+    // 1. Draw Active Click Ripples (Studio Ripples: ring / double-ring / halo / none).
+    // Backward-compatible: external callers that still pass ripple data keep working.
+    // The StudioRenderer passes undefined here and draws ripples itself (step 7a), so
+    // ripples are never drawn twice.
+    const outputScale = Math.max(0.75, Math.min(2, canvasScale));
+    const rippleScale = outputScale * Math.max(1, Math.sqrt(cursorScale));
+    this.drawRipples(ctx, activeRipples || [], rippleScale, clickEffectStyle);
 
     // 2. Motion trail / directional motion blur if moving fast
     const cursorOpacity = typeof cursor.opacity === 'number' ? cursor.opacity : 1.0;
@@ -964,7 +1112,6 @@ export class CursorSplineEngine {
     }
     ctx.globalAlpha = Math.max(0, Math.min(1, ctx.globalAlpha * cursorOpacity));
     const pressScale = this.getPressScaleAt(currentTimeMs);
-    const outputScale = Math.max(0.75, Math.min(2, canvasScale));
 
     if (trailPoints.length > 1) {
       ctx.save();
@@ -1007,19 +1154,13 @@ export class CursorSplineEngine {
     }
 
     // 3. Render High-Resolution Vector Cursor (screen space: its size never follows the zoom)
-    ctx.translate(screenX, screenY);
+    // 2.5D surface press at draw time: the cursor presses into the button (subtle
+    // downward offset), and the shadow compresses from floating to pressed-against-surface.
+    const pressF = Math.max(0, Math.min(1, this.getPressProgressAt(currentTimeMs)));
+    ctx.translate(screenX, screenY + Math.max(3.8, 3.2 * cursorScale) * outputScale * pressF);
     const styleMotion = CURSOR_STYLE_MOTION[cursor.style] || CURSOR_STYLE_FALLBACK;
     // Shape-aware lean: full around the hotspot, none for text, half around the palm for grab.
     const tiltDeg = styleMotion.tilt * this.getTiltAt(currentTimeMs);
-    if (pressScale < 0.985) {
-      ctx.beginPath();
-      ctx.arc(0, 0, 18 * cursorScale * outputScale, 0, Math.PI * 2);
-      ctx.strokeStyle = theme === 'neon-glow' ? 'rgba(192, 132, 252, 0.30)' : 'rgba(255, 255, 255, 0.18)';
-      ctx.lineWidth = 2 * outputScale;
-      ctx.globalAlpha *= 0.7;
-      ctx.stroke();
-      ctx.globalAlpha = Math.max(0, Math.min(1, cursorOpacity));
-    }
     const styleScale = cursorScale * pressScale * outputScale;
     if (Math.abs(tiltDeg) > 0.01) {
       const [pivotX, pivotY] = styleMotion.pivot;
@@ -1032,18 +1173,14 @@ export class CursorSplineEngine {
       ctx.scale(styleScale, styleScale);
     }
 
-    // Subtle drop shadow for vector cursor
-    if (theme === 'neon-glow') {
-      ctx.shadowColor = '#8B5CF6';
-      ctx.shadowBlur = 14 * outputScale;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 2;
-    } else {
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
-      ctx.shadowBlur = 8 * outputScale;
-      ctx.shadowOffsetX = 1 * outputScale;
-      ctx.shadowOffsetY = 2 * outputScale;
-    }
+    // 2.5D surface press: the shadow compresses from floating (offsetY 8, blur 14,
+    // alpha 0.36) to pressed against the surface (offsetY 1.5, blur 2.5, alpha 0.55),
+    // scaled by outputScale. Neon Glow keeps its colored shadow tint.
+    const shadowColor = theme === 'neon-glow' ? '#8B5CF6' : '#000000';
+    ctx.shadowColor = this.colorWithAlpha(shadowColor, 0.36 + 0.19 * pressF);
+    ctx.shadowBlur = (14 - 11.5 * pressF) * outputScale;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = (8 - 6.5 * pressF) * outputScale;
 
     if (cursor.style === 'pointer') {
       // Sleek pointing hand SVG vector
@@ -1061,6 +1198,158 @@ export class CursorSplineEngine {
     }
 
     ctx.restore();
+  }
+
+  /** Draw one active click ripple: dispatch on its style. */
+  private drawClickRipple(ctx: CanvasRenderingContext2D, ripple: ActiveRipple, rippleScale: number): void {
+    const p = ripple.progress;
+    if (ripple.style === 'none') return;
+    if (ripple.style === 'halo') {
+      this.drawRippleHalo(ctx, ripple, p, rippleScale);
+      this.drawRippleImpactFlash(ctx, ripple, rippleScale);
+      this.drawDoubleAccent(ctx, ripple, rippleScale);
+      return;
+    }
+    if (ripple.style === 'double-ring') {
+      // Primary crisp ring + the 80 ms staggered secondary echo ring.
+      this.drawRippleRing(ctx, ripple, p, rippleScale, { from: 14, to: 72, strokeFrom: 5, strokeTo: 1.5 });
+      if (ripple.echo && ripple.echo > 0.001) {
+        this.drawRippleRing(ctx, ripple, ripple.echo, rippleScale, { from: 10, to: 56, strokeFrom: 3.5, strokeTo: 1.2 });
+      }
+      this.drawRippleImpactFlash(ctx, ripple, rippleScale);
+      // Double-click: a distinct wider accent ring, so it never collides with the echo.
+      if (ripple.doubleEcho && ripple.doubleEcho > 0.001) {
+        this.drawRippleRing(ctx, ripple, ripple.doubleEcho, rippleScale, { from: 16, to: 84, strokeFrom: 3.5, strokeTo: 1.2 }, 1.1);
+      }
+      return;
+    }
+    // Default 'ring' — the Studio Ring.
+    this.drawRippleRing(ctx, ripple, p, rippleScale, { from: 14, to: 68, strokeFrom: 5, strokeTo: 1.5 });
+    this.drawRippleImpactFlash(ctx, ripple, rippleScale);
+    this.drawDoubleAccent(ctx, ripple, rippleScale);
+  }
+
+  /** Double-click: a tighter, higher-contrast accent echo ring, +65 ms after the click. */
+  private drawDoubleAccent(ctx: CanvasRenderingContext2D, ripple: ActiveRipple, rippleScale: number): void {
+    if (!ripple.doubleEcho || ripple.doubleEcho <= 0.001) return;
+    this.drawRippleRing(ctx, ripple, ripple.doubleEcho, rippleScale, { from: 10, to: 46, strokeFrom: 3.5, strokeTo: 0.8 }, 1.25);
+  }
+
+  /**
+   * Studio ring on a 1080p-relative scale: ease-out cubic expansion, tapered stroke,
+   * alpha that stays strong through the first half, a translucent interior pulse and
+   * a contrast rim so it reads on both light and dark UIs.
+   */
+  private drawRippleRing(
+    ctx: CanvasRenderingContext2D,
+    ripple: ActiveRipple,
+    p: number,
+    rippleScale: number,
+    geometry: { from: number; to: number; strokeFrom: number; strokeTo: number },
+    alphaScale = 1
+  ): void {
+    if (p < 0 || p >= 1) return;
+    const ease = 1 - (1 - p) ** 3; // ease-out cubic expansion
+    const radius = (geometry.from + ease * (geometry.to - geometry.from)) * rippleScale;
+    const width = Math.max(0.4 * rippleScale, (geometry.strokeFrom + ease * (geometry.strokeTo - geometry.strokeFrom)) * rippleScale);
+    const alpha = Math.min(1, Math.pow(1 - p, 1.15) * alphaScale);
+    const color = ripple.color || '#8B5CF6';
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.shadowBlur = 0;
+
+    // Translucent interior fill pulse.
+    ctx.beginPath();
+    ctx.arc(ripple.x, ripple.y, Math.max(1, radius - width), 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.20 * Math.pow(1 - p, 1.8) * Math.min(1, alphaScale);
+    ctx.fill();
+
+    // Crisp backing ring behind bright accents (legible on pure-white pages).
+    if (this.colorBrightness(color) > 0.6) {
+      ctx.beginPath();
+      ctx.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.55)';
+      ctx.lineWidth = width + 2 * rippleScale;
+      ctx.globalAlpha = alpha * 0.55;
+      ctx.stroke();
+    }
+
+    // One crisp high-contrast main ring: strokeTo >= 1.4 keeps it solid when the
+    // preview is scaled down; alpha alone handles the fade-out.
+    ctx.beginPath();
+    ctx.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.globalAlpha = alpha;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10 * rippleScale;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Soft Halo: a lush radial bloom, 16 -> 76 px on a 1080p frame, peaking at 0.50. */
+  private drawRippleHalo(ctx: CanvasRenderingContext2D, ripple: ActiveRipple, p: number, rippleScale: number): void {
+    if (p < 0 || p >= 1) return;
+    const ease = 1 - (1 - p) ** 3;
+    const radius = (16 + ease * 60) * rippleScale;
+    const fade = Math.pow(1 - p, 1.15);
+    const color = ripple.color || '#8B5CF6';
+    ctx.save();
+    const grad = ctx.createRadialGradient(ripple.x, ripple.y, 0, ripple.x, ripple.y, radius);
+    grad.addColorStop(0, this.colorWithAlpha(color, 0.50 * fade));
+    grad.addColorStop(0.45, this.colorWithAlpha(color, 0.22 * fade));
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** Brief bright core impact dot for the first 180 ms after the click. */
+  private drawRippleImpactFlash(ctx: CanvasRenderingContext2D, ripple: ActiveRipple, outputScale: number): void {
+    if (!ripple.flash || ripple.flash <= 0.001) return;
+    const color = ripple.color || '#8B5CF6';
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(ripple.x, ripple.y, 7 * outputScale, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = Math.min(1, ripple.flash * 0.9);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 16 * outputScale;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.arc(ripple.x, ripple.y, 3 * outputScale, 0, Math.PI * 2);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.globalAlpha = Math.min(1, ripple.flash * 0.95);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** '#rgb' | '#rrggbb' -> 'rgba(r, g, b, a)' (non-hex passes through unchanged). */
+  private colorWithAlpha(color: string, alpha: number): string {
+    const m = /^#[0-9a-f]{3}([0-9a-f]{3})?$/i.exec(color.trim());
+    if (!m) return color;
+    let hex = m[0].slice(1);
+    if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(1, alpha))})`;
+  }
+
+  /** Relative luminance (0 dark .. 1 bright); non-hex colors are assumed bright. */
+  private colorBrightness(color: string): number {
+    const m = /^#[0-9a-f]{3}([0-9a-f]{3})?$/i.exec(color.trim());
+    if (!m) return 1;
+    let hex = m[0].slice(1);
+    if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   }
 
   private drawGrabCursor(ctx: CanvasRenderingContext2D, theme: CursorTheme = 'mac-obsidian') {

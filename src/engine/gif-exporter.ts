@@ -231,6 +231,17 @@ export class HardwareGifExporter {
   }
 
   public async exportGif(options: GifExportOptions): Promise<Blob> {
+    // The engine is shared with the Preview. Borrow its timeline state and give it
+    // back in the finally below so an export can never leak cut/trim settings.
+    const savedCursorTimeline = options.cursorEngine.getTimelineOptions();
+    try {
+      return await this.exportGifInner(options);
+    } finally {
+      options.cursorEngine.setOptions(savedCursorTimeline);
+    }
+  }
+
+  private async exportGifInner(options: GifExportOptions): Promise<Blob> {
     const {
       videoSource,
       videoBlob,

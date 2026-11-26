@@ -136,6 +136,9 @@ export class HardwareMp4Exporter {
       onProgress,
       onEncoderSelected
     } = options;
+    // The engine is shared with the Preview. Borrow its timeline state and give it
+    // back in the finally below so an export can never leak cut/trim settings.
+    const savedCursorTimeline = cursorEngine.getTimelineOptions();
     if (signal?.aborted) throw abortError();
     const wallClockDurationMs = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
     const containerDurationMs = Number.isFinite(options.mediaDurationMs) && (options.mediaDurationMs as number) > 0
@@ -383,6 +386,7 @@ export class HardwareMp4Exporter {
         onProgress
       });
     } finally {
+      cursorEngine.setOptions(savedCursorTimeline);
       frameSource?.close();
       if (exportVideoUrl) {
         URL.revokeObjectURL(exportVideoUrl);

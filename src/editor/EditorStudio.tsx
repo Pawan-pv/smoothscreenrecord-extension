@@ -130,6 +130,8 @@ const CURSOR_ENGINE_VERSION = '2';
 
 /** Click ripple style + accent color, remembered with the other cursor choices. */
 const CLICK_EFFECT_KEY = 'smoothstudio.clickEffect';
+/** Idle-hide / wake settings; versioned so a future change can migrate cleanly. */
+const CURSOR_MOTION_KEY = 'smoothstudio.cursorMotion.v1';
 type ClickEffectSettings = { style: ClickEffectStyle; color: string };
 
 function loadClickEffect(): ClickEffectSettings {
@@ -141,6 +143,29 @@ function loadClickEffect(): ClickEffectSettings {
     return {
       style: styles.includes(saved.style) ? saved.style : defaults.style,
       color: typeof saved.color === 'string' ? saved.color : defaults.color
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+/** Restore cursor motion settings field by field; anything missing/invalid falls back to the default. */
+function loadCursorMotion(): CursorMotionSettings {
+  const defaults = { ...DEFAULT_CURSOR_MOTION };
+  try {
+    const saved = JSON.parse(localStorage.getItem(CURSOR_MOTION_KEY) || 'null');
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return defaults;
+    const num = (value: unknown, lo: number, hi: number, fallback: number): number =>
+      typeof value === 'number' && Number.isFinite(value) ? Math.max(lo, Math.min(hi, value)) : fallback;
+    return {
+      sway: num(saved.sway, 0, 100, defaults.sway),
+      tiltEnabled: typeof saved.tiltEnabled === 'boolean' ? saved.tiltEnabled : defaults.tiltEnabled,
+      maxTiltDeg: num(saved.maxTiltDeg, 0, 45, defaults.maxTiltDeg),
+      pressEnabled: typeof saved.pressEnabled === 'boolean' ? saved.pressEnabled : defaults.pressEnabled,
+      pressDepth: num(saved.pressDepth, 0, 0.5, defaults.pressDepth),
+      hideWhenIdle: typeof saved.hideWhenIdle === 'boolean' ? saved.hideWhenIdle : defaults.hideWhenIdle,
+      // Keep the slider's 100 ms grid: an out-of-range or stale value snaps back safely.
+      idleDelayMs: Math.round(num(saved.idleDelayMs, 500, 5000, defaults.idleDelayMs) / 100) * 100
     };
   } catch {
     return defaults;
@@ -478,7 +503,7 @@ export function EditorStudio() {
   const [cursorTheme, setCursorTheme] = useState<CursorTheme>('mac-obsidian');
   const [cursorScale, setCursorScale] = useState<number>(1.2);
   const [cursorSmoothing, setCursorSmoothing] = useState<number>(0.6);
-  const [cursorMotion, setCursorMotion] = useState<CursorMotionSettings>(DEFAULT_CURSOR_MOTION);
+  const [cursorMotion, setCursorMotion] = useState<CursorMotionSettings>(loadCursorMotion);
   /** Studio click-effect style and color (wired to Preview + MP4 + GIF identically). */
   const [clickEffect, setClickEffect] = useState<ClickEffectSettings>(loadClickEffect);
   /** Studio click-effect style for click ripples. */
@@ -561,6 +586,7 @@ export function EditorStudio() {
     const next = { ...cursorMotion, ...change };
     cursorEngineRef.current.setOptions({ motion: next });
     setCursorMotion(next);
+    try { localStorage.setItem(CURSOR_MOTION_KEY, JSON.stringify(next)); } catch { /* storage unavailable */ }
   };
   const handleChangeCursorEngine = (kind: CursorEngineKind) => {
     cursorEngineRef.current.setOptions({ engine: kind });

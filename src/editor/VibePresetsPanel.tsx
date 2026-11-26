@@ -1229,7 +1229,13 @@ export function VibePresetsPanel({
         <div className={`space-y-1${!showCursor ? ' opacity-50' : ''}`}>
           <label className="flex justify-between items-center text-[11px] text-gray-400">
             <span>Hide when idle</span>
-            <input type="checkbox" checked={cursorMotion.hideWhenIdle} onChange={(e) => onChangeCursorMotion({ hideWhenIdle: e.target.checked })} />
+            <input
+              type="checkbox"
+              checked={cursorMotion.hideWhenIdle}
+              disabled={!showCursor}
+              onChange={(e) => onChangeCursorMotion({ hideWhenIdle: e.target.checked })}
+              className="accent-purple-500 disabled:opacity-40 disabled:cursor-not-allowed"
+            />
           </label>
           <div className="flex justify-between text-[11px] text-gray-500">
             <span>After</span>
@@ -1241,9 +1247,9 @@ export function VibePresetsPanel({
             max="5000"
             step="100"
             value={cursorMotion.idleDelayMs}
-            disabled={!cursorMotion.hideWhenIdle}
+            disabled={!showCursor || !cursorMotion.hideWhenIdle}
             onChange={(e) => onChangeCursorMotion({ idleDelayMs: parseFloat(e.target.value) })}
-            className="w-full accent-purple-500 disabled:opacity-40"
+            className="w-full accent-purple-500 disabled:opacity-40 disabled:cursor-not-allowed"
             aria-label="Cursor Idle Delay"
           />
         </div>

@@ -12,6 +12,10 @@ export interface InterpolatedCursor {
   opacity: number;
 }
 
+/** Where an idle activity came from: clicks/presses pre-wake sooner than a plain move. */
+type ActivityKind = 'move' | 'click' | 'press';
+const ACTIVITY_PRIORITY: Record<ActivityKind, number> = { click: 3, press: 2, move: 1 };
+
 /**
  * One click ripple being drawn. `x`/`y` are in window (screen) space — the renderer
  * anchors them at the solved click coordinate, so the ripple stays glued to the
@@ -98,6 +102,12 @@ function blurRamp(speedPxPerSecond: number): number {
   return t * t * (3 - 2 * t);
 }
 
+/** Ease-out cubic: fast attack, settling gently onto 1. */
+function easeOutCubic(p: number): number {
+  const t = Math.max(0, Math.min(1, p));
+  return 1 - Math.pow(1 - t, 3);
+}
+
 const CURSOR_TILT_STIFFNESS = 300;
 /** Fast, critically damped attack: ~83.5% squish at 25 ms, ~93% at 33 ms. */
 const PRESS_ATTACK_OMEGA = 130;
@@ -130,7 +140,18 @@ const CLICK_PRESS_BEFORE_MS = 25;
 const CLICK_PRESS_AFTER_MS = 95;
 /** Movement smaller than this (px of a 1920 frame) from where the cursor last moved is jitter, not activity: no flicker. */
 export const CURSOR_IDLE_EPS_PX = 6;
-export const CURSOR_IDLE_FADE_MS = 200;
+/** Cosine fade-out from full opacity to hidden while the pointer stays still. */
+export const CURSOR_IDLE_FADE_MS = 280;
+/** EaseOutCubic wake-in that anticipates the next activity so the cursor never pops in. */
+const CURSOR_WAKE_FADE_MS = 120;
+/** A click/press starts waking this long before it lands (0.963 opacity at the click). */
+const CURSOR_WAKE_LEAD_CLICK_MS = 80;
+/** A move starts its full 120 ms wake-in this long before it lands (1.0 at the move). */
+const CURSOR_WAKE_LEAD_MOVE_MS = 120;
+/** EaseOutCubic re-entry fade after a leave marker (starts at the leave-fade residual). */
+const CURSOR_REENTRY_FADE_MS = 100;
+/** Smallest drawn scale while the cursor is fully faded; 1.0 when fully present. */
+const CURSOR_BREATH_MIN_SCALE = 0.92;
 /** After the last sample the cursor springs keep running this long. */
 const CURSOR_SETTLE_MS = 1500;
 /** No sample for this long = the pointer was not on the page: smoothing never bridges it. */
@@ -153,8 +174,12 @@ export interface CursorSplineOptions {
   engine?: CursorEngineKind;
 }
 
-/** Default stillness before the cursor fades out. */
-export const CURSOR_IDLE_TIMEOUT_MS = DEFAULT_CURSOR_MOTION.idleDelayMs;
+/** The timeline state exporters borrow and must give back to the Preview unchanged. */
+export interface CursorTimelineOptions {
+  cutRanges: Array<{ startTime: number; endTime: number }>;
+  trimStartMs: number;
+  trimEndMs: number;
+}
 
 export function getPressScale(progress: number): number {
   const t = Math.max(0, Math.min(1, progress));
@@ -198,6 +223,15 @@ export class CursorSplineEngine {
   private clicks: ClickEvent[] = [];
   private pressEvents: PressEvent[] = [];
   private activityTimestamps: number[] = [];
+  /** Parallel to activityTimestamps: what kind of event woke the idle clock. */
+  private activityKinds: ActivityKind[] = [];
+  /** Raw mousedown->mouseup holds; an unmatched down is never held open. */
+  private pressHoldRanges: Array<[number, number]> = [];
+  /** Per cut range: true when the cursor really jumps across it and needs the seam fade. */
+  private cutSeamFades: boolean[] = [];
+  private trimStartMs = 0;
+  private trimEndMs = 0;
+  private mousePointsNormalized = false;
   private smoothing = 0.6;
   private cutRanges: Array<{ startTime: number; endTime: number }> = [];
   /**
@@ -227,6 +261,7 @@ export class CursorSplineEngine {
 
   public setData(mousePoints: MousePoint[], clicks: ClickEvent[], pressEvents: PressEvent[] = [], options: CursorSplineOptions = {}) {
     this.mousePoints = [...mousePoints].sort((a, b) => a.t - b.t);
+    this.mousePointsNormalized = this.mousePoints.length > 0 && this.mousePoints.every((p) => Math.abs(p.x) <= 1.01 && Math.abs(p.y) <= 1.01);
     this.filterDirty = true;
     this.motionTrack = null;
     this.solveTrack = null;
@@ -238,36 +273,44 @@ export class CursorSplineEngine {
     this.pressEvents = [...pressEvents].sort((a, b) => a.t - b.t);
     this.setOptions(options);
 
-    const activities: number[] = [];
+    const activities: Array<{ t: number; kind: ActivityKind }> = [];
     for (const c of this.clicks) {
-      if (Number.isFinite(c.t)) {
-        activities.push(c.t);
-      }
+      if (Number.isFinite(c.t)) activities.push({ t: c.t, kind: 'click' });
     }
 
     if (this.mousePoints.length > 0) {
       // Hysteresis: only a move of more than CURSOR_IDLE_EPS_PX from where the cursor
       // last counted as moving is activity, so 1 px jitter neither keeps it shown nor flickers it.
       // Normalised coordinates are measured in pixels of a 1920 x 1080 frame on each axis.
-      const normalized = this.mousePoints.every((p) => Math.abs(p.x) <= 1.01 && Math.abs(p.y) <= 1.01);
-      const sx = normalized ? 1920 : 1;
-      const sy = normalized ? 1080 : 1;
       let anchor = this.mousePoints[0];
-      activities.push(anchor.t);
+      activities.push({ t: anchor.t, kind: 'move' });
       for (let i = 1; i < this.mousePoints.length; i++) {
         const curr = this.mousePoints[i];
-        if (Math.hypot((curr.x - anchor.x) * sx, (curr.y - anchor.y) * sy) > CURSOR_IDLE_EPS_PX) {
-          activities.push(curr.t);
+        if (this.pointDistancePx(curr, anchor) > CURSOR_IDLE_EPS_PX) {
+          activities.push({ t: curr.t, kind: 'move' });
           anchor = curr;
         }
       }
     }
     for (const p of this.pressEvents) {
-      if (Number.isFinite(p.t)) activities.push(p.t);
+      if (Number.isFinite(p.t)) activities.push({ t: p.t, kind: 'press' });
     }
 
-    activities.sort((a, b) => a - b);
-    this.activityTimestamps = activities.filter((t, idx) => idx === 0 || t !== activities[idx - 1]);
+    // Stable order by time, then by wake priority: a click/press at the same millisecond
+    // as a move keeps the longer lead. The de-duplicated arrays stay aligned.
+    activities.sort((a, b) => a.t - b.t || ACTIVITY_PRIORITY[b.kind] - ACTIVITY_PRIORITY[a.kind]);
+    this.activityTimestamps = [];
+    this.activityKinds = [];
+    for (const a of activities) {
+      if (this.activityTimestamps.length === 0 || a.t !== this.activityTimestamps[this.activityTimestamps.length - 1]) {
+        this.activityTimestamps.push(a.t);
+        this.activityKinds.push(a.kind);
+      }
+    }
+    this.buildPressHoldRanges();
+    // Persisted cut ranges survive a setData without options: rebuild the seam flags
+    // for the new points/clicks as well.
+    this.rebuildCutSeamFades();
   }
 
   public setOptions(options: CursorSplineOptions = {}): void {
@@ -290,6 +333,13 @@ export class CursorSplineEngine {
         .map((range) => ({ startTime: range.startTime, endTime: range.endTime }))
         .sort((a, b) => a.startTime - b.startTime);
       this.motionTrack = null;
+      this.rebuildCutSeamFades();
+    }
+    if (typeof options.trimStartMs === 'number' && Number.isFinite(options.trimStartMs)) {
+      this.trimStartMs = Math.max(0, options.trimStartMs);
+    }
+    if (typeof options.trimEndMs === 'number' && Number.isFinite(options.trimEndMs)) {
+      this.trimEndMs = Math.max(0, options.trimEndMs);
     }
     if (options.motion) {
       const m = { ...this.motion, ...options.motion };
@@ -320,11 +370,103 @@ export class CursorSplineEngine {
     return { ...this.motion };
   }
 
+  /** Snapshot the timeline state an exporter borrows, for exact restoration afterwards. */
+  public getTimelineOptions(): CursorTimelineOptions {
+    return {
+      cutRanges: this.cutRanges.map((range) => ({ ...range })),
+      trimStartMs: this.trimStartMs,
+      trimEndMs: this.trimEndMs
+    };
+  }
+
   /** True when the pointer was off the page between sample i-1 and sample i. */
   private isBreakBefore(i: number): boolean {
     const prev = this.mousePoints[i - 1];
     const curr = this.mousePoints[i];
     return Boolean(prev && curr) && (prev.l === 1 || curr.t - prev.t > CURSOR_BREAK_MS);
+  }
+
+  /** Distance between two raw samples in 1920x1080 frame pixels (normalised or absolute). */
+  private pointDistancePx(a: MousePoint, b: MousePoint): number {
+    const sx = this.mousePointsNormalized ? 1920 : 1;
+    const sy = this.mousePointsNormalized ? 1080 : 1;
+    return Math.hypot((a.x - b.x) * sx, (a.y - b.y) * sy);
+  }
+
+  private pointAtOrBefore(t: number): MousePoint | null {
+    const pts = this.mousePoints;
+    let lo = 0;
+    let hi = pts.length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (pts[mid].t <= t) { found = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return found < 0 ? null : pts[found];
+  }
+
+  private pointAtOrAfter(t: number): MousePoint | null {
+    const pts = this.mousePoints;
+    let lo = 0;
+    let hi = pts.length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (pts[mid].t >= t) { found = mid; hi = mid - 1; } else { lo = mid + 1; }
+    }
+    return found < 0 ? null : pts[found];
+  }
+
+  /**
+   * A removed silence only needs the 80 ms seam fade when the pointer actually moved
+   * across it (> 6 px). A stationary cursor stays fully visible instead of blinking.
+   */
+  private rebuildCutSeamFades(): void {
+    this.cutSeamFades = this.cutRanges.map((range) => {
+      const before = this.pointAtOrBefore(range.startTime);
+      const after = this.pointAtOrAfter(range.endTime);
+      if (!before || !after) return true;
+      return this.pointDistancePx(before, after) > CURSOR_IDLE_EPS_PX;
+    });
+  }
+
+  /**
+   * Raw down->up intervals only. A lost release is capped at the next down or at a
+   * leave marker, and a trailing unmatched down is never held open.
+   */
+  private buildPressHoldRanges(): void {
+    const leaveTimes = this.mousePoints.filter((p) => p.l === 1).map((p) => p.t);
+    const firstLeaveAfter = (from: number): number => {
+      for (const t of leaveTimes) if (t > from) return t;
+      return Infinity;
+    };
+    const holds: Array<[number, number]> = [];
+    let down: number | null = null;
+    const closeHold = (rawEnd: number) => {
+      if (down === null) return;
+      const end = Math.min(rawEnd, firstLeaveAfter(down));
+      if (end > down) holds.push([down, end]);
+      down = null;
+    };
+    for (const p of this.pressEvents) {
+      if (!Number.isFinite(p.t)) continue;
+      if (p.type === 'down') {
+        closeHold(p.t); // lost release: never hold past the next down
+        down = p.t;
+      } else if (p.type === 'up') {
+        closeHold(p.t);
+      }
+    }
+    // A final unmatched down is deliberately not protected.
+    this.pressHoldRanges = holds;
+  }
+
+  private isInPressHold(timeMs: number): boolean {
+    for (const [start, end] of this.pressHoldRanges) {
+      if (start > timeMs) break;
+      if (timeMs >= start && timeMs <= end) return true;
+    }
+    return false;
   }
 
   /**
@@ -447,7 +589,8 @@ export class CursorSplineEngine {
 
   /**
    * 0..1: is the pointer on the page at this time? After a leave marker the cursor fades
-   * out over CURSOR_LEAVE_FADE_MS and stays hidden until the next sample (it came back).
+   * out over CURSOR_LEAVE_FADE_MS; the first sample back fades in over 100 ms from the
+   * leave-fade residual so a brief leave never flashes the cursor down to zero.
    */
   private presenceAt(timeMs: number): number {
     const pts = this.mousePoints;
@@ -459,9 +602,17 @@ export class CursorSplineEngine {
       const mid = (lo + hi) >> 1;
       if (pts[mid].t <= timeMs) { found = mid; lo = mid + 1; } else { hi = mid - 1; }
     }
-    if (found < 0 || pts[found].l !== 1) return 1;
-    const since = timeMs - pts[found].t;
-    return Math.max(0, 1 - since / CURSOR_LEAVE_FADE_MS);
+    if (found < 0) return 1;
+    if (pts[found].l === 1) {
+      return Math.max(0, 1 - (timeMs - pts[found].t) / CURSOR_LEAVE_FADE_MS);
+    }
+    if (found > 0 && pts[found - 1].l === 1) {
+      const gap = Math.max(0, pts[found].t - pts[found - 1].t);
+      const residual = Math.max(0, 1 - gap / CURSOR_LEAVE_FADE_MS);
+      const progress = Math.max(0, Math.min(1, (timeMs - pts[found].t) / CURSOR_REENTRY_FADE_MS));
+      return residual + (1 - residual) * easeOutCubic(progress);
+    }
+    return 1;
   }
 
   private pinToClick(timeMs: number, x: number, y: number): { x: number; y: number } {
@@ -479,8 +630,30 @@ export class CursorSplineEngine {
     return this.idleOpacityAt(timeMs) * this.presenceAt(timeMs);
   }
 
+  /** Kept-time elapsed between two raw times: removed silences do not advance the idle clock. */
+  private editedElapsedMs(fromMs: number, toMs: number): number {
+    if (!(toMs > fromMs)) return 0;
+    let elapsed = toMs - fromMs;
+    let coveredUntil = fromMs;
+    for (const range of this.cutRanges) {
+      if (range.endTime <= fromMs) continue;
+      if (range.startTime >= toMs) break;
+      const start = Math.max(range.startTime, fromMs, coveredUntil);
+      const end = Math.min(range.endTime, toMs);
+      if (end > start) {
+        elapsed -= end - start;
+        coveredUntil = Math.max(coveredUntil, end);
+      }
+    }
+    return Math.max(0, elapsed);
+  }
+
   private idleOpacityAt(timeMs: number): number {
     if (!this.motion.hideWhenIdle || this.activityTimestamps.length === 0) {
+      return 1.0;
+    }
+    // A real mousedown->mouseup hold keeps the cursor visible even when stationary.
+    if (this.isInPressHold(timeMs)) {
       return 1.0;
     }
     const delay = this.motion.idleDelayMs;
@@ -499,23 +672,41 @@ export class CursorSplineEngine {
       }
     }
 
-    let idleMs: number;
-    if (lastActivity === -1) {
-      idleMs = Math.max(0, timeMs);
-    } else {
-      idleMs = Math.max(0, timeMs - lastActivity);
-    }
+    // A trimmed clip opens with a fresh idle clock: never start it already faded.
+    const trimStart = this.trimStartMs ?? 0;
+    let baseline = lastActivity === -1 ? 0 : lastActivity;
+    if (timeMs >= trimStart && baseline < trimStart) baseline = trimStart;
+    const idleMs = this.editedElapsedMs(baseline, timeMs);
 
-    // Any real movement shows the cursor at once; stillness fades it out after the delay.
+    let fadeOut: number;
     if (idleMs <= delay) {
-      return 1.0;
+      fadeOut = 1.0;
+    } else if (idleMs >= delay + CURSOR_IDLE_FADE_MS) {
+      fadeOut = 0.0;
+    } else {
+      fadeOut = 0.5 * (1 + Math.cos(Math.PI * ((idleMs - delay) / CURSOR_IDLE_FADE_MS)));
     }
-    if (idleMs >= delay + CURSOR_IDLE_FADE_MS) {
-      return 0.0;
-    }
+    if (fadeOut >= 1) return 1.0;
 
-    const progress = (idleMs - delay) / CURSOR_IDLE_FADE_MS;
-    return 0.5 * (1 + Math.cos(Math.PI * progress));
+    // Look ahead for the wake-in. Skip any activity strictly inside a removed cut:
+    // a deleted movement/click must not pre-wake the cursor at the cut seam.
+    let nextIndex = low;
+    while (nextIndex < this.activityTimestamps.length) {
+      const insideCut = this.cutRanges.some((r) => this.activityTimestamps[nextIndex] > r.startTime && this.activityTimestamps[nextIndex] < r.endTime);
+      if (insideCut) {
+        nextIndex++;
+        continue;
+      }
+      break;
+    }
+    if (nextIndex < this.activityTimestamps.length) {
+      const toGo = this.editedElapsedMs(timeMs, this.activityTimestamps[nextIndex]);
+      const lead = this.activityKinds[nextIndex] === 'move' ? CURSOR_WAKE_LEAD_MOVE_MS : CURSOR_WAKE_LEAD_CLICK_MS;
+      if (toGo <= lead) {
+        return Math.max(fadeOut, easeOutCubic((lead - toGo) / CURSOR_WAKE_FADE_MS));
+      }
+    }
+    return fadeOut;
   }
 
   /**
@@ -823,9 +1014,14 @@ export class CursorSplineEngine {
     let opacity = this.getCursorOpacityAt(timeMs);
     const track = this.ensureMotionTrack();
     if (!track || !Number.isFinite(timeMs)) return { x: 0, y: 0, style: 'default', vx: 0, vy: 0, speed: 0, opacity };
-    // A removed silence: the playhead jumps over it and the cursor fades back in (as with the spline).
-    const seamCut = this.cutRanges.find((range) => timeMs >= range.startTime && timeMs <= range.endTime + 80);
-    if (seamCut) opacity *= timeMs <= seamCut.endTime ? 0 : Math.min(1, (timeMs - seamCut.endTime) / 80);
+    // A removed silence: the playhead jumps over it. Only fade the seam when the
+    // cursor actually jumped; a stationary cursor stays visible across the cut.
+    const seamIndex = this.cutRanges.findIndex((range) => timeMs >= range.startTime && timeMs <= range.endTime + 80);
+    if (seamIndex >= 0) {
+      const seamCut = this.cutRanges[seamIndex];
+      const seamProgress = timeMs <= seamCut.endTime ? 0 : Math.min(1, (timeMs - seamCut.endTime) / 80);
+      if (this.cutSeamFades[seamIndex] !== false) opacity *= seamProgress;
+    }
     const p = this.readTrack(track, timeMs);
     let x = p.x;
     let y = p.y;
@@ -883,8 +1079,9 @@ export class CursorSplineEngine {
       return { x: pinned.x, y: pinned.y, style: this.mousePoints[0].c, vx: 0, vy: 0, speed: 0, opacity };
     }
 
-    const seamCut = this.cutRanges.find((range) => timeMs >= range.startTime && timeMs <= range.endTime + 80);
-    if (seamCut) {
+    const seamIndex = this.cutRanges.findIndex((range) => timeMs >= range.startTime && timeMs <= range.endTime + 80);
+    if (seamIndex >= 0) {
+      const seamCut = this.cutRanges[seamIndex];
       // The first sample at or after the cut's end (binary search: this runs for every spring step inside a cut).
       let lo = 0;
       let hi = this.mousePoints.length - 1;
@@ -894,6 +1091,7 @@ export class CursorSplineEngine {
       }
       const rawPostCut = this.mousePoints[lo];
       const seamProgress = timeMs <= seamCut.endTime ? 0 : Math.min(1, (timeMs - seamCut.endTime) / 80);
+      const seamMultiplier = this.cutSeamFades[seamIndex] !== false ? seamProgress : 1;
       return {
         x: rawPostCut.x,
         y: rawPostCut.y,
@@ -901,7 +1099,7 @@ export class CursorSplineEngine {
         vx: 0,
         vy: 0,
         speed: 0,
-        opacity: opacity * seamProgress
+        opacity: opacity * seamMultiplier
       };
     }
 
@@ -1110,7 +1308,10 @@ export class CursorSplineEngine {
       ctx.restore();
       return;
     }
-    ctx.globalAlpha = Math.max(0, Math.min(1, ctx.globalAlpha * cursorOpacity));
+    // Preserve the caller's alpha (window intro/outro) for every layer below; the
+    // trail must never be brighter than the cursor during an intro fade.
+    const baseAlpha = ctx.globalAlpha;
+    ctx.globalAlpha = Math.max(0, Math.min(1, baseAlpha * cursorOpacity));
     const pressScale = this.getPressScaleAt(currentTimeMs);
 
     if (trailPoints.length > 1) {
@@ -1125,7 +1326,7 @@ export class CursorSplineEngine {
         ctx.moveTo(from.x, from.y);
         ctx.lineTo(to.x, to.y);
         ctx.strokeStyle = theme === 'neon-glow' ? 'rgba(168, 85, 247, 0.35)' : 'rgba(255, 255, 255, 0.20)';
-        ctx.globalAlpha = Math.max(0, Math.min(1, from.opacity));
+        ctx.globalAlpha = Math.max(0, Math.min(1, baseAlpha * from.opacity));
         ctx.stroke();
       }
       ctx.restore();
@@ -1161,7 +1362,9 @@ export class CursorSplineEngine {
     const styleMotion = CURSOR_STYLE_MOTION[cursor.style] || CURSOR_STYLE_FALLBACK;
     // Shape-aware lean: full around the hotspot, none for text, half around the palm for grab.
     const tiltDeg = styleMotion.tilt * this.getTiltAt(currentTimeMs);
-    const styleScale = cursorScale * pressScale * outputScale;
+    // Subtle scale breath: the cursor shrinks to 92% as it fades, so the fade feels tactile.
+    const breath = CURSOR_BREATH_MIN_SCALE + (1 - CURSOR_BREATH_MIN_SCALE) * Math.max(0, Math.min(1, cursorOpacity));
+    const styleScale = cursorScale * pressScale * outputScale * breath;
     if (Math.abs(tiltDeg) > 0.01) {
       const [pivotX, pivotY] = styleMotion.pivot;
       // Rotate about the style's pivot: T(p*s) S(s) R T(-p).

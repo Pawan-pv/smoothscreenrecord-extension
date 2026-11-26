@@ -4,6 +4,7 @@ import {
   scheduleObjectUrlRevoke,
   maskIfSensitive,
   redactUrlForExport,
+  resolveBlurOptions,
   BlurOptions
 } from './export-safety';
 import { createExportTimelineFilter, ExportTimelineWindow } from './export-timeline';
@@ -24,19 +25,13 @@ export class SopGuideExporter {
   public static generateMarkdownGuide(
     telemetry: TelemetryData,
     snapshots: Snapshot[] = [],
-    autoBlur: boolean | { blurEmails?: boolean; blurRevenue?: boolean; blurApiKeys?: boolean } = true,
+    autoBlur: boolean | Partial<BlurOptions> = true,
     /** What the user kept: steps outside the trim window or inside a cut are left out. */
     timeline?: ExportTimelineWindow | null
   ): string {
     // `autoBlur` only controls which patterns are redacted. It NEVER blanks out
     // ordinary content: masking is driven by the sensitivity of the value.
-    const blurOptions = typeof autoBlur === 'boolean'
-      ? { blurEmails: autoBlur, blurRevenue: autoBlur, blurApiKeys: autoBlur }
-      : {
-          blurEmails: Boolean(autoBlur?.blurEmails),
-          blurRevenue: Boolean(autoBlur?.blurRevenue),
-          blurApiKeys: Boolean(autoBlur?.blurApiKeys)
-        };
+    const blurOptions: BlurOptions = resolveBlurOptions(autoBlur);
 
     const kept = createExportTimelineFilter(timeline);
     const { metadata } = telemetry;

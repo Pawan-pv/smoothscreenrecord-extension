@@ -23,7 +23,7 @@ export function describeShieldOutcome(results: TabDispatchOutcome[] | undefined 
     case 'restricted_page':
       return 'Chrome does not let extensions run on this page (browser pages, the Web Store, new-tab pages), so the privacy shield cannot protect it. Record a normal web page instead.';
     case 'injection_failed':
-      return 'SmoothStudio could not attach to this page (a PDF viewer, a Web Store page, or a site that blocks extensions). The privacy shield is NOT active on it: emails, revenue figures and keys would be recorded unblurred.';
+      return 'SmoothStudio could not attach to this page (a PDF viewer, a Web Store page, or a site that blocks extensions). The privacy shield is NOT active on it: emails, credentials and financial figures would be recorded unblurred.';
     default:
       return 'The privacy shield did not confirm it is active on this page, so sensitive text on it may be recorded unblurred. Reload the page and try again.';
   }

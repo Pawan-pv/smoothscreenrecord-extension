@@ -1,9 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { untrackablePage } from '../engine/restricted-pages';
-import { Video, Mic, EyeOff, Shield, Sparkles, Sliders, ExternalLink } from 'lucide-react';
+import { Video, Mic, EyeOff, Shield, Sparkles, ExternalLink, Trash2 } from 'lucide-react';
 import { ensureDevChromeMocks } from '../engine/dev-environment';
-import { loadPrivacyPrefs, savePrivacyPrefs } from '../engine/privacy-prefs';
+import {
+  DEFAULT_PRIVACY_PREFS,
+  PrivacyPrefs,
+  loadPrivacyPrefs,
+  savePrivacyPrefs,
+  privacyOptionsFromPrefs
+} from '../engine/privacy-prefs';
 import { describeShieldOutcome } from './shield-feedback';
 import '../index.css';
 
@@ -20,33 +26,51 @@ const isLikelyWebTab = (t?: chrome.tabs.Tab): boolean => {
   return true;
 };
 
+type CategoryKey = 'secrets' | 'pii' | 'financial';
+const CATEGORIES: Array<{ key: CategoryKey; label: string }> = [
+  { key: 'secrets', label: 'Secrets' },
+  { key: 'pii', label: 'Emails & PII' },
+  { key: 'financial', label: 'Financial' }
+];
+
 export function PopupApp() {
   const [isRecording, setIsRecording] = useState(false);
   const [includeMic, setIncludeMic] = useState(true);
-  const [blurEmails, setBlurEmails] = useState(true);
-  const [blurRevenue, setBlurRevenue] = useState(true);
-  const [blurApiKeys, setBlurApiKeys] = useState(true);
+  /** Opt-in: with no saved preference the shield is OFF and the page stays sharp. */
+  const [prefs, setPrefs] = useState<PrivacyPrefs>({ ...DEFAULT_PRIVACY_PREFS });
+  const [maskedCount, setMaskedCount] = useState(0);
   const [pickerActive, setPickerActive] = useState(false);
+  const activeTabIdRef = useRef<number | null>(null);
   /** The current tab is a page Chrome lets no extension track (Web Store, chrome:// ...). */
   const [untrackable, setUntrackable] = useState<string | null>(null);
+  // Shown when the privacy shield could not be attached to the page being recorded.
+  const [shieldNotice, setShieldNotice] = useState<{ text: string; proceed?: () => void } | null>(null);
+
+  /** Ask the active tab for the live number of masked items. */
+  const refreshCount = () => {
+    if (typeof chrome === 'undefined' || !chrome.runtime) return;
+    chrome.runtime.sendMessage({ type: 'GET_PRIVACY_STATUS' }, (res) => {
+      void chrome.runtime?.lastError;
+      if (res && typeof res.count === 'number') setMaskedCount(res.count);
+    });
+  };
 
   useEffect(() => {
     if (typeof chrome === 'undefined' || !chrome.tabs?.query) return;
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (chrome.runtime?.lastError) return;
-      setUntrackable(untrackablePage(tabs?.[0]?.url));
+      const tab = tabs?.[0];
+      activeTabIdRef.current = typeof tab?.id === 'number' ? tab.id : null;
+      setUntrackable(untrackablePage(tab?.url));
     });
   }, []);
-  // Shown when the privacy shield could not be attached to the page being recorded.
-  const [shieldNotice, setShieldNotice] = useState<{ text: string; proceed?: () => void } | null>(null);
 
   // The toggles are remembered: reopen the popup (or start from the editor) and
-  // the categories are as the user left them.
+  // the shield is exactly as the user left it — OFF unless they opted in.
   useEffect(() => {
-    loadPrivacyPrefs().then((prefs) => {
-      setBlurEmails(prefs.blurEmails);
-      setBlurRevenue(prefs.blurRevenue);
-      setBlurApiKeys(prefs.blurApiKeys);
+    loadPrivacyPrefs().then((saved) => {
+      setPrefs(saved);
+      refreshCount();
     });
   }, []);
 
@@ -54,91 +78,65 @@ export function PopupApp() {
     if (typeof chrome !== 'undefined' && chrome.runtime) {
       chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATUS' }, (res) => {
         if (chrome.runtime?.lastError) return;
-        if (res && res.isRecording) {
-          setIsRecording(true);
-        }
+        if (res && res.isRecording) setIsRecording(true);
       });
     }
+    // Keep the masked-item count live while the popup is open, including
+    // changes made from the page via the picker.
+    const interval = window.setInterval(refreshCount, 2500);
+    return () => window.clearInterval(interval);
   }, []);
 
-  const handleTogglePrivacy = (key: 'emails' | 'revenue' | 'keys', val: boolean) => {
-    if (key === 'emails') setBlurEmails(val);
-    if (key === 'revenue') setBlurRevenue(val);
-    if (key === 'keys') setBlurApiKeys(val);
+  const sendApply = (next: PrivacyPrefs) => {
+    if (typeof chrome === 'undefined' || !chrome.runtime) return;
+    const options = privacyOptionsFromPrefs(next);
+    chrome.runtime.sendMessage({
+      type: 'APPLY_PRIVACY_OPTIONS',
+      options,
+      ...(activeTabIdRef.current ? { tabId: activeTabIdRef.current } : {})
+    }, (res) => {
+      void chrome.runtime?.lastError;
+      if (!next.enabled) { setShieldNotice(null); return; }
+      chrome.tabs?.query?.({ active: true, currentWindow: true }, (tabs) => {
+        const text = describeShieldOutcome(res?.results, tabs?.[0]?.id);
+        setShieldNotice(text ? { text } : null);
+      });
+    });
+    window.setTimeout(refreshCount, 150);
+  };
 
-    const options = {
-      blurEmails: key === 'emails' ? val : blurEmails,
-      blurRevenue: key === 'revenue' ? val : blurRevenue,
-      blurApiKeys: key === 'keys' ? val : blurApiKeys
-    };
+  /** One place for every preference change: save, apply, count. */
+  const applyAndSave = (next: PrivacyPrefs) => {
+    setPrefs(next);
+    void savePrivacyPrefs(next);
+    sendApply(next);
+  };
 
-    void savePrivacyPrefs(options);
-
-    // Forward via service worker to broadcast to all matching web tabs. The
-    // service worker answers with a per-tab result: tell the user when the
-    // shield did not reach the page they are looking at.
-    if (typeof chrome !== 'undefined' && chrome.runtime) {
+  const sendPrivacyMessage = (type: 'START_PICKER' | 'STOP_PICKER' | 'CLEAR_PICKS') => {
+    if (typeof chrome === 'undefined') return;
+    // Through the service worker (broadcast to armed tabs) and directly to the
+    // tab in front, so the picker responds even if the SW is restarting.
+    if (chrome.runtime) {
       chrome.runtime.sendMessage({
-        type: 'APPLY_PRIVACY_OPTIONS',
-        options
-      }, (res) => {
-        if (chrome.runtime?.lastError) return;
-        const anyOn = options.blurEmails || options.blurRevenue || options.blurApiKeys;
-        if (!anyOn) {
-          setShieldNotice(null);
-          return;
-        }
-        chrome.tabs?.query?.({ active: true, currentWindow: true }, (tabs) => {
-          const text = describeShieldOutcome(res?.results, tabs?.[0]?.id);
-          setShieldNotice(text ? { text } : null);
-        });
-      });
+        type,
+        ...(activeTabIdRef.current ? { tabId: activeTabIdRef.current } : {})
+      }, () => { void chrome.runtime?.lastError; });
     }
-
-    // Also send directly to the active tab if on a web page
-    if (typeof chrome !== 'undefined' && chrome.tabs) {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        const tab = tabs[0];
-        if (tab?.id && isLikelyWebTab(tab)) {
-          chrome.tabs.sendMessage(tab.id, {
-            type: 'APPLY_PRIVACY_OPTIONS',
-            options
-          }, () => {
-            void chrome.runtime?.lastError;
-          });
-        }
-      });
+    const tabId = activeTabIdRef.current;
+    if (tabId && chrome.tabs?.sendMessage && isLikelyWebTab({ id: tabId } as chrome.tabs.Tab)) {
+      chrome.tabs.sendMessage(tabId, { type }, () => { void chrome.runtime?.lastError; });
     }
+    window.setTimeout(refreshCount, 150);
   };
 
   const handleTogglePicker = () => {
-    const nextState = !pickerActive;
-    setPickerActive(nextState);
+    const next = !pickerActive;
+    setPickerActive(next);
+    sendPrivacyMessage(next ? 'START_PICKER' : 'STOP_PICKER');
+  };
 
-    const msgType = nextState ? 'START_PICKER' : 'STOP_PICKER';
-
-    // Forward via service worker to broadcast to all matching web tabs
-    if (typeof chrome !== 'undefined' && chrome.runtime) {
-      chrome.runtime.sendMessage({
-        type: msgType
-      }, () => {
-        void chrome.runtime?.lastError;
-      });
-    }
-
-    // Also send directly to the active tab if on a web page
-    if (typeof chrome !== 'undefined' && chrome.tabs) {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        const tab = tabs[0];
-        if (tab?.id && isLikelyWebTab(tab)) {
-          chrome.tabs.sendMessage(tab.id, {
-            type: msgType
-          }, () => {
-            void chrome.runtime?.lastError;
-          });
-        }
-      });
-    }
+  const handleClearPicks = () => {
+    sendPrivacyMessage('CLEAR_PICKS');
   };
 
   const handleStartRecording = () => {
@@ -153,19 +151,19 @@ export function PopupApp() {
             chrome.tabs.create({ url });
             window.close();
           };
-          const options = { blurEmails, blurRevenue, blurApiKeys };
+          // Saved opt-in preferences only. Turning the shield OFF never applies
+          // it, and no category is silently forced back ON here.
+          const options = privacyOptionsFromPrefs(prefs);
           void savePrivacyPrefs(options);
-          if (!(targetTabId && isLikelyWebTab(targetTab))) {
+          if (!options.enabled || !(targetTabId && isLikelyWebTab(targetTab))) {
             openEditor();
             return;
           }
-          // Shield the page that is about to be recorded, and listen to the
-          // answer: if the shield cannot reach it, say so BEFORE recording
-          // starts instead of recording unblurred data without a word.
+          // Check the shield reached the page BEFORE recording starts: if it
+          // did not, say so instead of recording unblurred data without a word.
           chrome.runtime.sendMessage({ type: 'APPLY_PRIVACY_OPTIONS', options, tabId: targetTabId }, (res) => {
             void chrome.runtime?.lastError;
-            const anyOn = options.blurEmails || options.blurRevenue || options.blurApiKeys;
-            const text = anyOn ? describeShieldOutcome(res?.results, targetTabId) : null;
+            const text = describeShieldOutcome(res?.results, targetTabId);
             if (text) {
               setShieldNotice({ text, proceed: openEditor });
               return;
@@ -177,7 +175,7 @@ export function PopupApp() {
         if (currentActive && isLikelyWebTab(currentActive)) {
           launchWithTarget(currentActive);
         } else {
-          // If the active tab is not an HTTP/HTTPS page (e.g. popup opened as its own tab), find the target web tab
+          // Popup opened as its own tab: find a real web page to record.
           chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] }, (webTabs) => {
             const trackable = (webTabs || []).filter((t) => isLikelyWebTab(t));
             const chosen = trackable.find((t) => t.active) || trackable[trackable.length - 1] || currentActive;
@@ -186,8 +184,18 @@ export function PopupApp() {
         }
       });
     } else {
-      // In standalone browser mode, redirect to studio editor with recording prompt
+      // Standalone browser mode.
       window.open(`/editor.html?record=true&includeMic=${includeMic}`, '_blank');
+    }
+  };
+
+  const handleStopRecording = () => {
+    if (typeof chrome !== 'undefined' && chrome.runtime) {
+      // Unblur first, then end the recording.
+      chrome.runtime.sendMessage({ type: 'STOP_PRIVACY' }, () => { void chrome.runtime?.lastError; });
+      chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' }, () => { void chrome.runtime?.lastError; });
+      setIsRecording(false);
+      setMaskedCount(0);
     }
   };
 
@@ -227,14 +235,7 @@ export function PopupApp() {
       <div className="mb-4">
         {isRecording ? (
           <button
-            onClick={() => {
-              if (typeof chrome !== 'undefined' && chrome.runtime) {
-                chrome.runtime.sendMessage({ type: 'STOP_STUDIO_RECORDING' }, () => {
-                  if (chrome.runtime?.lastError) {}
-                });
-                setIsRecording(false);
-              }
-            }}
+            onClick={handleStopRecording}
             className="w-full py-3 px-4 bg-red-600 hover:bg-red-500 text-white font-medium rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-red-600/30 transition-all active:scale-[0.98]"
           >
             <div className="w-2.5 h-2.5 rounded-sm bg-white animate-pulse" />
@@ -309,56 +310,79 @@ export function PopupApp() {
         </div>
       </div>
 
-      {/* Privacy Redaction Superpowers */}
+      {/* Privacy Shield — strictly opt-in and surgical */}
       <div className="space-y-2 bg-[#14161D] p-3 rounded-xl border border-white/5 mb-4">
-        <div className="flex items-center gap-1.5 text-xs font-medium text-gray-200 mb-2">
-          <Shield className="w-3.5 h-3.5 text-emerald-400" />
-          Pre-Recording Privacy Shield ($0 Leak)
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-gray-200">
+            <Shield className={`w-3.5 h-3.5 ${prefs.enabled ? 'text-emerald-400' : 'text-gray-500'}`} />
+            Privacy Shield
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={prefs.enabled}
+            aria-label="Privacy Shield"
+            onClick={() => applyAndSave({ ...prefs, enabled: !prefs.enabled })}
+            className={`relative w-10 h-5 rounded-full transition-colors ${prefs.enabled ? 'bg-emerald-500' : 'bg-gray-700'}`}
+          >
+            <span
+              className={`absolute top-[2px] left-[2px] w-4 h-4 rounded-full bg-white transition-transform ${prefs.enabled ? 'translate-x-5' : ''}`}
+            />
+          </button>
         </div>
 
-        <div className="space-y-1.5 text-[11px]">
-          <label className="flex items-center justify-between text-gray-300 hover:text-white cursor-pointer py-1">
-            <span>Auto-Blur Emails</span>
-            <input
-              type="checkbox"
-              checked={blurEmails}
-              onChange={(e) => handleTogglePrivacy('emails', e.target.checked)}
-              className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
-            />
-          </label>
+        {prefs.enabled && (
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {CATEGORIES.map(({ key, label }) => (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={prefs[key]}
+                onClick={() => applyAndSave({ ...prefs, [key]: !prefs[key] })}
+                className={`rounded-full px-2.5 py-1 text-[10px] border transition-colors ${
+                  prefs[key]
+                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-200'
+                    : 'bg-white/5 border-white/10 text-gray-400 hover:bg-white/10'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
 
-          <label className="flex items-center justify-between text-gray-300 hover:text-white cursor-pointer py-1">
-            <span>Auto-Blur Revenue & Numbers</span>
-            <input
-              type="checkbox"
-              checked={blurRevenue}
-              onChange={(e) => handleTogglePrivacy('revenue', e.target.checked)}
-              className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
-            />
-          </label>
-
-          <label className="flex items-center justify-between text-gray-300 hover:text-white cursor-pointer py-1">
-            <span>Auto-Blur API Keys & Secrets</span>
-            <input
-              type="checkbox"
-              checked={blurApiKeys}
-              onChange={(e) => handleTogglePrivacy('keys', e.target.checked)}
-              className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
-            />
-          </label>
+        <div className="flex items-center justify-between pt-1">
+          <span className="text-[10px] text-gray-400" aria-live="polite">
+            {maskedCount} item{maskedCount === 1 ? '' : 's'} masked
+          </span>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleTogglePicker}
+              className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] border transition-colors ${
+                pickerActive
+                  ? 'bg-purple-600/30 border-purple-500 text-purple-200'
+                  : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'
+              }`}
+            >
+              <EyeOff className="w-3 h-3" />
+              {pickerActive ? 'Click page to blur · Esc' : 'Pick areas to blur'}
+            </button>
+            <button
+              type="button"
+              onClick={handleClearPicks}
+              title="Clear manually picked areas"
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] border bg-white/5 border-white/10 hover:bg-white/10 text-gray-300"
+            >
+              <Trash2 className="w-3 h-3" />
+              Clear
+            </button>
+          </div>
         </div>
-
-        <button
-          onClick={handleTogglePicker}
-          className={`mt-2 w-full py-1.5 text-xs rounded-lg border flex items-center justify-center gap-1.5 transition-colors ${
-            pickerActive
-              ? 'bg-purple-600/30 border-purple-500 text-purple-200'
-              : 'bg-white/5 border-white/10 hover:bg-white/10 text-gray-300'
-          }`}
-        >
-          <EyeOff className="w-3 h-3" />
-          {pickerActive ? 'Active: Click Elements on Page to Blur' : 'Interactive Click-to-Blur Picker'}
-        </button>
+        <p className="text-[10px] leading-relaxed text-gray-500">
+          Only credentials, {prefs.enabled ? 'the enabled categories' : 'chosen categories'} and areas you pick are masked.
+          Turning this off or stopping the recording restores the page instantly.
+        </p>
       </div>
 
       {/* Footer Info */}

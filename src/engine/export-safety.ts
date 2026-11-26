@@ -3,6 +3,7 @@ import {
   EMAIL_DETECT,
   REVENUE_DETECT,
   API_KEY_DETECT,
+  PHONE_DETECT,
   PrivacyOptions
 } from '../content/privacy-redactor';
 
@@ -26,6 +27,24 @@ import {
  * Pure module: the only DOM touch is the optional pagehide listener.
  */
 
+/** The same opt-in preferences drive the live shield and the exported text. */
+export const DEFAULT_BLUR_OPTIONS: PrivacyOptions = {
+  enabled: true,
+  secrets: true,
+  pii: true,
+  financial: false
+};
+
+/** Resolves the exporter's `autoBlur` argument into concrete category flags. */
+export function resolveBlurOptions(
+  autoBlur: boolean | Partial<PrivacyOptions> | undefined
+): PrivacyOptions {
+  if (typeof autoBlur === 'boolean') {
+    return { enabled: autoBlur, secrets: autoBlur, pii: autoBlur, financial: autoBlur };
+  }
+  return { ...DEFAULT_BLUR_OPTIONS, ...(autoBlur || {}) };
+}
+
 /** The error every export rejects with when the user cancels it. */
 export function createExportAbortError(): Error {
   const err = new Error('The export was cancelled.');
@@ -43,7 +62,7 @@ export const SNAPSHOT_MAX_DISTANCE_MS = 3000;
 /** Browsers can abandon a download if its object URL is revoked too early. */
 export const OBJECT_URL_REVOKE_DELAY_MS = 60_000;
 
-export type BlurOptions = Partial<PrivacyOptions>;
+export type BlurOptions = PrivacyOptions;
 
 const HTML_ENTITIES: Record<string, string> = {
   '&': '&amp;',
@@ -165,7 +184,7 @@ export function scheduleObjectUrlRevoke(
 export function maskIfSensitive(
   text: string | undefined,
   alreadyHidden = false,
-  blur: BlurOptions = { blurEmails: true, blurRevenue: true, blurApiKeys: true }
+  blur: BlurOptions = DEFAULT_BLUR_OPTIONS
 ): { text: string; hidden: boolean } {
   if (!text) return { text: '', hidden: false };
   if (alreadyHidden || text === '[hidden input]') {
@@ -173,9 +192,9 @@ export function maskIfSensitive(
   }
   const isPasswordOrSecret = /(password|passwd|secret|api[_-]?key|token|sk_live_|bearer\s+)/i.test(text);
   const patternHit =
-    Boolean(blur.blurEmails && EMAIL_DETECT.test(text)) ||
-    Boolean(blur.blurRevenue && REVENUE_DETECT.test(text)) ||
-    Boolean(blur.blurApiKeys && API_KEY_DETECT.test(text)) ||
+    Boolean(blur.pii && (EMAIL_DETECT.test(text) || PHONE_DETECT.test(text))) ||
+    Boolean(blur.financial && REVENUE_DETECT.test(text)) ||
+    Boolean(blur.secrets && API_KEY_DETECT.test(text)) ||
     isPasswordOrSecret;
 
   if (patternHit) {
@@ -206,10 +225,10 @@ function decodeURIComponentSafe(value: string): string {
  */
 export function redactUrlForExport(
   url: string | undefined,
-  blur: BlurOptions = { blurEmails: true, blurRevenue: true, blurApiKeys: true }
+  blur: BlurOptions = DEFAULT_BLUR_OPTIONS
 ): string | undefined {
   if (!url) return url;
-  if (!(blur.blurEmails || blur.blurRevenue || blur.blurApiKeys)) return url;
+  if (!(blur.secrets || blur.pii || blur.financial)) return url;
   const MASK = 'REDACTED';
   const maskValue = (key: string, value: string): string => {
     if (!value) return value;

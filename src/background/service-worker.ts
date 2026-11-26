@@ -11,6 +11,7 @@ interface SessionState {
 
 import { mergeTelemetrySegments, segmentKey, TelemetrySegment } from './telemetry-merge';
 import { untrackablePage } from '../engine/restricted-pages';
+import { loadPrivacyPrefs } from '../engine/privacy-prefs';
 
 // Memory cache of session state (synced with storage.session to survive worker sleep)
 let state: SessionState = {
@@ -93,6 +94,80 @@ async function readRecordingContext(): Promise<{ originEpoch: number | null; pri
     originEpoch: typeof data[CTX_ORIGIN_KEY] === 'number' ? data[CTX_ORIGIN_KEY] : null,
     privacyOptions: data[CTX_PRIVACY_KEY] && typeof data[CTX_PRIVACY_KEY] === 'object' ? data[CTX_PRIVACY_KEY] : null
   };
+}
+
+/**
+ * Privacy stop lifecycle. `recordingActive` lives in storage.session and is
+ * flipped to false BEFORE any tab is messaged, so a late tabs.onUpdated can
+ * never re-arm the shield on a page whose recording already ended.
+ */
+const RECORDING_ACTIVE_KEY = 'recordingActive';
+const PRIVACY_ARMED_KEY = 'smoothstudio_privacy_armed';
+interface PrivacyArmedState { sessionId: string | null; tabIds: number[] }
+const NO_PRIVACY_ARMED: PrivacyArmedState = { sessionId: null, tabIds: [] };
+
+async function isPrivacyRecordingActive(): Promise<boolean> {
+  const data: Record<string, any> = await getStorageArea().get([RECORDING_ACTIVE_KEY]).catch(() => ({}));
+  return Boolean(data[RECORDING_ACTIVE_KEY]);
+}
+function setPrivacyRecordingActive(active: boolean): Promise<void> {
+  return getStorageArea().set({ [RECORDING_ACTIVE_KEY]: active }).catch(() => undefined);
+}
+async function readPrivacyArmed(): Promise<PrivacyArmedState> {
+  const data: Record<string, any> = await getStorageArea().get([PRIVACY_ARMED_KEY]).catch(() => ({}));
+  const armed = data[PRIVACY_ARMED_KEY];
+  if (!armed || typeof armed !== 'object') return { ...NO_PRIVACY_ARMED, tabIds: [] };
+  return {
+    sessionId: typeof armed.sessionId === 'string' ? armed.sessionId : null,
+    tabIds: Array.isArray(armed.tabIds) ? armed.tabIds.filter((id: unknown) => typeof id === 'number') : []
+  };
+}
+function writePrivacyArmed(armed: PrivacyArmedState): Promise<void> {
+  return getStorageArea().set({ [PRIVACY_ARMED_KEY]: armed }).catch(() => undefined);
+}
+async function armPrivacyTab(tabId: number, sid: string | null): Promise<void> {
+  const armed = await readPrivacyArmed();
+  const next: PrivacyArmedState = {
+    sessionId: sid || armed.sessionId,
+    tabIds: armed.tabIds.includes(tabId) ? armed.tabIds : [...armed.tabIds, tabId]
+  };
+  await writePrivacyArmed(next);
+}
+
+/** Delivers STOP_PRIVACY to a tab. tabs.sendMessage without `frameId` targets every frame. */
+function sendPrivacyStopToTab(tabId: number, sid: string | null): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    try {
+      chrome.tabs.sendMessage(tabId, { type: 'STOP_PRIVACY', sessionId: sid }, () => {
+        void chrome.runtime?.lastError;
+        finish();
+      });
+    } catch { finish(); }
+    setTimeout(finish, 1500);
+  });
+}
+
+/**
+ * Instant, idempotent unblur of EVERY tab that was ever armed for privacy.
+ * Re-injection uses `allFrames: true` (the same way the shield is armed) so a
+ * frame that lost its content script cannot keep a stale blur either.
+ */
+async function broadcastStopPrivacy(): Promise<void> {
+  await setPrivacyRecordingActive(false);
+  const armed = await readPrivacyArmed();
+  await writePrivacyArmed({ sessionId: null, tabIds: [] });
+  await Promise.all(armed.tabIds.map((id) => sendPrivacyStopToTab(id, armed.sessionId)));
+  for (const tabId of armed.tabIds) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        files: ['content/privacy-redactor.js']
+      });
+      await sendPrivacyStopToTab(tabId, armed.sessionId);
+    } catch { /* tab gone: nothing left blurred there */ }
+  }
 }
 
 /**
@@ -233,6 +308,11 @@ async function endRecordingSession(expectedSessionId: string | null = null): Pro
     if (expectedSessionId && sessionId && expectedSessionId !== sessionId) {
       return { telemetry: null, sessionId, ended: false, reason: 'stale' };
     }
+
+    // Privacy FIRST: mark recordingActive=false in storage.session and unblur
+    // EVERY armed tab before any tab messaging (STOP_TELEMETRY below). A late
+    // tabs.onUpdated or a tab watchdog can therefore never re-arm the shield.
+    await broadcastStopPrivacy();
 
     if (!curr.isRecording) {
       // Already ended (another stop path got here first): hand out what was
@@ -459,13 +539,21 @@ function sendTabMessageWithAck(tabId: number, message: any): Promise<{ ok: boole
   });
 }
 
+/** Records a tab as armed once the shield actually confirmed it reached the page. */
+async function armedResult(tabId: number, message: any, result: TabDispatchResult): Promise<TabDispatchResult> {
+  if (result.ok && message?.type === 'APPLY_PRIVACY_OPTIONS' && message.options?.enabled !== false) {
+    await armPrivacyTab(tabId, typeof message.sessionId === 'string' ? message.sessionId : null);
+  }
+  return result;
+}
+
 async function dispatchToTab(tab: chrome.tabs.Tab, message: any): Promise<TabDispatchResult> {
   const tabId = tab.id;
   if (typeof tabId !== 'number') return { tabId: -1, ok: false, reason: 'missing_tab_id' };
   if (!isWebTab(tab)) return { tabId, ok: false, reason: 'restricted_page' };
 
   const first = await sendTabMessageWithAck(tabId, message);
-  if (first.ok) return { tabId, ok: true, response: first.response };
+  if (first.ok) return armedResult(tabId, message, { tabId, ok: true, response: first.response });
   if (!isMissingReceiver(first.reason)) return { tabId, ok: false, reason: first.reason };
 
   try {
@@ -486,9 +574,9 @@ async function dispatchToTab(tab: chrome.tabs.Tab, message: any): Promise<TabDis
   }
 
   const retry = await sendTabMessageWithAck(tabId, message);
-  return retry.ok
+  return armedResult(tabId, message, retry.ok
     ? { tabId, ok: true, response: retry.response }
-    : { tabId, ok: false, reason: retry.reason };
+    : { tabId, ok: false, reason: retry.reason });
 }
 
 // The editor (which owns the recorder) was closed while recording: the
@@ -496,8 +584,12 @@ async function dispatchToTab(tab: chrome.tabs.Tab, message: any): Promise<TabDis
 // telemetry is kept for the recovered recording.
 chrome.tabs?.onRemoved?.addListener((tabId) => {
   loadSessionState().then((curr) => {
-    if (curr.isRecording && curr.activeEditorTabId === tabId) {
-      endRecordingSession().catch(() => undefined);
+    // The editor that owned the capture is gone: end the session (which also
+    // broadcasts STOP_PRIVACY to every armed tab) or, if no session was live,
+    // at least clear a pre-recording preview blur.
+    if (curr.activeEditorTabId === tabId) {
+      if (curr.isRecording) endRecordingSession().catch(() => undefined);
+      else void broadcastStopPrivacy();
     }
   }).catch(() => undefined);
 });
@@ -510,10 +602,16 @@ chrome.tabs?.onRemoved?.addListener((tabId) => {
  */
 async function rearmRecordedTab(tab: chrome.tabs.Tab): Promise<void> {
   const curr = await loadSessionState();
+  if (!(await isPrivacyRecordingActive())) return;
   if (!(await isTrackedTab(curr, tab.id))) return;
   const ctx = await readRecordingContext();
-  if (ctx.privacyOptions) {
-    const shield = await dispatchToTab(tab, { type: 'APPLY_PRIVACY_OPTIONS', options: ctx.privacyOptions });
+  if (ctx.privacyOptions && ctx.privacyOptions.enabled !== false) {
+    const shield = await dispatchToTab(tab, {
+      type: 'APPLY_PRIVACY_OPTIONS',
+      options: ctx.privacyOptions,
+      sessionId: curr.activeSessionId || null,
+      recording: true
+    });
     if (!shield.ok) console.warn('[SmoothStudio SW] Privacy shield not re-applied after navigation:', shield.reason);
   }
   let originEpoch = ctx.originEpoch;
@@ -539,7 +637,7 @@ let followQueue: Promise<void> = Promise.resolve();
 function followActiveTab(): void {
   followQueue = followQueue.then(async () => {
     const curr = await loadSessionState();
-    if (!curr.isRecording) return;
+    if (!curr.isRecording || !(await isPrivacyRecordingActive())) return;
     const follow = await readFollow();
     if (!follow.enabled) return;
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => [] as chrome.tabs.Tab[]);
@@ -549,8 +647,13 @@ function followActiveTab(): void {
     if ((await trackedTabIds(curr)).includes(tab.id)) return;
     const ctx = await readRecordingContext();
     if (ctx.originEpoch === null) return; // not live yet: the start tab is armed by the start itself
-    if (ctx.privacyOptions) {
-      const shield = await dispatchToTab(tab, { type: 'APPLY_PRIVACY_OPTIONS', options: ctx.privacyOptions });
+    if (ctx.privacyOptions && ctx.privacyOptions.enabled !== false) {
+      const shield = await dispatchToTab(tab, {
+        type: 'APPLY_PRIVACY_OPTIONS',
+        options: ctx.privacyOptions,
+        sessionId: curr.activeSessionId || null,
+        recording: true
+      });
       if (!shield.ok) console.warn('[SmoothStudio SW] Privacy shield not applied to followed tab:', shield.reason);
     }
     const res = await dispatchToTab(tab, {
@@ -664,6 +767,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         quality,
         activeSessionId: sessionId
       })).then(async () => {
+        // Arm the privacy lifecycle for THIS session. The previous session's
+        // stop flipped recordingActive=false and cleared the armed tab list, so
+        // start both fresh before any page can be re-armed.
+        await setPrivacyRecordingActive(true);
+        await writePrivacyArmed({ sessionId: sessionId || null, tabIds: [] });
+        const prefs = await loadPrivacyPrefs();
+        if (prefs.enabled) {
+          const opts = { enabled: true, secrets: prefs.secrets, pii: prefs.pii, financial: prefs.financial };
+          await getStorageArea().set({ [CTX_PRIVACY_KEY]: opts }).catch(() => undefined);
+          if (typeof targetRecordingTabId === 'number') {
+            await armPrivacyTab(targetRecordingTabId, sessionId || null);
+            // The previous session's stop may have arrived AFTER the editor's
+            // APPLY message. Re-arm the page for THIS session so it cannot stay
+            // unblurred (or carry the old session's watchdog) after the start.
+            const targetTab = await chrome.tabs.get(targetRecordingTabId).catch(() => null);
+            if (targetTab) {
+              await dispatchToTab(targetTab, {
+                type: 'APPLY_PRIVACY_OPTIONS',
+                options: opts,
+                sessionId: sessionId || null,
+                recording: true
+              });
+            }
+          }
+        }
         // Entire screen / window: follow the user across tabs (a window share: that window only).
         const surface = message.shareSurface;
         if ((surface === 'monitor' || surface === 'window') && typeof targetRecordingTabId === 'number') {
@@ -907,14 +1035,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // 6. Forward Privacy & Redaction Messages to Tabs
-  if (['APPLY_PRIVACY_OPTIONS', 'START_PICKER', 'STOP_PICKER', 'RESET_PRIVACY'].includes(message.type)) {
+  // 5e. The content script's 2 s watchdog asks whether its session is still live.
+  if (message.type === 'PING_PRIVACY_SESSION') {
+    loadSessionState().then(async (curr) => {
+      const active = await isPrivacyRecordingActive();
+      const armed = await readPrivacyArmed();
+      const sessionMatches = !message.sessionId || !armed.sessionId || armed.sessionId === message.sessionId;
+      sendResponse({ ok: true, active: Boolean(active && curr.isRecording && sessionMatches) });
+    }).catch(() => sendResponse({ ok: true, active: false }));
+    return true;
+  }
+
+  // 5f. Live masked-item count for the popup's shield panel.
+  if (message.type === 'GET_PRIVACY_STATUS') {
+    const onlyTabId = typeof message.tabId === 'number' ? message.tabId : null;
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const targetTabId = onlyTabId ?? tabs?.[0]?.id;
+      if (typeof targetTabId !== 'number') { sendResponse({ ok: false, count: 0 }); return; }
+      sendTabMessageWithAck(targetTabId, { type: 'GET_PRIVACY_STATUS' }).then((res) => {
+        sendResponse(res.ok && res.response ? res.response : { ok: false, count: 0 });
+      });
+    });
+    return true;
+  }
+
+  // 6. Explicit stop from the popup or the editor: unblur every armed tab now.
+  if (message.type === 'STOP_PRIVACY') {
+    void broadcastStopPrivacy().then(() => sendResponse({ status: 'privacy_stopped' }));
+    return true;
+  }
+
+  // 7. Forward Privacy & Redaction Messages to Tabs
+  if (['APPLY_PRIVACY_OPTIONS', 'START_PICKER', 'STOP_PICKER', 'CLEAR_PICKS', 'RESET_PRIVACY'].includes(message.type)) {
     // Remember the shield configuration: a page the recorded tab navigates to
     // gets it applied again (the page's own state is gone with the old page).
     if (message.type === 'APPLY_PRIVACY_OPTIONS') {
       getStorageArea().set({ [CTX_PRIVACY_KEY]: message.options || {} }).catch(() => undefined);
     } else if (message.type === 'RESET_PRIVACY') {
-      getStorageArea().remove(CTX_PRIVACY_KEY).catch(() => undefined);
+      void broadcastStopPrivacy();
     }
     // A message that names a tab (the popup's Start) only goes to that tab: it
     // must not inject the shield into every open page, and its result is the

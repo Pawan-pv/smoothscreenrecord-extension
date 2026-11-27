@@ -40,7 +40,7 @@ import { AudioProcessor } from '../engine/audio-processor';
 import { SfxSynthesizer } from '../engine/sfx-synthesizer';
 import { HardwareMp4Exporter, ExportEncoderInfo } from '../engine/mp4-exporter';
 import { describeMp4Export } from '../engine/export-report';
-import { loadPrivacyPrefs } from '../engine/privacy-prefs';
+import { loadPrivacyPrefs, privacyOptionsFromPrefs } from '../engine/privacy-prefs';
 import { resolveEditorShortcut } from './keyboard-shortcuts';
 import { HardwareGifExporter, GIF_QUALITY_PRESETS, GifQualityPreset } from '../engine/gif-exporter';
 import { SopGuideExporter } from '../engine/sop-guide-exporter';
@@ -563,6 +563,28 @@ export function EditorStudio() {
   const [recordIncludeMic, setRecordIncludeMic] = useState<boolean>(true);
   /** The tab whose page is tracked for clicks in the current / last recording (from the service worker). */
   const trackedTabIdRef = useRef<number | null>(null);
+  /**
+   * Every stop path (popup, editor button, Chrome's native "Stop sharing", a
+   * cancelled getDisplayMedia, a dead service worker) calls this FIRST: the
+   * page is unblurred immediately instead of waiting for export/telemetry.
+   */
+  const stopPrivacyEverywhere = useCallback((sid?: string | null) => {
+    if (typeof chrome === 'undefined' || !chrome.runtime) return;
+    try {
+      chrome.runtime.sendMessage({ type: 'STOP_PRIVACY', ...(sid ? { sessionId: sid } : {}) }, () => {
+        void chrome.runtime?.lastError;
+      });
+    } catch { /* no extension context */ }
+    const tabId = trackedTabIdRef.current;
+    if (typeof tabId === 'number' && chrome.tabs?.sendMessage) {
+      try {
+        chrome.tabs.sendMessage(tabId, { type: 'STOP_PRIVACY', sessionId: sid }, () => {
+          void chrome.runtime?.lastError;
+        });
+      } catch { /* the tab is gone */ }
+    }
+    trackedTabIdRef.current = null;
+  }, []);
   const [hasNoRecording, setHasNoRecording] = useState<boolean>(false);
 
   // Engines
@@ -1435,18 +1457,22 @@ export function EditorStudio() {
       // No originEpoch is sent: the content script owns the HUD-visible epoch
       // and publishes it back with HUD_VISIBLE.
       if (typeof chrome !== 'undefined' && chrome.runtime) {
-        // QA-006: forward the privacy options to the target tab when starting from
-        // the editor. They are the user's saved popup choices (a category switched
-        // OFF stays OFF); with nothing saved every category is ON, so sensitive data
-        // is never recorded unblurred by default.
+        // Opt-in: apply the user's SAVED choices only. Nothing here turns the
+        // shield on, and a category switched OFF in the popup stays OFF.
+        // When `sourceTabId` is unset, `START_STUDIO_RECORDING` below picks and
+        // arms the resolved target tab so unrelated open tabs stay untouched.
         const privacyPrefs = await loadPrivacyPrefs();
-        chrome.runtime.sendMessage({
-          type: 'APPLY_PRIVACY_OPTIONS',
-          options: privacyPrefs,
-          ...(sourceTabId ? { tabId: sourceTabId } : {})
-        }, () => {
-          void chrome.runtime?.lastError;
-        });
+        if (privacyPrefs.enabled && typeof sourceTabId === 'number') {
+          chrome.runtime.sendMessage({
+            type: 'APPLY_PRIVACY_OPTIONS',
+            options: privacyOptionsFromPrefs(privacyPrefs),
+            sessionId,
+            recording: true,
+            tabId: sourceTabId
+          }, () => {
+            void chrome.runtime?.lastError;
+          });
+        }
         trackedTabIdRef.current = typeof sourceTabId === 'number' ? sourceTabId : null;
         chrome.runtime.sendMessage(
           {
@@ -1505,6 +1531,9 @@ export function EditorStudio() {
       }, 8000);
     } catch (err: any) {
       console.warn('Capture canceled or rejected:', err);
+      // getDisplayMedia was cancelled/denied: no recording ever started, so a
+      // pre-recording preview blur must not be left on the page.
+      stopPrivacyEverywhere(activeSessionIdRef.current);
       sendRecording('start-failed');
       showToast({
         type: 'warning',
@@ -1519,6 +1548,9 @@ export function EditorStudio() {
     // the editor's Stop button and Chrome's "Stop sharing" bar (recorder onStop).
     console.log('[SmoothStudio] Stop handled at epoch', Date.now(), 'telemetry passed:', Boolean(passedTelemetry));
     const sessionId = activeSessionIdRef.current;
+    // Unblur the recorded page at the very first line of every stop path:
+    // popup, editor Stop, native "Stop sharing" (onStop) and SW stop message.
+    stopPrivacyEverywhere(sessionId);
     const sameSession = (t?: TelemetryData | null) =>
       !!t && (!t.metadata?.sessionId || !sessionId || t.metadata.sessionId === sessionId);
     if (passedTelemetry && sameSession(passedTelemetry)) {
@@ -1980,10 +2012,17 @@ export function EditorStudio() {
       : []
   });
 
+  /** The same saved, opt-in category flags drive the live shield and the guides. */
+  const exportPrivacyFlags = async () => {
+    const prefs = await loadPrivacyPrefs();
+    return privacyOptionsFromPrefs(prefs);
+  };
+
   // 2. Step-by-Step Markdown / Notion SOP Guide Export
-  const handleExportSopGuide = () => {
+  const handleExportSopGuide = async () => {
     if (!telemetry) return;
-    const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots(), true, buildExportTimelineWindow());
+    const flags = await exportPrivacyFlags();
+    const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots(), flags, buildExportTimelineWindow());
     SopGuideExporter.downloadMarkdown(md, `${telemetry.metadata.title || 'SOP'}_Guide.md`);
     showToast({ type: 'success', title: 'SOP Guide Exported', message: 'Markdown guide downloaded.' });
   };
@@ -1991,23 +2030,25 @@ export function EditorStudio() {
   const handleCopySopGuide = async () => {
     if (!telemetry) return;
     try {
-      const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots(), true, buildExportTimelineWindow());
+      const flags = await exportPrivacyFlags();
+      const md = SopGuideExporter.generateMarkdownGuide(telemetry, captureEngineRef.current.getSnapshots(), flags, buildExportTimelineWindow());
       await navigator.clipboard.writeText(md);
       setCopiedSop(true);
       showToast({ type: 'success', title: 'SOP Copied', message: 'Markdown documentation copied to clipboard.' });
       setTimeout(() => setCopiedSop(false), 2200);
     } catch {
-      handleExportSopGuide();
+      void handleExportSopGuide();
     }
   };
 
   // 3. Interactive HTML Click-Through Widget Export
-  const handleExportInteractiveWidget = () => {
+  const handleExportInteractiveWidget = async () => {
     if (!telemetry) return;
+    const flags = await exportPrivacyFlags();
     const html = HtmlWidgetExporter.generateInteractiveWidget(
       telemetry,
       captureEngineRef.current.getSnapshots(),
-      true,
+      flags,
       buildExportTimelineWindow()
     );
     HtmlWidgetExporter.downloadWidget(html, `${telemetry.metadata.title || 'Walkthrough'}_Interactive.html`);

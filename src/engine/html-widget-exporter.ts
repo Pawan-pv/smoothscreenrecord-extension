@@ -6,6 +6,7 @@ import {
   escapeHtmlText,
   scheduleObjectUrlRevoke,
   maskIfSensitive,
+  resolveBlurOptions,
   BlurOptions
 } from './export-safety';
 import { createExportTimelineFilter, ExportTimelineWindow } from './export-timeline';
@@ -14,18 +15,11 @@ export class HtmlWidgetExporter {
   public static generateInteractiveWidget(
     telemetry: TelemetryData,
     snapshots: { timestamp: number; dataUrl: string }[] = [],
-    autoBlur: boolean | { blurEmails?: boolean; blurRevenue?: boolean; blurApiKeys?: boolean } = true,
+    autoBlur: boolean | Partial<BlurOptions> = true,
     /** What the user kept: steps outside the trim window or inside a cut are left out. */
     timeline?: ExportTimelineWindow | null
   ): string {
-    const blurOptions: BlurOptions = typeof autoBlur === 'boolean'
-      ? { blurEmails: autoBlur, blurRevenue: autoBlur, blurApiKeys: autoBlur }
-      : {
-          blurEmails: Boolean(autoBlur?.blurEmails),
-          blurRevenue: Boolean(autoBlur?.blurRevenue),
-          blurApiKeys: Boolean(autoBlur?.blurApiKeys)
-        };
-    const isAutoBlurOn = Boolean(blurOptions.blurEmails || blurOptions.blurRevenue || blurOptions.blurApiKeys);
+    const blurOptions: BlurOptions = resolveBlurOptions(autoBlur);
 
     const { metadata } = telemetry;
     const kept = createExportTimelineFilter(timeline);

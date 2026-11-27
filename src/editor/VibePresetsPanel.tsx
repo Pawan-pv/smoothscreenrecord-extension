@@ -19,6 +19,7 @@ import { STUDIO_CLICK_COLORS, type CursorMotionSettings } from '../engine/cursor
 import type { CursorEngineKind } from '../engine/cursor-solve';
 import { GRADIENT_PRESETS, gradientCss } from '../engine/background-painter';
 import { WALLPAPERS, getWallpaperThumbnail } from '../engine/wallpapers';
+import { StudioSlider } from './ui-primitives';
 
 type BackgroundTab = 'wallpaper' | 'gradient' | 'color' | 'image';
 const BACKGROUND_TABS: ReadonlyArray<readonly [BackgroundTab, string]> = [
@@ -310,10 +311,10 @@ export function VibePresetsPanel({
   ];
 
   return (
-    <aside className="w-72 bg-[#14161D] border-r border-white/10 p-4 flex flex-col gap-5 overflow-y-auto select-none">
+    <aside className="ss-panel w-72 border-r p-4 flex flex-col gap-5 overflow-y-auto select-none">
       {/* Aspect Ratio Switcher */}
       <div>
-        <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider mb-2.5 block">
+        <label className="ss-section-title mb-2.5 block">
           Aspect Ratio
         </label>
 
@@ -322,11 +323,11 @@ export function VibePresetsPanel({
             onClick={() => onChangeAspectRatio('16:9')}
             className={`flex items-center gap-2 p-2 rounded-lg text-xs transition-colors ${
               aspectRatio === '16:9'
-                ? 'bg-purple-600 text-white font-medium shadow-md shadow-purple-600/30'
-                : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                ? 'ss-chip-active text-studio-text font-medium'
+                : 'ss-chip hover:text-studio-text'
             }`}
           >
-            <Monitor className="w-3.5 h-3.5" />
+            <Monitor className="w-3.5 h-3.5" strokeWidth={1.75} />
             16:9 (YouTube/X)
           </button>
 
@@ -334,11 +335,11 @@ export function VibePresetsPanel({
             onClick={() => onChangeAspectRatio('9:16')}
             className={`flex items-center gap-2 p-2 rounded-lg text-xs transition-colors ${
               aspectRatio === '9:16'
-                ? 'bg-purple-600 text-white font-medium shadow-md shadow-purple-600/30'
-                : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                ? 'ss-chip-active text-studio-text font-medium'
+                : 'ss-chip hover:text-studio-text'
             }`}
           >
-            <Smartphone className="w-3.5 h-3.5" />
+            <Smartphone className="w-3.5 h-3.5" strokeWidth={1.75} />
             9:16 (Shorts/TikTok)
           </button>
 
@@ -346,11 +347,11 @@ export function VibePresetsPanel({
             onClick={() => onChangeAspectRatio('1:1')}
             className={`flex items-center gap-2 p-2 rounded-lg text-xs transition-colors ${
               aspectRatio === '1:1'
-                ? 'bg-purple-600 text-white font-medium shadow-md shadow-purple-600/30'
-                : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                ? 'ss-chip-active text-studio-text font-medium'
+                : 'ss-chip hover:text-studio-text'
             }`}
           >
-            <Square className="w-3.5 h-3.5" />
+            <Square className="w-3.5 h-3.5" strokeWidth={1.75} />
             1:1 (LinkedIn)
           </button>
 
@@ -358,11 +359,11 @@ export function VibePresetsPanel({
             onClick={() => onChangeAspectRatio('4:3')}
             className={`flex items-center gap-2 p-2 rounded-lg text-xs transition-colors ${
               aspectRatio === '4:3'
-                ? 'bg-purple-600 text-white font-medium shadow-md shadow-purple-600/30'
-                : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                ? 'ss-chip-active text-studio-text font-medium'
+                : 'ss-chip hover:text-studio-text'
             }`}
           >
-            <Tv className="w-3.5 h-3.5" />
+            <Tv className="w-3.5 h-3.5" strokeWidth={1.75} />
             4:3 (Classic)
           </button>
 
@@ -370,11 +371,11 @@ export function VibePresetsPanel({
             onClick={() => onChangeAspectRatio('4:5')}
             className={`flex items-center gap-2 p-2 rounded-lg text-xs transition-colors col-span-2 ${
               aspectRatio === '4:5'
-                ? 'bg-purple-600 text-white font-medium shadow-md shadow-purple-600/30'
-                : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
+                ? 'ss-chip-active text-studio-text font-medium'
+                : 'ss-chip hover:text-studio-text'
             }`}
           >
-            <Smartphone className="w-3.5 h-3.5" />
+            <Smartphone className="w-3.5 h-3.5" strokeWidth={1.75} />
             4:5 (Instagram/LinkedIn)
           </button>
         </div>
@@ -382,14 +383,14 @@ export function VibePresetsPanel({
           <button
             type="button"
             onClick={() => onChangeFramingMode('fit')}
-            className={`p-1.5 rounded-lg text-[11px] border ${framingMode === 'fit' ? 'bg-purple-600/30 border-purple-500 text-white' : 'bg-white/5 border-white/5 text-gray-400'}`}
+            className={`p-1.5 rounded-lg text-[11px] border ${framingMode === 'fit' ? 'ss-chip ss-chip-active text-studio-text' : 'ss-chip'}`}
           >
             Fit
           </button>
           <button
             type="button"
             onClick={() => onChangeFramingMode('smart-fill')}
-            className={`p-1.5 rounded-lg text-[11px] border ${framingMode === 'smart-fill' ? 'bg-purple-600/30 border-purple-500 text-white' : 'bg-white/5 border-white/5 text-gray-400'}`}
+            className={`p-1.5 rounded-lg text-[11px] border ${framingMode === 'smart-fill' ? 'ss-chip ss-chip-active text-studio-text' : 'ss-chip'}`}
           >
             Smart Fill
           </button>
@@ -399,8 +400,8 @@ export function VibePresetsPanel({
       {/* Vibe Presets */}
       <div>
         <div className="flex items-center justify-between mb-2.5">
-          <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
-            <Palette className="w-3.5 h-3.5 text-purple-400" />
+          <label className="ss-section-title flex items-center gap-1.5">
+            <Palette className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
             Studio Presets
           </label>
         </div>
@@ -417,20 +418,20 @@ export function VibePresetsPanel({
                 onClick={() => onSelectPreset(preset)}
                 className={`w-full flex items-center justify-between p-2 rounded-xl border text-xs transition-all ${
                   isSelected
-                    ? 'bg-purple-600/20 border-purple-500 text-white font-medium'
-                    : 'bg-white/5 border-white/5 hover:bg-white/10 text-gray-300'
+                    ? 'ss-card ss-chip-active text-studio-text font-medium'
+                    : 'ss-card text-[#CBD5E1]'
                 }`}
               >
                 <div className="flex items-center gap-2">
                   <span>{preset.name}</span>
                   {id === 'keynote-pro' && (
-                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-sky-500/20 text-sky-300 font-mono">STUDIO</span>
+                    <span className="ss-num text-[9px] px-1.5 py-0.5 rounded bg-[#38BDF8]/15 text-[#7DD3FC] ss-num">STUDIO</span>
                   )}
                   {id === 'stripe-mesh' && (
-                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-mono">MESH</span>
+                    <span className="ss-num text-[9px] px-1.5 py-0.5 rounded bg-[#6366F1]/20 text-[#A5B4FC] ss-num">MESH</span>
                   )}
                   {id === 'linear-cosmic' && (
-                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-mono">SPACE</span>
+                    <span className="ss-num text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-[#A5B4FC] ss-num">SPACE</span>
                   )}
                 </div>
                 <div className="flex items-center gap-1">
@@ -452,22 +453,22 @@ export function VibePresetsPanel({
         {metadata?.brandColors && (
           <button
             onClick={handleMatchBrand}
-            className="w-full mt-2 py-2 px-3 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-medium rounded-xl flex items-center justify-center gap-2 shadow-md shadow-indigo-600/25 transition-all"
+            className="ss-btn ss-btn-primary w-full mt-2 py-2 px-3 text-xs"
           >
-            <Sparkles className="w-3.5 h-3.5 text-purple-200" />
+            <Sparkles className="w-3.5 h-3.5 text-[#C7D2FE]" strokeWidth={1.75} />
             Match Website Brand Colors
           </button>
         )}
       </div>
 
       {/* Advanced Backdrop Rendering Matrix Parameters */}
-      <div className="pt-2 border-t border-white/10 space-y-3">
-        <div className="flex items-center justify-between text-xs font-semibold text-gray-300 uppercase tracking-wider">
+      <div className="pt-2 border-t border-studio-border space-y-3">
+        <div className="flex items-center justify-between ss-section-title">
           <span className="flex items-center gap-1.5">
-            <Layers className="w-3.5 h-3.5 text-indigo-400" />
+            <Layers className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
             Backdrop Matrix
           </span>
-          <span className="font-mono text-indigo-400 text-[10px]">
+          <span className="ss-num text-[#818CF8] text-[10px]">
             {backdropParams?.presetType === 'stripe-mesh'
               ? 'Mesh Flow'
               : backdropParams?.presetType === 'linear-cosmic'
@@ -491,8 +492,8 @@ export function VibePresetsPanel({
             }}
             className={`p-1.5 rounded-lg border text-center transition-all ${
               (backdropParams?.presetType || currentPreset.backdrop?.presetType) === 'keynote-pro'
-                ? 'bg-sky-500/25 border-sky-400 text-sky-200 font-medium'
-                : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                ? 'bg-[#38BDF8]/18 border-[#38BDF8] text-[#BAE6FD] font-medium'
+                : 'ss-chip'
             }`}
           >
             Keynote Pro
@@ -510,8 +511,8 @@ export function VibePresetsPanel({
             }}
             className={`p-1.5 rounded-lg border text-center transition-all ${
               (backdropParams?.presetType || currentPreset.backdrop?.presetType) === 'stripe-mesh'
-                ? 'bg-purple-600/25 border-purple-500 text-purple-200 font-medium'
-                : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                ? 'ss-chip ss-chip-active text-studio-text font-medium'
+                : 'ss-chip'
             }`}
           >
             Stripe Mesh
@@ -529,8 +530,8 @@ export function VibePresetsPanel({
             }}
             className={`p-1.5 rounded-lg border text-center transition-all ${
               (backdropParams?.presetType || currentPreset.backdrop?.presetType) === 'linear-cosmic'
-                ? 'bg-indigo-600/25 border-indigo-400 text-indigo-200 font-medium'
-                : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                ? 'bg-indigo-600/25 border-indigo-400 text-[#C7D2FE] font-medium'
+                : 'ss-chip'
             }`}
           >
             Linear Cosmic
@@ -541,86 +542,76 @@ export function VibePresetsPanel({
         <div className="space-y-2 pt-1 text-[11px]">
           {/* Studio Vignette Strength */}
           <div className="space-y-1">
-            <div className="flex justify-between text-gray-300">
+            <div className="flex justify-between text-[#CBD5E1]">
               <span>Studio Vignette Strength</span>
-              <span className="font-mono text-indigo-300">{backdropParams?.vignetteStrength ?? 75}%</span>
+              <span className="ss-num text-[#A5B4FC]">{backdropParams?.vignetteStrength ?? 75}%</span>
             </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
+            <StudioSlider
+              min={0}
+              max={100}
               value={backdropParams?.vignetteStrength ?? 75}
-              onChange={(e) => onChangeBackdropParams?.({ vignetteStrength: parseInt(e.target.value) })}
-              className="w-full accent-indigo-500"
+              onChange={(v) => onChangeBackdropParams?.({ vignetteStrength: v })}
               title="Studio lighting drop-shadow vignette falloff"
             />
           </div>
 
           {/* Ambient Illumination */}
           <div className="space-y-1">
-            <div className="flex justify-between text-gray-300">
+            <div className="flex justify-between text-[#CBD5E1]">
               <span>Ambient Illumination</span>
-              <span className="font-mono text-indigo-300">{backdropParams?.illumination ?? 85}%</span>
+              <span className="ss-num text-[#A5B4FC]">{backdropParams?.illumination ?? 85}%</span>
             </div>
-            <input
-              type="range"
-              min="10"
-              max="100"
+            <StudioSlider
+              min={10}
+              max={100}
               value={backdropParams?.illumination ?? 85}
-              onChange={(e) => onChangeBackdropParams?.({ illumination: parseInt(e.target.value) })}
-              className="w-full accent-indigo-500"
+              onChange={(v) => onChangeBackdropParams?.({ illumination: v })}
               title="Overhead key light intensity & gradient glow"
             />
           </div>
 
           {/* Mesh Flow Rate */}
           <div className="space-y-1">
-            <div className="flex justify-between text-gray-300">
+            <div className="flex justify-between text-[#CBD5E1]">
               <span>Mesh Flow Rate</span>
-              <span className="font-mono text-indigo-300">{backdropParams?.flowSpeed ?? 50}%</span>
+              <span className="ss-num text-[#A5B4FC]">{backdropParams?.flowSpeed ?? 50}%</span>
             </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
+            <StudioSlider
+              min={0}
+              max={100}
               value={backdropParams?.flowSpeed ?? 50}
-              onChange={(e) => onChangeBackdropParams?.({ flowSpeed: parseInt(e.target.value) })}
-              className="w-full accent-indigo-500"
+              onChange={(v) => onChangeBackdropParams?.({ flowSpeed: v })}
               title="Fluid flow velocity for multi-stop mesh gradients and cosmic flares"
             />
           </div>
 
           {/* Cosmic Space Grid Intensity */}
           <div className="space-y-1">
-            <div className="flex justify-between text-gray-300">
+            <div className="flex justify-between text-[#CBD5E1]">
               <span>Geometric Matrix Grid</span>
-              <span className="font-mono text-indigo-300">{backdropParams?.gridIntensity ?? 30}%</span>
+              <span className="ss-num text-[#A5B4FC]">{backdropParams?.gridIntensity ?? 30}%</span>
             </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
+            <StudioSlider
+              min={0}
+              max={100}
               value={backdropParams?.gridIntensity ?? 30}
-              onChange={(e) => onChangeBackdropParams?.({ gridIntensity: parseInt(e.target.value) })}
-              className="w-full accent-indigo-500"
+              onChange={(v) => onChangeBackdropParams?.({ gridIntensity: v })}
               title="Architectural coordinate grid in cosmic space"
             />
           </div>
 
           {/* Gradient Direction Angle */}
           <div className="space-y-1">
-            <div className="flex justify-between text-gray-300">
+            <div className="flex justify-between text-[#CBD5E1]">
               <span>Gradient Matrix Angle</span>
-              <span className="font-mono text-indigo-300">{backdropParams?.gradientAngle ?? 135}°</span>
+              <span className="ss-num text-[#A5B4FC]">{backdropParams?.gradientAngle ?? 135}°</span>
             </div>
-            <input
-              type="range"
-              min="0"
-              max="360"
-              step="5"
+            <StudioSlider
+              min={0}
+              max={360}
+              step={5}
               value={backdropParams?.gradientAngle ?? 135}
-              onChange={(e) => onChangeBackdropParams?.({ gradientAngle: parseInt(e.target.value) })}
-              className="w-full accent-indigo-500"
+              onChange={(v) => onChangeBackdropParams?.({ gradientAngle: v })}
               title="Orientation angle of dual-tone linear and mesh gradients"
             />
           </div>
@@ -639,9 +630,9 @@ export function VibePresetsPanel({
               };
               onChangeBackdropParams?.(defaultParams);
             }}
-            className="w-full mt-1 py-1 px-2 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white flex items-center justify-center gap-1.5 text-[10px] transition-colors"
+            className="ss-btn ss-btn-secondary w-full mt-1 py-1.5 px-2 text-[10px]"
           >
-            <RotateCcw className="w-3 h-3 text-indigo-400" />
+            <RotateCcw className="w-3 h-3 text-[#818CF8]" strokeWidth={1.75} />
             Reset Backdrop to Studio Defaults
           </button>
         </div>
@@ -649,24 +640,22 @@ export function VibePresetsPanel({
 
       {/* Window Corner Radius Slider */}
       <div>
-        <div className="flex items-center justify-between text-xs mb-1.5 text-gray-300">
+        <div className="flex items-center justify-between text-xs mb-1.5 text-[#CBD5E1]">
           <span>Window Corner Radius</span>
-          <span className="font-mono text-purple-400">{currentPreset.borderRadius}px</span>
+          <span className="ss-num text-[#818CF8]">{currentPreset.borderRadius}px</span>
         </div>
-        <input
-          type="range"
-          min="0"
-          max="36"
+        <StudioSlider
+          min={0}
+          max={36}
           value={currentPreset.borderRadius}
-          onChange={(e) => onUpdatePresetBorderRadius(parseInt(e.target.value))}
-          className="w-full accent-purple-500"
+          onChange={(v) => onUpdatePresetBorderRadius(v)}
         />
       </div>
 
       <div className="mt-2">
-        <div className="flex items-center justify-between text-xs mb-1.5 text-gray-300">
+        <div className="flex items-center justify-between text-xs mb-1.5 text-[#CBD5E1]">
           <span>Frame Shadow</span>
-          <span className="font-mono text-purple-400 capitalize">{shadowMode}</span>
+          <span className="ss-num text-[#818CF8] capitalize">{shadowMode}</span>
         </div>
         <div className="grid grid-cols-3 gap-1.5">
           {(['none', 'subtle', 'studio'] as ShadowMode[]).map((mode) => (
@@ -674,7 +663,7 @@ export function VibePresetsPanel({
               key={mode}
               type="button"
               onClick={() => onChangeShadowMode(mode)}
-              className={`p-1.5 rounded-lg text-[11px] border capitalize ${shadowMode === mode ? 'bg-purple-600/30 border-purple-500 text-white' : 'bg-white/5 border-white/5 text-gray-400'}`}
+              className={`p-1.5 rounded-lg text-[11px] border capitalize ${shadowMode === mode ? 'ss-chip ss-chip-active text-studio-text' : 'ss-chip'}`}
             >
               {mode}
             </button>
@@ -684,27 +673,25 @@ export function VibePresetsPanel({
 
       {/* Frame Padding Slider (0% - 20%, default 8%) */}
       <div>
-        <div className="flex items-center justify-between text-xs mb-1.5 text-gray-300">
+        <div className="flex items-center justify-between text-xs mb-1.5 text-[#CBD5E1]">
           <span className="flex items-center gap-1.5">
-            <Sliders className="w-3.5 h-3.5 text-purple-400" />
+            <Sliders className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
             Frame Padding
           </span>
-          <span className="font-mono text-purple-400">{Math.round((framePadding ?? 0.08) * 100)}%</span>
+          <span className="ss-num text-[#818CF8]">{Math.round((framePadding ?? 0.08) * 100)}%</span>
         </div>
-        <input
-          type="range"
-          min="0"
-          max="20"
+        <StudioSlider
+          min={0}
+          max={20}
           value={Math.round((framePadding ?? 0.08) * 100)}
-          onChange={(e) => onChangeFramePadding?.(parseInt(e.target.value, 10) / 100)}
-          className="w-full accent-purple-500 cursor-pointer"
+          onChange={(v) => onChangeFramePadding?.(v / 100)}
         />
       </div>
 
       {/* Custom Background: wallpapers, gradients, solid colors and images (drop an image anywhere here) */}
       <div
-        className={`pt-2 border-t border-white/10 space-y-2 rounded-lg transition-colors ${
-          isDraggingFile ? 'outline outline-2 outline-dashed outline-pink-400/70 bg-pink-500/10' : ''
+        className={`pt-2 border-t border-studio-border space-y-2 rounded-lg transition-colors ${
+          isDraggingFile ? 'outline outline-2 outline-dashed outline-[#A855F7]/70 bg-[#A855F7]/10' : ''
         }`}
         onDragEnter={handleBackgroundDragEnter}
         onDragOver={handleBackgroundDragOver}
@@ -712,21 +699,21 @@ export function VibePresetsPanel({
         onDrop={handleBackgroundDrop}
       >
         {isDraggingFile && (
-          <div className="text-center text-[11px] text-pink-200 py-1">Drop the image to use it as the background</div>
+          <div className="text-center text-[11px] text-[#E9D5FF] py-1">Drop the image to use it as the background</div>
         )}
-        <div className="flex items-center justify-between text-xs font-semibold text-gray-300 uppercase tracking-wider">
+        <div className="flex items-center justify-between ss-section-title">
           <span className="flex items-center gap-1.5">
-            <Palette className="w-3.5 h-3.5 text-pink-400" />
+            <Palette className="w-3.5 h-3.5 text-[#A855F7]" strokeWidth={1.75} />
             Background
           </span>
           {hasCustomBackground && (
             <button
               type="button"
               onClick={handleResetBackground}
-              className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1 transition-colors"
+              className="text-[10px] text-[#FB7185] hover:text-[#FDA4AF] flex items-center gap-1 transition-colors"
               title="Back to the preset's animated backdrop"
             >
-              <RotateCcw className="w-2.5 h-2.5" />
+              <RotateCcw className="w-2.5 h-2.5" strokeWidth={1.75} />
               Reset
             </button>
           )}
@@ -742,7 +729,7 @@ export function VibePresetsPanel({
               aria-selected={backgroundTab === id}
               onClick={() => setBackgroundTab(id)}
               className={`p-1.5 rounded-lg border text-center transition-colors ${
-                backgroundTab === id ? 'bg-pink-600/20 border-pink-500 text-white font-medium' : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                backgroundTab === id ? 'ss-chip ss-chip-active text-studio-text font-medium' : 'ss-chip'
               }`}
             >
               {label}
@@ -760,7 +747,7 @@ export function VibePresetsPanel({
                   type="button"
                   onClick={() => onChangeBackground?.({ kind: 'wallpaper', id: wp.id })}
                   className={`relative aspect-video rounded-lg overflow-hidden border transition-all ${
-                    selected ? 'border-white ring-1 ring-white/60' : 'border-white/10 hover:border-white/40'
+                    selected ? 'border-white ring-1 ring-white/60' : 'border-studio-border hover:border-white/40'
                   }`}
                   title={wp.name}
                   aria-label={`${wp.name} wallpaper`}
@@ -783,7 +770,7 @@ export function VibePresetsPanel({
                     key={g.name}
                     type="button"
                     onClick={() => onChangeBackground?.({ kind: 'gradient', colors: [...g.colors], angle: g.angle, shape: g.shape })}
-                    className={`h-9 rounded-lg border transition-all ${selected ? 'border-white ring-1 ring-white/60' : 'border-white/10 hover:border-white/40'}`}
+                    className={`h-9 rounded-lg border transition-all ${selected ? 'border-white ring-1 ring-white/60' : 'border-studio-border hover:border-white/40'}`}
                     style={{ background: gradientCss(g.colors, g.angle, g.shape) }}
                     title={g.name}
                     aria-label={`${g.name} gradient`}
@@ -811,7 +798,7 @@ export function VibePresetsPanel({
                 <button
                   type="button"
                   onClick={() => editGradient({ colors: [...gradientColors, gradientColors[gradientColors.length - 1]] })}
-                  className="w-6 h-6 rounded-full border border-white/20 text-gray-300 text-xs hover:bg-white/10"
+                  className="w-6 h-6 rounded-full border border-white/20 text-[#CBD5E1] text-xs hover:bg-studio-cardHover"
                   title="Add a color"
                 >
                   +
@@ -821,19 +808,19 @@ export function VibePresetsPanel({
                 <button
                   type="button"
                   onClick={() => editGradient({ colors: gradientColors.slice(0, -1) })}
-                  className="w-6 h-6 rounded-full border border-white/20 text-gray-300 text-xs hover:bg-white/10"
+                  className="w-6 h-6 rounded-full border border-white/20 text-[#CBD5E1] text-xs hover:bg-studio-cardHover"
                   title="Remove the last color"
                 >
                   −
                 </button>
               )}
-              <div className="ml-auto flex rounded-lg border border-white/10 overflow-hidden text-[10px]">
+              <div className="ml-auto flex rounded-lg border border-studio-border overflow-hidden text-[10px]">
                 {(['linear', 'radial'] as const).map((shape) => (
                   <button
                     key={shape}
                     type="button"
                     onClick={() => editGradient({ shape })}
-                    className={`px-2 py-1 ${gradientShape === shape ? 'bg-white/15 text-white' : 'text-gray-400 hover:text-white'}`}
+                    className={`px-2 py-1 ${gradientShape === shape ? 'bg-white/15 text-studio-text' : 'text-studio-muted hover:text-studio-text'}`}
                   >
                     {shape === 'linear' ? 'Linear' : 'Radial'}
                   </button>
@@ -841,19 +828,17 @@ export function VibePresetsPanel({
               </div>
             </div>
             <div className="space-y-1">
-              <div className="flex justify-between text-[11px] text-gray-400">
+              <div className="flex justify-between text-[11px] text-studio-muted">
                 <span>Angle</span>
-                <span className="font-mono text-pink-300">{Math.round(gradientAngle)}°</span>
+                <span className="ss-num text-[#C084FC]">{Math.round(gradientAngle)}°</span>
               </div>
-              <input
-                type="range"
-                min="0"
-                max="360"
-                step="5"
+              <StudioSlider
+                min={0}
+                max={360}
+                step={5}
                 value={gradientAngle}
                 disabled={gradientShape === 'radial'}
-                onChange={(e) => editGradient({ angle: parseInt(e.target.value, 10) })}
-                className="w-full accent-pink-500 disabled:opacity-40"
+                onChange={(v) => editGradient({ angle: v })}
                 aria-label="Gradient angle"
               />
             </div>
@@ -886,15 +871,15 @@ export function VibePresetsPanel({
 
         {backgroundTab === 'image' && (
           <div className="pt-1 space-y-2">
-            <label className="w-full py-1.5 px-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs text-gray-300 cursor-pointer flex items-center justify-center gap-2 transition-colors">
-              <Upload className="w-3.5 h-3.5 text-indigo-400" />
+            <label className="w-full py-1.5 px-2.5 bg-studio-card hover:bg-studio-cardHover border border-studio-border rounded-lg text-xs text-[#CBD5E1] cursor-pointer flex items-center justify-center gap-2 transition-colors">
+              <Upload className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
               <span>{backgroundImageUrl ? 'Replace image' : 'Browse for an image'}</span>
               <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
             </label>
-            <p className="text-[10px] text-gray-500 text-center">…or drop an image on this panel, or paste one (Ctrl+V).</p>
+            <p className="text-[10px] text-studio-meta text-center">…or drop an image on this panel, or paste one (Ctrl+V).</p>
             {recentUploads.length > 0 && (
               <div className="space-y-1">
-                <div className="text-[10px] uppercase tracking-wider text-gray-500">Recent</div>
+                <div className="text-[10px] uppercase tracking-wider text-studio-meta">Recent</div>
                 <div className="grid grid-cols-4 gap-1.5">
                   {recentUploads.map((u) => {
                     const selected = background.kind === 'image' && background.uploadId === u.id;
@@ -904,7 +889,7 @@ export function VibePresetsPanel({
                           type="button"
                           onClick={() => onSelectRecentUpload?.(u.id)}
                           className={`block w-full aspect-video rounded-md overflow-hidden border transition-all ${
-                            selected ? 'border-white ring-1 ring-white/60' : 'border-white/10 hover:border-white/40'
+                            selected ? 'border-white ring-1 ring-white/60' : 'border-studio-border hover:border-white/40'
                           }`}
                           title={u.name}
                           aria-label={`Use ${u.name}`}
@@ -915,7 +900,7 @@ export function VibePresetsPanel({
                         <button
                           type="button"
                           onClick={() => onDeleteRecentUpload?.(u.id)}
-                          className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/80 border border-white/20 text-[10px] leading-none text-gray-300 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-red-300"
+                          className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/80 border border-white/20 text-[10px] leading-none text-[#CBD5E1] opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-[#FDA4AF]"
                           title={`Remove ${u.name}`}
                           aria-label={`Remove ${u.name}`}
                         >
@@ -933,34 +918,30 @@ export function VibePresetsPanel({
         {(background.kind === 'wallpaper' || background.kind === 'image') && (
           <div className="grid grid-cols-2 gap-3 pt-1">
             <div className="space-y-1">
-              <div className="flex justify-between text-[11px] text-gray-400">
+              <div className="flex justify-between text-[11px] text-studio-muted">
                 <span>Blur</span>
-                <span className="font-mono text-pink-300">{Math.round(backgroundEffects.blur)}%</span>
+                <span className="ss-num text-[#C084FC]">{Math.round(backgroundEffects.blur)}%</span>
               </div>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                step="1"
+              <StudioSlider
+                min={0}
+                max={100}
+                step={1}
                 value={backgroundEffects.blur}
-                onChange={(e) => onChangeBackgroundEffects?.({ blur: parseInt(e.target.value, 10) })}
-                className="w-full accent-pink-500"
+                onChange={(v) => onChangeBackgroundEffects?.({ blur: v })}
                 aria-label="Background blur"
               />
             </div>
             <div className="space-y-1">
-              <div className="flex justify-between text-[11px] text-gray-400">
+              <div className="flex justify-between text-[11px] text-studio-muted">
                 <span>Dim</span>
-                <span className="font-mono text-pink-300">{Math.round(backgroundEffects.dim)}%</span>
+                <span className="ss-num text-[#C084FC]">{Math.round(backgroundEffects.dim)}%</span>
               </div>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                step="1"
+              <StudioSlider
+                min={0}
+                max={100}
+                step={1}
                 value={backgroundEffects.dim}
-                onChange={(e) => onChangeBackgroundEffects?.({ dim: parseInt(e.target.value, 10) })}
-                className="w-full accent-pink-500"
+                onChange={(v) => onChangeBackgroundEffects?.({ dim: v })}
                 aria-label="Background dim"
               />
             </div>
@@ -969,9 +950,9 @@ export function VibePresetsPanel({
 
         {(background.kind === 'wallpaper' || background.kind === 'gradient' || background.kind === 'image') && (
           <div className="space-y-1 pt-1">
-            <div className="flex justify-between text-[11px] text-gray-400">
+            <div className="flex justify-between text-[11px] text-studio-muted">
               <span>Motion</span>
-              <span className="font-mono text-pink-300">
+              <span className="ss-num text-[#C084FC]">
                 {backgroundEffects.motion <= 0
                   ? 'Still'
                   : backgroundEffects.motion < 35
@@ -981,17 +962,15 @@ export function VibePresetsPanel({
                       : 'Lively'}
               </span>
             </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="1"
+            <StudioSlider
+              min={0}
+              max={100}
+              step={1}
               value={backgroundEffects.motion}
-              onChange={(e) => onChangeBackgroundEffects?.({ motion: parseInt(e.target.value, 10) })}
-              className="w-full accent-pink-500"
+              onChange={(v) => onChangeBackgroundEffects?.({ motion: v })}
               aria-label="Background motion"
             />
-            <p className="text-[10px] text-gray-500">
+            <p className="text-[10px] text-studio-meta">
               {background.kind === 'image'
                 ? 'A slow push-in and pan across your image.'
                 : background.kind === 'gradient'
@@ -1004,13 +983,13 @@ export function VibePresetsPanel({
       </div>
 
       {/* Cursor Theme & Scale Customizer */}
-      <div className="pt-2 border-t border-white/10 space-y-3">
-        <div className="flex items-center justify-between text-xs font-semibold text-gray-300 uppercase tracking-wider">
+      <div className="pt-2 border-t border-studio-border space-y-3">
+        <div className="flex items-center justify-between ss-section-title">
           <span className="flex items-center gap-1.5">
-            <MousePointer className="w-3.5 h-3.5 text-purple-400" />
+            <MousePointer className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
             Vector Cursor Styling
           </span>
-          <span className="font-mono text-purple-400 text-[11px]">{cursorScale.toFixed(1)}x</span>
+          <span className="ss-num text-[#818CF8] text-[11px]">{cursorScale.toFixed(1)}x</span>
         </div>
 
         {/* Theme pills */}
@@ -1019,8 +998,8 @@ export function VibePresetsPanel({
             onClick={() => onChangeCursorTheme('mac-obsidian')}
             className={`p-1.5 rounded-lg border text-center transition-colors ${
               cursorTheme === 'mac-obsidian'
-                ? 'bg-purple-600/25 border-purple-500 text-white font-medium'
-                : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                ? 'ss-chip ss-chip-active text-studio-text font-medium'
+                : 'ss-chip'
             }`}
           >
             Obsidian
@@ -1029,8 +1008,8 @@ export function VibePresetsPanel({
             onClick={() => onChangeCursorTheme('neon-glow')}
             className={`p-1.5 rounded-lg border text-center transition-colors ${
               cursorTheme === 'neon-glow'
-                ? 'bg-purple-600/25 border-purple-500 text-purple-200 font-medium'
-                : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                ? 'ss-chip ss-chip-active text-studio-text font-medium'
+                : 'ss-chip'
             }`}
           >
             Neon Glow
@@ -1039,8 +1018,8 @@ export function VibePresetsPanel({
             onClick={() => onChangeCursorTheme('minimal-white')}
             className={`p-1.5 rounded-lg border text-center transition-colors ${
               cursorTheme === 'minimal-white'
-                ? 'bg-purple-600/25 border-purple-500 text-white font-medium'
-                : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                ? 'ss-chip ss-chip-active text-studio-text font-medium'
+                : 'ss-chip'
             }`}
           >
             Clean White
@@ -1049,26 +1028,24 @@ export function VibePresetsPanel({
 
         {/* Cursor Scale Slider */}
         <div className="space-y-1">
-          <div className="flex justify-between text-[11px] text-gray-400">
+          <div className="flex justify-between text-[11px] text-studio-muted">
             <span>Pointer Size</span>
           </div>
-          <input
-            type="range"
-            min="0.8"
-            max="2.0"
-            step="0.1"
+          <StudioSlider
+            min={0.8}
+            max={2.0}
+            step={0.1}
             value={cursorScale}
-            onChange={(e) => onChangeCursorScale(parseFloat(e.target.value))}
-            className="w-full accent-purple-500"
+            onChange={(v) => onChangeCursorScale(v)}
           />
         </div>
         <div className="space-y-1">
-          <label className="flex justify-between items-center text-[11px] text-gray-400">
+          <label className="flex justify-between items-center text-[11px] text-studio-muted">
             <span>Cursor engine</span>
             <select
               value={cursorEngineKind}
               onChange={(e) => onChangeCursorEngine(e.target.value === 'solve' ? 'solve' : 'spline')}
-              className="bg-transparent border border-white/10 rounded px-1 py-0.5 text-[11px] text-purple-300"
+              className="bg-transparent border border-studio-border rounded px-1 py-0.5 text-[11px] text-[#A5B4FC]"
               aria-label="Cursor engine"
             >
               <option value="solve">Solve (default)</option>
@@ -1077,18 +1054,16 @@ export function VibePresetsPanel({
           </label>
         </div>
         <div className="space-y-1">
-          <div className="flex justify-between text-[11px] text-gray-400">
+          <div className="flex justify-between text-[11px] text-studio-muted">
             <span>Cursor Smoothing</span>
-            <span className="text-purple-300">{cursorSmoothing < 0.34 ? 'Crisp' : cursorSmoothing < 0.75 ? 'Smooth' : 'Cinematic'}</span>
+            <span className="text-[#A5B4FC]">{cursorSmoothing < 0.34 ? 'Crisp' : cursorSmoothing < 0.75 ? 'Smooth' : 'Cinematic'}</span>
           </div>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.05"
+          <StudioSlider
+            min={0}
+            max={1}
+            step={0.05}
             value={cursorSmoothing}
-            onChange={(e) => onChangeCursorSmoothing(parseFloat(e.target.value))}
-            className="w-full accent-purple-500"
+            onChange={(v) => onChangeCursorSmoothing(v)}
             aria-label="Cursor Smoothing"
           />
         </div>
@@ -1096,74 +1071,68 @@ export function VibePresetsPanel({
         {/* Cursor motion: sway spring, tilt, click press, hide when idle */}
         <div className="space-y-1">
           {!showCursor && (
-            <p className="text-[10px] leading-snug text-gray-500">
+            <p className="text-[10px] leading-snug text-studio-meta">
               Requires Vector Cursor (auto-enabled on Chrome Tab captures).
             </p>
           )}
-          <div className="flex justify-between text-[11px] text-gray-400">
+          <div className="flex justify-between text-[11px] text-studio-muted">
             <span>Sway</span>
-            <span className="text-purple-300">{cursorEngineKind === 'solve' ? 'No effect with Solve' : `${cursorMotion.sway < 34 ? 'Tight' : cursorMotion.sway < 67 ? 'Natural' : 'Languid'} · ${Math.round(cursorMotion.sway)}`}</span>
+            <span className="text-[#A5B4FC]">{cursorEngineKind === 'solve' ? 'No effect with Solve' : `${cursorMotion.sway < 34 ? 'Tight' : cursorMotion.sway < 67 ? 'Natural' : 'Languid'} · ${Math.round(cursorMotion.sway)}`}</span>
           </div>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            step="1"
+          <StudioSlider
+            min={0}
+            max={100}
+            step={1}
             value={cursorMotion.sway}
             disabled={cursorEngineKind === 'solve'}
-            onChange={(e) => onChangeCursorMotion({ sway: parseFloat(e.target.value) })}
-            className="w-full accent-purple-500 disabled:opacity-40"
+            onChange={(v) => onChangeCursorMotion({ sway: v })}
             aria-label="Cursor Sway"
           />
         </div>
         <div className={`space-y-1${!showCursor ? ' opacity-50' : ''}`}>
-          <label className="flex justify-between items-center text-[11px] text-gray-400">
+          <label className="flex justify-between items-center text-[11px] text-studio-muted">
             <span>Tilt with speed</span>
             <input type="checkbox" checked={cursorMotion.tiltEnabled} onChange={(e) => onChangeCursorMotion({ tiltEnabled: e.target.checked })} />
           </label>
-          <div className="flex justify-between text-[11px] text-gray-500">
+          <div className="flex justify-between text-[11px] text-studio-meta">
             <span>Max angle</span>
             <span>{Math.round(cursorMotion.maxTiltDeg)}°</span>
           </div>
-          <input
-            type="range"
-            min="2"
-            max="30"
-            step="1"
+          <StudioSlider
+            min={2}
+            max={30}
+            step={1}
             value={cursorMotion.maxTiltDeg}
             disabled={!cursorMotion.tiltEnabled}
-            onChange={(e) => onChangeCursorMotion({ maxTiltDeg: parseFloat(e.target.value) })}
-            className="w-full accent-purple-500 disabled:opacity-40"
+            onChange={(v) => onChangeCursorMotion({ maxTiltDeg: v })}
             aria-label="Cursor Max Tilt"
           />
         </div>
         <div className={`space-y-1${!showCursor ? ' opacity-50' : ''}`}>
-          <label className="flex justify-between items-center text-[11px] text-gray-400">
+          <label className="flex justify-between items-center text-[11px] text-studio-muted">
             <span>Click press</span>
             <input type="checkbox" checked={cursorMotion.pressEnabled} onChange={(e) => onChangeCursorMotion({ pressEnabled: e.target.checked })} />
           </label>
-          <div className="flex justify-between text-[11px] text-gray-500">
+          <div className="flex justify-between text-[11px] text-studio-meta">
             <span>Depth</span>
             <span>{Math.round(cursorMotion.pressDepth * 100)}%</span>
           </div>
-          <input
-            type="range"
-            min="0.05"
-            max="0.40"
-            step="0.01"
+          <StudioSlider
+            min={0.05}
+            max={0.40}
+            step={0.01}
             value={cursorMotion.pressDepth}
             disabled={!cursorMotion.pressEnabled}
-            onChange={(e) => onChangeCursorMotion({ pressDepth: parseFloat(e.target.value) })}
-            className="w-full accent-purple-500 disabled:opacity-40"
+            onChange={(v) => onChangeCursorMotion({ pressDepth: v })}
             aria-label="Cursor Press Depth"
           />
         </div>
 
         {/* Click Effect Style — inside the Cursor settings, alongside the Click Press toggle/depth */}
         <div className={`space-y-1${!ripplesActive ? ' opacity-50' : ''}`}>
-          <div className="flex justify-between text-[11px] text-gray-400">
+          <div className="flex justify-between text-[11px] text-studio-muted">
             <span>Click Effect</span>
-            <span className="text-purple-300">
+            <span className="text-[#A5B4FC]">
               {clickEffectStyle === 'double-ring' ? 'Double' : clickEffectStyle === 'halo' ? 'Halo' : clickEffectStyle === 'none' ? 'None' : 'Ring'}
             </span>
           </div>
@@ -1175,8 +1144,8 @@ export function VibePresetsPanel({
                 onClick={() => onChangeClickEffectStyle(style)}
                 className={`p-1.5 rounded-lg border text-center transition-colors ${
                   clickEffectStyle === style
-                    ? 'bg-purple-600/25 border-purple-500 text-white font-medium'
-                    : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                    ? 'ss-chip ss-chip-active text-studio-text font-medium'
+                    : 'ss-chip'
                 }`}
                 title={
                   style === 'ring'
@@ -1196,9 +1165,9 @@ export function VibePresetsPanel({
 
         {/* Click Accent Color */}
         <div className={`space-y-1${!ripplesActive ? ' opacity-50' : ''}`}>
-          <div className="flex justify-between text-[11px] text-gray-400">
+          <div className="flex justify-between text-[11px] text-studio-muted">
             <span>Click Accent Color</span>
-            <span className="text-purple-300">{clickColor === 'auto' ? 'Auto' : clickColor}</span>
+            <span className="text-[#A5B4FC]">{clickColor === 'auto' ? 'Auto' : clickColor}</span>
           </div>
           <div className="flex items-center gap-1.5">
             <button
@@ -1206,8 +1175,8 @@ export function VibePresetsPanel({
               onClick={() => onChangeClickColor('auto')}
               className={`px-2 py-1 rounded-lg border text-[10px] transition-colors ${
                 clickColor === 'auto'
-                  ? 'bg-purple-600/25 border-purple-500 text-white font-medium'
-                  : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                  ? 'ss-chip ss-chip-active text-studio-text font-medium'
+                  : 'ss-chip'
               }`}
             >
               Auto
@@ -1227,46 +1196,44 @@ export function VibePresetsPanel({
           </div>
         </div>
         <div className={`space-y-1${!showCursor ? ' opacity-50' : ''}`}>
-          <label className="flex justify-between items-center text-[11px] text-gray-400">
+          <label className="flex justify-between items-center text-[11px] text-studio-muted">
             <span>Hide when idle</span>
             <input
               type="checkbox"
               checked={cursorMotion.hideWhenIdle}
               disabled={!showCursor}
               onChange={(e) => onChangeCursorMotion({ hideWhenIdle: e.target.checked })}
-              className="accent-purple-500 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="ss-checkbox disabled:opacity-40 disabled:cursor-not-allowed"
             />
           </label>
-          <div className="flex justify-between text-[11px] text-gray-500">
+          <div className="flex justify-between text-[11px] text-studio-meta">
             <span>After</span>
             <span>{(cursorMotion.idleDelayMs / 1000).toFixed(1)} s still</span>
           </div>
-          <input
-            type="range"
-            min="500"
-            max="5000"
-            step="100"
+          <StudioSlider
+            min={500}
+            max={5000}
+            step={100}
             value={cursorMotion.idleDelayMs}
             disabled={!showCursor || !cursorMotion.hideWhenIdle}
-            onChange={(e) => onChangeCursorMotion({ idleDelayMs: parseFloat(e.target.value) })}
-            className="w-full accent-purple-500 disabled:opacity-40 disabled:cursor-not-allowed"
+            onChange={(v) => onChangeCursorMotion({ idleDelayMs: v })}
             aria-label="Cursor Idle Delay"
           />
         </div>
       </div>
 
       {/* TikTok / Reels Auto-Captions */}
-      <div className="pt-2 border-t border-white/10 space-y-2.5">
-        <div className="flex items-center justify-between text-xs font-semibold text-gray-300 uppercase tracking-wider">
+      <div className="pt-2 border-t border-studio-border space-y-2.5">
+        <div className="flex items-center justify-between ss-section-title">
           <span className="flex items-center gap-1.5">
-            <Subtitles className="w-3.5 h-3.5 text-amber-400" />
+            <Subtitles className="w-3.5 h-3.5 text-[#FBBF24]" strokeWidth={1.75} />
             Viral Auto-Captions
           </span>
           <input
             type="checkbox"
             checked={showCaptions}
             onChange={(e) => onToggleCaptions(e.target.checked)}
-            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+            className="ss-checkbox"
           />
         </div>
 
@@ -1277,8 +1244,8 @@ export function VibePresetsPanel({
               onClick={() => onChangeCaptionStyle('tiktok-bold')}
               className={`p-1.5 rounded-lg border text-center transition-colors ${
                 captionStyle === 'tiktok-bold'
-                  ? 'bg-amber-500/25 border-amber-500 text-amber-200 font-medium'
-                  : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                  ? 'bg-[#FBBF24]/25 border-amber-500 text-[#FDE68A] font-medium'
+                  : 'ss-chip'
               }`}
             >
               TikTok Bold (Yellow)
@@ -1287,8 +1254,8 @@ export function VibePresetsPanel({
               onClick={() => onChangeCaptionStyle('apple-keynote')}
               className={`p-1.5 rounded-lg border text-center transition-colors ${
                 captionStyle === 'apple-keynote'
-                  ? 'bg-sky-500/25 border-sky-400 text-sky-200 font-medium'
-                  : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                  ? 'bg-[#38BDF8]/18 border-[#38BDF8] text-[#BAE6FD] font-medium'
+                  : 'ss-chip'
               }`}
             >
               Apple Keynote (Glass)
@@ -1297,8 +1264,8 @@ export function VibePresetsPanel({
               onClick={() => onChangeCaptionStyle('minimal-pill')}
               className={`p-1.5 rounded-lg border text-center transition-colors ${
                 captionStyle === 'minimal-pill'
-                  ? 'bg-purple-600/25 border-purple-500 text-purple-200 font-medium'
-                  : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                  ? 'ss-chip ss-chip-active text-studio-text font-medium'
+                  : 'ss-chip'
               }`}
             >
               Minimal Pill
@@ -1307,8 +1274,8 @@ export function VibePresetsPanel({
               onClick={() => onChangeCaptionStyle('classic-sub')}
               className={`p-1.5 rounded-lg border text-center transition-colors ${
                 captionStyle === 'classic-sub'
-                  ? 'bg-white/20 border-white/40 text-white font-medium'
-                  : 'bg-white/5 border-white/5 text-gray-400 hover:text-white'
+                  ? 'ss-chip ss-chip-active text-studio-text font-medium'
+                  : 'ss-chip'
               }`}
             >
               Classic Sub
@@ -1317,18 +1284,16 @@ export function VibePresetsPanel({
 
           <div className="pt-1 space-y-1">
             {/* Caption Backdrop Opacity / Blur */}
-            <div className="flex items-center justify-between text-[10px] text-gray-400">
+            <div className="flex items-center justify-between text-[10px] text-studio-muted">
               <span>Backdrop Opacity / Blur</span>
-              <span className="font-mono text-amber-300">{captionBackdrop}%</span>
+              <span className="ss-num text-[#FCD34D]">{captionBackdrop}%</span>
             </div>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="5"
+            <StudioSlider
+              min={0}
+              max={100}
+              step={5}
               value={captionBackdrop}
-              onChange={(e) => onChangeCaptionBackdrop(parseInt(e.target.value))}
-              className="w-full accent-amber-500"
+              onChange={(v) => onChangeCaptionBackdrop(v)}
               title="Caption pill backdrop blur and opacity"
             />
           </div>
@@ -1337,47 +1302,47 @@ export function VibePresetsPanel({
       </div>
 
       {/* Visual & Sound Superpowers Toggles */}
-      <div className="pt-2 border-t border-white/10 space-y-2.5">
-        <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider block">
+      <div className="pt-2 border-t border-studio-border space-y-2.5">
+        <label className="ss-section-title block">
           Visual & Audio Effects
         </label>
 
-        <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
+        <label className="flex items-center justify-between text-xs text-[#CBD5E1] hover:text-studio-text cursor-pointer">
           <span>Spotlight Dimming Mode</span>
           <input
             type="checkbox"
             checked={showSpotlight}
             onChange={(e) => onToggleSpotlight(e.target.checked)}
-            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+            className="ss-checkbox"
           />
         </label>
 
-        <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
+        <label className="flex items-center justify-between text-xs text-[#CBD5E1] hover:text-studio-text cursor-pointer">
           <span>Vector 4K Cursor & Blur</span>
           <input
             id="vector-cursor-checkbox"
             type="checkbox"
             checked={showCursor}
             onChange={(e) => onToggleCursor(e.target.checked)}
-            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+            className="ss-checkbox"
             title={capturedNativeCursor === 'always' ? 'The native cursor was captured; enabling this may show both cursors.' : undefined}
           />
         </label>
 
         {capturedNativeCursor === 'always' && (
-          <p className="text-[11px] leading-relaxed text-amber-300/90">
+          <p className="text-[11px] leading-relaxed text-[#FCD34D]/90">
             The native cursor was captured in this recording. The vector cursor starts off to prevent a double cursor; you can re-enable it manually.
           </p>
         )}
         {capturedNativeCursor === 'motion' && metadata?.displaySurface !== 'window' && metadata?.displaySurface !== 'monitor' && showCursor && (
-          <p id="cursor-motion-note" className="text-[11px] leading-relaxed text-gray-400">
+          <p id="cursor-motion-note" className="text-[11px] leading-relaxed text-studio-muted">
             Chrome may draw its own cursor while the mouse moves. If you see two cursors in the preview, switch the vector cursor off.
           </p>
         )}
 
         {(metadata?.displaySurface === 'window' || metadata?.displaySurface === 'monitor') && (
-          <div id="cursor-mode-hint" className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-[11px] text-indigo-200 flex items-start gap-2 leading-relaxed">
-            <Info className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
+          <div id="cursor-mode-hint" className="p-2.5 rounded-lg bg-[#6366F1]/10 border border-[#818CF8]/25 text-[11px] text-[#C7D2FE] flex items-start gap-2 leading-relaxed">
+            <Info className="w-3.5 h-3.5 text-[#818CF8] shrink-0 mt-0.5" strokeWidth={1.75} />
             <span>
               {metadata?.coordinateSpace === 'capture'
                 ? 'Window/monitor capture keeps the native cursor, so the vector cursor and its 2.5D press squish stay off to avoid a double cursor. Auto-Zoom and Click Ripples remain active on the placed click points. Share a Chrome Tab for the full smooth vector cursor and press squish.'
@@ -1386,42 +1351,42 @@ export function VibePresetsPanel({
           </div>
         )}
 
-        <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
+        <label className="flex items-center justify-between text-xs text-[#CBD5E1] hover:text-studio-text cursor-pointer">
           <span>3D Keystroke HUD (Cmd+K)</span>
           <input
             type="checkbox"
             checked={showHud}
             onChange={(e) => onToggleHud(e.target.checked)}
-            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+            className="ss-checkbox"
           />
         </label>
 
-        <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
+        <label className="flex items-center justify-between text-xs text-[#CBD5E1] hover:text-studio-text cursor-pointer">
           <span>Camera Dynamic Follow (Cursor)</span>
           <input
             type="checkbox"
             checked={followCursor}
             onChange={(e) => onToggleFollowCursor(e.target.checked)}
-            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+            className="ss-checkbox"
           />
         </label>
 
-        <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
+        <label className="flex items-center justify-between text-xs text-[#CBD5E1] hover:text-studio-text cursor-pointer">
           <span className="flex items-center gap-1.5">
-            <Volume2 className="w-3.5 h-3.5 text-purple-400" />
+            <Volume2 className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
             Procedural Sound Effects
           </span>
           <input
             type="checkbox"
             checked={soundEnabled}
             onChange={(e) => onToggleSound(e.target.checked)}
-            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+            className="ss-checkbox"
           />
         </label>
 
-        <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
+        <label className="flex items-center justify-between text-xs text-[#CBD5E1] hover:text-studio-text cursor-pointer">
           <span className="flex items-center gap-1.5">
-            <Scissors className="w-3.5 h-3.5 text-amber-400" />
+            <Scissors className="w-3.5 h-3.5 text-[#FBBF24]" strokeWidth={1.75} />
             Auto-Cut Silences (&gt;1.2s)
           </span>
           <input
@@ -1429,53 +1394,53 @@ export function VibePresetsPanel({
             type="checkbox"
             checked={!!autoCutSilences}
             onChange={(e) => onToggleAutoCutSilences?.(e.target.checked)}
-            className="rounded bg-gray-800 border-gray-600 text-amber-500 focus:ring-0"
+            className="ss-checkbox"
           />
         </label>
       </div>
 
       {/* Built-In Intro Title Hook Cards */}
-      <div className="pt-2 border-t border-white/10 space-y-2.5">
-        <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center justify-between">
+      <div className="pt-2 border-t border-studio-border space-y-2.5">
+        <label className="ss-section-title flex items-center justify-between">
           <span>Intro Title Hook Card</span>
-          <span className="text-[10px] text-purple-400 font-mono">1.5s 3D Zoom</span>
+          <span className="text-[10px] text-[#818CF8] ss-num">1.5s 3D Zoom</span>
         </label>
 
-        <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
+        <label className="flex items-center justify-between text-xs text-[#CBD5E1] hover:text-studio-text cursor-pointer">
           <span>Enable Intro Title Card</span>
           <input
             type="checkbox"
             checked={!!showIntroCard}
             onChange={(e) => onToggleIntroCard?.(e.target.checked)}
-            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+            className="ss-checkbox"
           />
         </label>
 
         {showIntroCard && (
           <div className="space-y-2.5 pt-1">
             <div>
-              <span className="text-[10px] text-gray-400 uppercase font-medium block mb-1">Headline</span>
+              <span className="text-[10px] text-studio-muted uppercase font-medium block mb-1">Headline</span>
               <input
                 type="text"
                 value={introHeadline || ''}
                 onChange={(e) => onChangeIntroHeadline?.(e.target.value)}
                 placeholder="Headline text"
-                className="w-full bg-black/50 border border-white/15 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none"
+                className="ss-input w-full px-2.5 py-1.5 text-xs text-studio-text placeholder:text-studio-meta"
               />
             </div>
 
             <div>
-              <span className="text-[10px] text-gray-400 uppercase font-medium block mb-1">Subheadline</span>
+              <span className="text-[10px] text-studio-muted uppercase font-medium block mb-1">Subheadline</span>
               <input
                 type="text"
                 value={introSubheadline || ''}
                 onChange={(e) => onChangeIntroSubheadline?.(e.target.value)}
                 placeholder="Subheadline text"
-                className="w-full bg-black/50 border border-white/15 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 placeholder-gray-500 focus:outline-none"
+                className="ss-input w-full px-2.5 py-1.5 text-xs placeholder:text-studio-meta"
               />
             </div>
 
-            <p className="text-[10px] text-gray-400 leading-tight">
+            <p className="text-[10px] text-studio-muted leading-tight">
               Animate hook title over brand mesh gradient before 3D spring zoom into recording.
             </p>
           </div>
@@ -1483,47 +1448,47 @@ export function VibePresetsPanel({
       </div>
 
       {/* Built-In Outro CTA Title Hook Cards */}
-      <div className="pt-2 border-t border-white/10 space-y-2.5">
-        <label className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center justify-between">
+      <div className="pt-2 border-t border-studio-border space-y-2.5">
+        <label className="ss-section-title flex items-center justify-between">
           <span>Outro CTA Card</span>
-          <span className="text-[10px] text-pink-400 font-mono">Final 1.5s 3D Zoom</span>
+          <span className="text-[10px] text-[#A855F7] ss-num">Final 1.5s 3D Zoom</span>
         </label>
 
-        <label className="flex items-center justify-between text-xs text-gray-300 hover:text-white cursor-pointer">
+        <label className="flex items-center justify-between text-xs text-[#CBD5E1] hover:text-studio-text cursor-pointer">
           <span>Enable Outro CTA Card</span>
           <input
             type="checkbox"
             checked={!!showOutroCard}
             onChange={(e) => onToggleOutroCard?.(e.target.checked)}
-            className="rounded bg-gray-800 border-gray-600 text-purple-600 focus:ring-0"
+            className="ss-checkbox"
           />
         </label>
 
         {showOutroCard && (
           <div className="space-y-2.5 pt-1">
             <div>
-              <span className="text-[10px] text-gray-400 uppercase font-medium block mb-1">Outro Headline</span>
+              <span className="text-[10px] text-studio-muted uppercase font-medium block mb-1">Outro Headline</span>
               <input
                 type="text"
                 value={outroHeadline || ''}
                 onChange={(e) => onChangeOutroHeadline?.(e.target.value)}
                 placeholder="Outro headline text"
-                className="w-full bg-black/50 border border-white/15 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none"
+                className="ss-input w-full px-2.5 py-1.5 text-xs text-studio-text placeholder:text-studio-meta"
               />
             </div>
 
             <div>
-              <span className="text-[10px] text-gray-400 uppercase font-medium block mb-1">Outro CTA Badge / URL</span>
+              <span className="text-[10px] text-studio-muted uppercase font-medium block mb-1">Outro CTA Badge / URL</span>
               <input
                 type="text"
                 value={outroCtaText || ''}
                 onChange={(e) => onChangeOutroCtaText?.(e.target.value)}
                 placeholder="Outro CTA text"
-                className="w-full bg-black/50 border border-white/15 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 placeholder-gray-500 focus:outline-none"
+                className="ss-input w-full px-2.5 py-1.5 text-xs placeholder:text-studio-meta"
               />
             </div>
 
-            <p className="text-[10px] text-gray-400 leading-tight">
+            <p className="text-[10px] text-studio-muted leading-tight">
               Final 1.5s: recording zooms out in 3D while the CTA card and glowing button animate in.
             </p>
           </div>

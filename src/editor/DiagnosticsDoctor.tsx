@@ -290,66 +290,67 @@ export function DiagnosticsDoctor({
   const keyCount = telemetry?.keystrokes?.length || 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md animate-fade-in select-none">
-      <div className="w-[680px] max-h-[85vh] flex flex-col bg-[#14161D] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-[#08090D]/80 backdrop-blur-md animate-fade-in select-none">
+      <div className="ss-panel border w-[680px] max-h-[85vh] flex flex-col rounded-2xl shadow-ss-panel overflow-hidden ss-enter">
         {/* Header */}
-        <div className="h-16 px-6 bg-white/[0.02] border-b border-white/10 flex items-center justify-between">
+        <div className="h-16 px-6 bg-white/[0.02] border-b border-studio-border flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-purple-600/20 border border-purple-500/30 flex items-center justify-center text-purple-400">
-              <Activity className="w-5 h-5 animate-pulse" />
+            <div className="ss-brand-tile w-9 h-9 rounded-xl flex items-center justify-center text-[#93C5FD]">
+              <Activity className="w-[18px] h-[18px]" strokeWidth={1.75} />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold text-white tracking-wide">Flight Doctor & Live Diagnostics</h2>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                <h2 className="ss-title-tight text-sm font-semibold text-studio-text">Flight Doctor & Live Diagnostics</h2>
+                <span className="ss-status-badge bg-[#34D399]/12 text-studio-success border-[#34D399]/30">
                   REAL-TIME
                 </span>
               </div>
-              <p className="text-xs text-gray-400">Self-healing pipeline verification & telemetry audit</p>
+              <p className="text-xs text-studio-muted">Self-healing pipeline verification & telemetry audit</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+            className="ss-btn w-8 h-8 p-0 text-studio-muted hover:text-studio-text hover:bg-studio-cardHover"
+            aria-label="Close Diagnostics"
           >
-            <X className="w-4 h-4" />
+            <X className="w-4 h-4" strokeWidth={1.75} />
           </button>
         </div>
 
         {/* Live Subsystem Telemetry Cards */}
         <div className="p-6 overflow-y-auto space-y-6">
           <div className="grid grid-cols-4 gap-3">
-            <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5 flex flex-col">
-              <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wider">Mouse Points</span>
-              <span className="text-xl font-bold text-white mt-1 font-mono">{mouseCount}</span>
-              <span className="text-[10px] text-purple-400 mt-1 flex items-center gap-1">
-                <MousePointer className="w-3 h-3" /> 120Hz Spline
+            <div className="ss-card p-3 flex flex-col">
+              <span className="ss-micro-label">Mouse Points</span>
+              <span className="ss-num text-xl font-semibold text-studio-text mt-1">{mouseCount}</span>
+              <span className="ss-num text-[10px] text-[#818CF8] mt-1 flex items-center gap-1">
+                <MousePointer className="w-3 h-3" strokeWidth={1.75} /> 120Hz Spline
               </span>
             </div>
 
-            <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5 flex flex-col">
-              <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wider">DOM Clicks</span>
-              <span className="text-xl font-bold text-white mt-1 font-mono">{clickCount}</span>
-              <span className="text-[10px] text-emerald-400 mt-1 flex items-center gap-1">
-                <CheckCircle2 className="w-3 h-3" /> Auto-Zoom Ready
+            <div className="ss-card p-3 flex flex-col">
+              <span className="ss-micro-label">DOM Clicks</span>
+              <span className="ss-num text-xl font-semibold text-studio-text mt-1">{clickCount}</span>
+              <span className="text-[10px] text-studio-success mt-1 flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" strokeWidth={1.75} /> Auto-Zoom Ready
               </span>
             </div>
 
-            <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5 flex flex-col">
-              <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wider">Keystrokes</span>
-              <span className="text-xl font-bold text-white mt-1 font-mono">{keyCount}</span>
-              <span className="text-[10px] text-indigo-400 mt-1 flex items-center gap-1">
-                <Layers className="w-3 h-3" /> 3D HUD Sync
+            <div className="ss-card p-3 flex flex-col">
+              <span className="ss-micro-label">Keystrokes</span>
+              <span className="ss-num text-xl font-semibold text-studio-text mt-1">{keyCount}</span>
+              <span className="ss-num text-[10px] text-[#818CF8] mt-1 flex items-center gap-1">
+                <Layers className="w-3 h-3" strokeWidth={1.75} /> 3D HUD Sync
               </span>
             </div>
 
-            <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5 flex flex-col">
-              <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wider">Video Source</span>
-              <span className="text-xl font-bold text-white mt-1 font-mono">
+            <div className="ss-card p-3 flex flex-col">
+              <span className="ss-micro-label">Video Source</span>
+              <span className="ss-num text-xl font-semibold text-studio-text mt-1">
                 {videoBlob ? `${(videoBlob.size / (1024 * 1024)).toFixed(1)}MB` : 'Demo'}
               </span>
-              <span className="text-[10px] text-pink-400 mt-1 flex items-center gap-1">
-                <Cpu className="w-3 h-3" /> {(durationMs / 1000).toFixed(1)}s Length
+              <span className="ss-num text-[10px] text-[#A5B4FC] mt-1 flex items-center gap-1">
+                <Cpu className="w-3 h-3" strokeWidth={1.75} /> {(durationMs / 1000).toFixed(1)}s Length
               </span>
             </div>
           </div>
@@ -357,15 +358,15 @@ export function DiagnosticsDoctor({
           {/* Test Execution List */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
+              <h3 className="ss-section-title">
                 Automated Subsystem Health Checks
               </h3>
               <button
                 onClick={runAllDiagnostics}
                 disabled={isRunningAll}
-                className="px-3 py-1 rounded-lg bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                className="ss-btn ss-chip ss-chip-active px-3 py-1.5 text-xs font-medium"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${isRunningAll ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-3.5 h-3.5 ${isRunningAll ? 'animate-spin' : ''}`} strokeWidth={1.75} />
                 Re-Run Health Checks
               </button>
             </div>
@@ -374,32 +375,32 @@ export function DiagnosticsDoctor({
               {tests.map((test) => (
                 <div
                   key={test.id}
-                  className="p-3.5 rounded-xl bg-white/[0.02] border border-white/5 hover:border-white/10 transition-colors flex items-center justify-between"
+                  className="ss-card p-3.5 flex items-center justify-between"
                 >
                   <div className="flex items-center gap-3">
-                    {test.status === 'pass' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
-                    {test.status === 'warn' && <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />}
-                    {test.status === 'fail' && <XCircle className="w-4 h-4 text-rose-400 shrink-0" />}
+                    {test.status === 'pass' && <CheckCircle2 className="w-4 h-4 text-studio-success shrink-0" strokeWidth={1.75} />}
+                    {test.status === 'warn' && <AlertTriangle className="w-4 h-4 text-[#FBBF24] shrink-0" strokeWidth={1.75} />}
+                    {test.status === 'fail' && <XCircle className="w-4 h-4 text-studio-live shrink-0" strokeWidth={1.75} />}
                     {test.status === 'running' && (
-                      <RefreshCw className="w-4 h-4 text-purple-400 animate-spin shrink-0" />
+                      <RefreshCw className="w-4 h-4 text-[#818CF8] animate-spin shrink-0" strokeWidth={1.75} />
                     )}
                     {test.status === 'idle' && (
-                      <div className="w-4 h-4 rounded-full border border-gray-600 shrink-0" />
+                      <div className="w-4 h-4 rounded-full border border-studio-border shrink-0" />
                     )}
 
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs font-medium text-white">{test.name}</span>
-                        <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-white/5 text-gray-400">
+                        <span className="text-xs font-medium text-studio-text">{test.name}</span>
+                        <span className="ss-num px-1.5 py-0.5 rounded text-[9px] font-medium bg-white/[0.04] border border-studio-border text-studio-muted">
                           {test.category}
                         </span>
                       </div>
-                      <p className="text-[11px] text-gray-400 mt-0.5">{test.message}</p>
+                      <p className="text-[11px] text-studio-muted mt-0.5">{test.message}</p>
                     </div>
                   </div>
 
                   {test.latencyMs !== undefined && (
-                    <span className="text-xs font-mono text-gray-400 shrink-0">{test.latencyMs}ms</span>
+                    <span className="ss-num text-xs text-studio-muted shrink-0">{test.latencyMs}ms</span>
                   )}
                 </div>
               ))}
@@ -408,9 +409,9 @@ export function DiagnosticsDoctor({
         </div>
 
         {/* Footer */}
-        <div className="h-14 px-6 bg-white/[0.02] border-t border-white/10 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-xs text-gray-400">
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+        <div className="h-14 px-6 bg-white/[0.02] border-t border-studio-border flex items-center justify-between">
+          <div className="flex items-center gap-2 text-xs text-studio-muted">
+            <ShieldCheck className="w-4 h-4 text-studio-success" strokeWidth={1.75} />
             Zero errors in content scripts & encoding pipeline
           </div>
           <div className="flex items-center gap-2">
@@ -418,14 +419,14 @@ export function DiagnosticsDoctor({
               onClick={() => {
                 diagnosticChannel.recordFrameDrop('Flight Doctor simulated GPU hardware frame drop probe');
               }}
-              className="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-[11px] font-medium border border-amber-500/30 transition-colors"
+              className="ss-btn px-2.5 py-1.5 bg-[#FBBF24]/12 hover:bg-[#FBBF24]/22 text-[#FCD34D] text-[11px] font-medium border border-[#FBBF24]/30"
               title="Test the visual triage and recovery flow"
             >
               Simulate Drop
             </button>
             <button
               onClick={onClose}
-              className="px-4 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-white text-xs font-medium transition-colors"
+              className="ss-btn ss-btn-secondary px-4 py-1.5"
             >
               Close Diagnostics
             </button>

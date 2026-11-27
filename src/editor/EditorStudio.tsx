@@ -54,6 +54,7 @@ import { patchWebmBlobDuration } from '../engine/webm-fixer';
 import { ScreenCaptureEngine, shouldEnableCustomCursor } from '../engine/screen-recorder';
 import { diagnosticChannel, SystemDegradationEvent } from '../engine/diagnostic-channel';
 import { CanvasPreview } from './CanvasPreview';
+import { BrandMark } from './ui-primitives';
 import { MagneticTimeline } from './MagneticTimeline';
 import { VibePresetsPanel } from './VibePresetsPanel';
 import { DiagnosticsDoctor } from './DiagnosticsDoctor';
@@ -68,8 +69,6 @@ import {
   CircleDot,
   Loader2,
   CheckCircle2,
-  Play,
-  Pause,
   Activity,
   AlertTriangle,
   HardDrive,
@@ -2016,32 +2015,32 @@ export function EditorStudio() {
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#0B0C10] text-[#F3F4F6] font-sans overflow-hidden select-none">
+    <div className="ss-app flex flex-col h-screen w-screen text-studio-text font-sans overflow-hidden select-none">
       {/* Top Studio Header */}
-      <header className="h-14 bg-[#14161D] border-b border-white/10 px-5 flex items-center justify-between z-20">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-pink-500 flex items-center justify-center text-white shadow-lg shadow-purple-500/25">
-            <Video className="w-4 h-4" />
-          </div>
-          <div>
-            <h1 className="text-sm font-bold tracking-tight text-white flex items-center gap-2">
-              SmoothStudio <span className="text-[10px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full font-mono">v1.0 Pro</span>
+      <header className="ss-panel relative z-20 shrink-0 h-14 px-4 xl:px-5 flex items-center justify-between gap-3 border-b">
+        <div className="flex items-center gap-3 min-w-0 shrink-0">
+          <BrandMark size={32} />
+          <div className="min-w-0">
+            <h1 className="ss-title-tight text-[13px] font-semibold text-studio-text flex items-center gap-2">
+              SmoothStudio
+              <span className="ss-num text-[10px] px-1.5 py-0.5 rounded-md border border-[#60A5FA]/25 bg-[#60A5FA]/10 text-[#93C5FD]">v1.0 Pro</span>
             </h1>
-            <p className="text-[11px] text-gray-400">
-              {telemetry?.metadata.title || 'Cinematic 3D Video Studio'} • 60 FPS Canvas 2D
+            <p className="text-[11px] text-studio-muted flex items-center gap-2 min-w-0">
+              <span className="truncate max-w-[200px] xl:max-w-[260px]">{telemetry?.metadata.title || 'Cinematic 3D Video Studio'}</span>
+              <span className="ss-num text-[10px] text-studio-meta shrink-0">60 FPS · Canvas 2D</span>
             </p>
           </div>
         </div>
 
         {/* Live Recording Switcher */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 xl:gap-2 shrink-0">
           {isRecordingLive ? (
             <button
               id="stop-live-recording-top-btn"
               onClick={() => handleStopLiveRecording()}
-              className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-medium flex items-center gap-2 shadow-lg shadow-red-600/30 animate-pulse"
+              className="ss-btn ss-btn-danger px-3 py-2"
             >
-              <div className="w-2 h-2 rounded-sm bg-white" />
+              <span className="ss-live-dot w-2 h-2 rounded-full" />
               Stop Live Recording
             </button>
           ) : (
@@ -2049,76 +2048,78 @@ export function EditorStudio() {
               id="record-new-screen-top-btn"
               onClick={() => handleStartLiveRecording()}
               disabled={recordingPhase !== 'idle' || isExporting || isExportingGif || load.phase === 'loading'}
-              className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 text-xs font-medium flex items-center gap-1.5 border border-white/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="ss-btn ss-btn-secondary px-2.5 xl:px-3 py-2"
             >
-              <CircleDot className="w-3.5 h-3.5 text-red-400" />
+              <CircleDot className="w-4 h-4 text-[#FB7185]" strokeWidth={1.75} />
               {recordingPhase === 'starting' ? 'Starting…' : recordingPhase === 'stopping' ? 'Stopping…' : 'Record New Screen'}
             </button>
           )}
 
-          <button
-            onClick={() => setShowDoctor(true)}
-            className="px-3 py-1.5 rounded-lg bg-purple-600/10 hover:bg-purple-600/20 text-purple-300 text-xs font-medium flex items-center gap-1.5 border border-purple-500/20 transition-colors"
-            title="Flight Doctor & Live Diagnostics (Ctrl+Shift+D)"
-          >
-            <Activity className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
-            Flight Doctor
-          </button>
+          <div className="hidden xl:block">
+            <button
+              onClick={() => setShowDoctor(true)}
+              className="ss-btn ss-btn-secondary px-2.5 xl:px-3 py-2"
+              title="Flight Doctor & Live Diagnostics (Ctrl+Shift+D)"
+            >
+              <Activity className="w-4 h-4 text-[#818CF8]" strokeWidth={1.75} />
+              Flight Doctor
+            </button>
+          </div>
 
           {/* Active Triage Recovery & Fail-Over Indicators */}
           {activeDegradation && (
             <button
               onClick={() => setActiveDegradation((prev) => prev || diagnosticChannel.getActiveDegradations()[0] || null)}
-              className="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-medium flex items-center gap-1.5 border border-amber-500/40 animate-pulse transition-all shadow-md shadow-amber-500/10"
+              className="ss-btn px-3 py-2 border border-[#FBBF24]/40 bg-[#FBBF24]/10 text-[#FCD34D] hover:bg-[#FBBF24]/20"
               title="System degradation detected. Click to inspect recovery triage panel."
             >
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+              <AlertTriangle className="w-4 h-4 text-[#FBBF24]" strokeWidth={1.75} />
               Triage Recovery
             </button>
           )}
 
           {storageMode === 'ram' && (
             <span
-              className="px-2 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[11px] font-mono flex items-center gap-1"
+              className="ss-status-badge text-[#34D399] border-[#34D399]/30 bg-[#34D399]/10"
               title="RAM Fallback Buffer active (bypassing disk OPFS)"
             >
-              <HardDrive className="w-3 h-3 text-emerald-400" />
+              <HardDrive className="w-3 h-3" strokeWidth={1.75} />
               RAM Buffer
             </span>
           )}
 
           {encoderStreamMode === 'client-webm' && (
             <span
-              className="px-2 py-1 rounded-lg bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[11px] font-mono flex items-center gap-1"
+              className="ss-status-badge text-[#38BDF8] border-[#38BDF8]/30 bg-[#38BDF8]/10"
               title="Client-side WebM active (GPU hardware encoder bypassed)"
             >
-              <Cpu className="w-3 h-3 text-sky-400" />
+              <Cpu className="w-3 h-3" strokeWidth={1.75} />
               WebM Stream
             </span>
           )}
         </div>
 
-        {/* 3-in-1 Export Multi-Format Action Buttons */}
-        <div className="flex items-center gap-2">
+        {/* Multi-format export actions — secondary stays calm, MP4 anchors hierarchy */}
+        <div className="flex items-center gap-1.5 xl:gap-2 min-w-0 shrink-0">
           {/* SOP Markdown Guide & Copy */}
-          <div className="flex items-center rounded-xl bg-white/5 border border-white/10 overflow-hidden">
+          <div className="hidden xl:flex items-center rounded-xl bg-studio-card border border-studio-border overflow-hidden">
             <button
               onClick={handleExportSopGuide}
-              className="px-3 py-1.5 hover:bg-white/10 text-gray-200 text-xs font-medium flex items-center gap-1.5 transition-colors"
+              className="ss-btn px-2.5 py-2 rounded-none border-0 hover:bg-studio-cardHover"
               title="Download Step-by-Step Markdown SOP guide with screenshots"
             >
-              <FileText className="w-3.5 h-3.5 text-emerald-400" />
+              <FileText className="w-4 h-4 text-studio-success" strokeWidth={1.75} />
               SOP Guide (.md)
             </button>
-            <div className="w-[1px] h-4 bg-white/15" />
+            <div className="w-[1px] h-4 bg-white/[0.08]" />
             <button
               onClick={handleCopySopGuide}
-              className="px-2.5 py-1.5 hover:bg-white/10 text-gray-300 text-xs font-medium flex items-center gap-1 transition-colors"
+              className="ss-btn px-2.5 py-2 rounded-none border-0 hover:bg-studio-cardHover text-studio-muted hover:text-studio-text"
               title="Copy SOP markdown formatted for Notion & Obsidian"
             >
               {copiedSop ? (
-                <span className="text-emerald-400 font-semibold flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" /> Copied!
+                <span className="text-studio-success font-semibold flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" strokeWidth={1.75} /> Copied!
                 </span>
               ) : (
                 'Copy'
@@ -2127,133 +2128,143 @@ export function EditorStudio() {
           </div>
 
           {/* Interactive HTML Widget */}
-          <button
-            onClick={handleExportInteractiveWidget}
-            className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-gray-200 text-xs font-medium flex items-center gap-1.5 border border-white/10 transition-colors"
-            title="Export standalone HTML click-through walkthrough widget"
-          >
-            <MousePointerClick className="w-3.5 h-3.5 text-indigo-400" />
-            HTML Widget
-          </button>
+          <div className="hidden xl:block">
+            <button
+              onClick={handleExportInteractiveWidget}
+              className="ss-btn ss-btn-secondary px-2.5 xl:px-3 py-2"
+              title="Export standalone HTML click-through walkthrough widget"
+            >
+              <MousePointerClick className="w-4 h-4 text-[#818CF8]" strokeWidth={1.75} />
+              HTML Widget
+            </button>
+          </div>
 
           {/* Hardware GIF Exporter */}
+          <div className="hidden lg:block">
           <button
             onClick={handleExportGif}
             disabled={isExportingGif || isExporting}
-            className="px-3.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-purple-200 text-xs font-medium flex items-center gap-1.5 border border-purple-500/30 transition-all disabled:opacity-50"
+            className="ss-btn ss-btn-secondary px-2.5 xl:px-3 py-2"
             title="Export animated lightweight GIF"
           >
             {isExportingGif ? (
               <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400" />
-                GIF {exportGifProgress}%
+                <Loader2 className="w-4 h-4 animate-spin text-[#818CF8]" strokeWidth={1.75} />
+                <span className="ss-num">GIF {exportGifProgress}%</span>
               </>
             ) : exportGifComplete ? (
               <>
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                <CheckCircle2 className="w-4 h-4 text-studio-success" strokeWidth={1.75} />
                 Exported GIF!
               </>
             ) : (
               <>
-                <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                <Sparkles className="w-4 h-4 text-[#818CF8]" strokeWidth={1.75} />
                 Export GIF
               </>
             )}
           </button>
+          </div>
 
           {/* GIF Quality Preset Selector */}
+          <div className="hidden 2xl:block">
           <select
             id="gif-preset-select"
             value={gifPreset}
             onChange={(e) => setGifPreset(e.target.value as GifQualityPreset)}
             disabled={isExporting || isExportingGif}
-            className="px-2 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-purple-200 text-xs font-medium border border-purple-500/30 focus:outline-none focus:border-purple-400 cursor-pointer disabled:opacity-50"
+            className="ss-select ss-num px-2.5 py-2 text-xs cursor-pointer disabled:opacity-50"
             title="GIF Quality Preset"
           >
-            <option value="compact" className="bg-[#14161D] text-white">
+            <option value="compact" className="bg-studio-panel text-studio-text">
               GIF: Compact (&lt;5 MB)
             </option>
-            <option value="web" className="bg-[#14161D] text-white">
+            <option value="web" className="bg-studio-panel text-studio-text">
               GIF: Web (720p / 15fps)
             </option>
-            <option value="high" className="bg-[#14161D] text-white">
+            <option value="high" className="bg-studio-panel text-studio-text">
               GIF: High (840px / 20fps)
             </option>
           </select>
+          </div>
 
           {/* Resolution Selector Dropdown with Honest Labels */}
+          <div className="hidden xl:block">
           <select
             id="export-resolution-select"
             value={exportResPreset}
             onChange={(e) => setExportResPreset(e.target.value as any)}
             disabled={isExporting || isExportingGif}
-            className="px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-gray-200 text-xs font-medium border border-white/10 focus:outline-none focus:border-purple-500 cursor-pointer disabled:opacity-50"
+            className="ss-select ss-num px-2.5 py-2 text-xs cursor-pointer disabled:opacity-50"
             title="Export Resolution"
           >
-            <option value="source" className="bg-[#14161D] text-white">
+            <option value="source" className="bg-studio-panel text-studio-text">
               {sourceResLabel} (Source Default)
             </option>
-            <option value="1080p" className="bg-[#14161D] text-white">
+            <option value="1080p" className="bg-studio-panel text-studio-text">
               1080p {1920 > sourceWidth ? `(Upscaled from ${sourceResLabel})` : ''}
             </option>
-            <option value="4k" className="bg-[#14161D] text-white">
+            <option value="4k" className="bg-studio-panel text-studio-text">
               4K {3840 > sourceWidth ? `(Upscaled from ${sourceResLabel})` : ''}
             </option>
-            <option value="720p" className="bg-[#14161D] text-white">
+            <option value="720p" className="bg-studio-panel text-studio-text">
               720p {1280 > sourceWidth ? `(Upscaled from ${sourceResLabel})` : ''}
             </option>
           </select>
+          </div>
 
           {(isExporting || isExportingGif) && (
             <button
               id="cancel-export-btn"
               onClick={handleCancelExport}
-              className="px-3.5 py-1.5 rounded-xl bg-red-500/15 hover:bg-red-500/25 text-red-200 text-xs font-medium flex items-center gap-1.5 border border-red-500/40 transition-colors"
+              className="ss-btn ss-btn-danger px-3 py-2"
               title="Cancel the running export"
             >
-              <XCircle className="w-3.5 h-3.5" />
+              <XCircle className="w-4 h-4" strokeWidth={1.75} />
               Cancel export
             </button>
           )}
 
-          {/* Hardware MP4 Exporter */}
+          {/* Hardware MP4 Exporter — primary CTA */}
           <button
             id="export-mp4-btn"
             onClick={handleExportMp4}
             disabled={isExporting || isExportingGif}
-            className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-medium flex items-center gap-2 shadow-lg shadow-purple-600/30 transition-all disabled:opacity-50"
+            className="ss-btn ss-btn-primary px-3.5 xl:px-4 py-2"
           >
             {isExporting ? (
               <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                Encoding {exportProgress}%
+                <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.75} />
+                <span className="ss-num">Encoding {exportProgress}%</span>
               </>
             ) : exportComplete ? (
               <>
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                <CheckCircle2 className="w-4 h-4 text-white" strokeWidth={1.75} />
                 Exported MP4!
               </>
             ) : (
               <>
-                <Download className="w-3.5 h-3.5" />
-                {isUpscaled
-                  ? `Export ${targetResLabel}/60fps (Upscaled from ${sourceResLabel})`
-                  : `Export ${targetResLabel}/60fps MP4`}
+                <Download className="w-4 h-4" strokeWidth={1.75} />
+                <span className="ss-num font-sans">
+                  {isUpscaled
+                    ? `Export ${targetResLabel}/60fps (Upscaled from ${sourceResLabel})`
+                    : `Export ${targetResLabel}/60fps MP4`}
+                </span>
               </>
             )}
           </button>
         </div>
       </header>
       {micWarning && (
-        <div id="mic-warning-banner" className="bg-amber-500/20 border-b border-amber-500/30 px-5 py-2 flex items-center justify-between text-xs text-amber-200 z-30 shrink-0">
+        <div id="mic-warning-banner" className="relative z-30 shrink-0 bg-[#FBBF24]/10 border-b border-[#FBBF24]/25 px-5 py-2 flex items-center justify-between text-xs text-[#FDE68A]">
           <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <AlertTriangle className="w-4 h-4 text-[#FBBF24] shrink-0" strokeWidth={1.75} />
             <span><strong>Microphone not recorded:</strong> {micWarning}</span>
           </div>
           <button
             id="dismiss-mic-warning-btn"
             onClick={() => setMicWarning(null)}
-            className="text-amber-400 hover:text-white px-2 py-0.5 rounded transition-colors text-xs font-semibold cursor-pointer"
+            className="ss-btn px-2 py-1 text-[#FBBF24] hover:text-studio-text"
           >
             Dismiss
           </button>
@@ -2261,7 +2272,7 @@ export function EditorStudio() {
       )}
 
       {/* Main Studio Body: Sidebar + Center Canvas */}
-      <div className="relative flex flex-1 overflow-hidden">
+      <div className="relative z-10 flex flex-1 overflow-hidden">
         {/* Left Vibe Presets & Controls */}
         <VibePresetsPanel
           currentPreset={preset}
@@ -2385,93 +2396,107 @@ export function EditorStudio() {
 
         {/* Record Prompt Dialog Overlay */}
         {showRecordPrompt && recordingPhase === 'idle' && (
-          <div className="absolute inset-0 z-40 bg-[#0B0C10]/95 flex flex-col items-center justify-center p-6 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center mb-5 text-purple-400">
-              <Video className="w-8 h-8" />
+          <div className="ss-app absolute inset-0 z-40 bg-[#08090D]/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center">
+            <div className="ss-panel ss-enter border rounded-2xl px-8 py-7 max-w-md w-full shadow-ss-panel flex flex-col items-center">
+              <div className="ss-brand-tile w-14 h-14 rounded-2xl flex items-center justify-center mb-5 text-[#93C5FD]">
+                <Video className="w-7 h-7" strokeWidth={1.75} />
+              </div>
+              <h2 className="ss-title-tight text-xl font-semibold text-studio-text mb-2">Ready to Record Screen</h2>
+              <p className="text-sm text-studio-muted mb-6 leading-relaxed">
+                SmoothStudio is ready to capture high-definition 60 FPS video with 120 Hz DOM telemetry and cursor smoothing.
+              </p>
+              <button
+                id="start-capture-prompt-btn"
+                onClick={() => {
+                  setShowRecordPrompt(false);
+                  handleStartLiveRecording(recordTargetTabId, recordIncludeMic);
+                }}
+                className="ss-btn ss-btn-primary px-6 py-3 text-sm font-semibold cursor-pointer"
+              >
+                <CircleDot className="w-[18px] h-[18px] text-white" strokeWidth={1.75} />
+                Select Screen / Tab to Record
+              </button>
             </div>
-            <h2 className="text-xl font-bold text-white mb-2">Ready to Record Screen</h2>
-            <p className="text-sm text-gray-400 max-w-md mb-6">
-              SmoothStudio is ready to capture high-definition 60 FPS video with 120 Hz DOM telemetry and cursor smoothing.
-            </p>
-            <button
-              id="start-capture-prompt-btn"
-              onClick={() => {
-                setShowRecordPrompt(false);
-                handleStartLiveRecording(recordTargetTabId, recordIncludeMic);
-              }}
-              className="px-6 py-3 rounded-xl bg-gradient-to-r from-red-600 to-purple-600 hover:from-red-500 hover:to-purple-500 text-white font-semibold text-sm flex items-center gap-2.5 shadow-xl shadow-red-600/30 transition-all cursor-pointer"
-            >
-              <CircleDot className="w-5 h-5 text-white animate-pulse" />
-              Select Screen / Tab to Record
-            </button>
           </div>
         )}
 
         {/* Empty State Overlay when No Recording Exists */}
         {hasNoRecording && !videoElement && recordingPhase === 'idle' && !showRecordPrompt && load.phase !== 'loading' && (
-          <div className="absolute inset-0 z-30 bg-[#0B0C10]/95 flex flex-col items-center justify-center p-6 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-center mb-5 text-red-400">
-              <AlertTriangle className="w-8 h-8" />
+          <div className="ss-app absolute inset-0 z-30 bg-[#08090D]/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center">
+            <div className="ss-panel ss-enter border rounded-2xl px-8 py-7 max-w-md w-full shadow-ss-panel flex flex-col items-center">
+              <div className="ss-brand-tile w-14 h-14 rounded-2xl flex items-center justify-center mb-5 text-[#93C5FD]">
+                <CircleDot className="w-7 h-7" strokeWidth={1.75} />
+              </div>
+              <h2 className="ss-title-tight text-xl font-semibold text-studio-text mb-2">No Screen Recording Found</h2>
+              <p className="text-sm text-studio-muted mb-6 leading-relaxed">
+                No recording was found in local storage. Start a new recording session to generate cinematic videos.
+              </p>
+              <button
+                id="record-new-screen-empty-btn"
+                onClick={() => handleStartLiveRecording(undefined, true)}
+                className="ss-btn ss-btn-primary px-6 py-3 text-sm font-semibold cursor-pointer"
+              >
+                <CircleDot className="w-[18px] h-[18px] text-white" strokeWidth={1.75} />
+                Record New Screen
+              </button>
             </div>
-            <h2 className="text-xl font-bold text-white mb-2">No Screen Recording Found</h2>
-            <p className="text-sm text-gray-400 max-w-md mb-6">
-              No recording was found in local storage. Start a new recording session to generate cinematic videos.
-            </p>
-            <button
-              id="record-new-screen-empty-btn"
-              onClick={() => handleStartLiveRecording(undefined, true)}
-              className="px-6 py-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold text-sm flex items-center gap-2 shadow-lg shadow-purple-600/30 transition-all cursor-pointer"
-            >
-              <CircleDot className="w-5 h-5 text-red-400" />
-              Record New Screen
-            </button>
           </div>
         )}
 
         {/* Loading: nothing is shown or playable until the recording is fully in sync */}
         {load.phase === 'loading' && (
           <div
-            className="absolute inset-0 z-40 bg-[#0B0C10]/95 flex flex-col items-center justify-center p-6 text-center"
+            className="ss-app absolute inset-0 z-40 bg-[#08090D]/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center"
             role="status"
             aria-live="polite"
           >
-            <div className="w-10 h-10 rounded-full border-2 border-purple-500/30 border-t-purple-400 animate-spin mb-5" />
-            <h2 className="text-lg font-semibold text-white mb-4">Preparing your recording…</h2>
-            <ol className="text-left space-y-1.5 text-sm">
-              {LOAD_STEPS.map((item, index) => {
-                const current = LOAD_STEPS.findIndex((s) => s.step === load.step);
-                const status = index < current ? 'done' : index === current ? 'active' : 'todo';
-                return (
-                  <li
-                    key={item.step}
-                    className={`flex items-center gap-2 ${
-                      status === 'done' ? 'text-gray-400' : status === 'active' ? 'text-white font-medium' : 'text-gray-600'
-                    }`}
-                  >
-                    <span className={`w-4 text-center ${status === 'done' ? 'text-emerald-400' : status === 'active' ? 'text-purple-300' : ''}`}>
-                      {status === 'done' ? '✓' : status === 'active' ? '●' : '○'}
-                    </span>
-                    {item.label}
-                  </li>
-                );
-              })}
-            </ol>
+            <div className="ss-panel ss-enter border rounded-2xl px-8 py-7 max-w-sm w-full shadow-ss-panel flex flex-col items-center">
+              <div className="w-10 h-10 rounded-full border-2 border-[#818CF8]/25 border-t-[#60A5FA] animate-spin mb-5" />
+              <h2 className="ss-title-tight text-lg font-semibold text-studio-text mb-4">Preparing your recording…</h2>
+              <ol className="text-left space-y-2 text-sm w-full">
+                {LOAD_STEPS.map((item, index) => {
+                  const current = LOAD_STEPS.findIndex((s) => s.step === load.step);
+                  const status = index < current ? 'done' : index === current ? 'active' : 'todo';
+                  return (
+                    <li
+                      key={item.step}
+                      className={`flex items-center gap-2.5 ${
+                        status === 'done' ? 'text-studio-muted' : status === 'active' ? 'text-studio-text font-medium' : 'text-studio-meta'
+                      }`}
+                    >
+                      <span className={`ss-num w-4 text-center flex items-center justify-center ${status === 'done' ? 'text-studio-success' : status === 'active' ? 'text-[#93C5FD]' : ''}`}>
+                        {status === 'done' ? (
+                          <CheckCircle2 className="w-3.5 h-3.5" strokeWidth={1.75} />
+                        ) : status === 'active' ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={1.75} />
+                        ) : (
+                          '○'
+                        )}
+                      </span>
+                      {item.label}
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
           </div>
         )}
 
         {load.phase === 'failed' && !videoElement && (
-          <div className="absolute inset-0 z-40 bg-[#0B0C10]/95 flex flex-col items-center justify-center p-6 text-center" role="alert">
-            <div className="w-14 h-14 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-center mb-4 text-red-400">
-              <AlertTriangle className="w-7 h-7" />
+          <div className="ss-app absolute inset-0 z-40 bg-[#08090D]/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center" role="alert">
+            <div className="ss-panel ss-enter border border-[#FB7185]/30 rounded-2xl px-8 py-7 max-w-md w-full shadow-ss-panel flex flex-col items-center">
+              <div className="w-14 h-14 rounded-2xl bg-[#FB7185]/12 border border-[#FB7185]/35 flex items-center justify-center mb-4 text-[#FB7185]">
+                <AlertTriangle className="w-7 h-7" strokeWidth={1.75} />
+              </div>
+              <h2 className="ss-title-tight text-lg font-semibold text-studio-text mb-2">The recording could not be loaded</h2>
+              <p className="text-sm text-studio-muted mb-5 leading-relaxed">{load.message}</p>
+              <button
+                onClick={() => { dispatchLoad({ type: 'reset' }); setHasNoRecording(true); }}
+                className="ss-btn ss-btn-secondary px-5 py-2 text-sm"
+              >
+                Dismiss
+              </button>
             </div>
-            <h2 className="text-lg font-semibold text-white mb-2">The recording could not be loaded</h2>
-            <p className="text-sm text-gray-400 max-w-md mb-5">{load.message}</p>
-            <button
-              onClick={() => { dispatchLoad({ type: 'reset' }); setHasNoRecording(true); }}
-              className="px-5 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white text-sm font-medium transition-colors"
-            >
-              Dismiss
-            </button>
           </div>
         )}
       </div>

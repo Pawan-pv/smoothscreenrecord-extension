@@ -65,7 +65,7 @@ export function DegradationTriagePanel({
 
         <button
           onClick={onDismiss}
-          className="p-1 rounded-lg hover:bg-studio-cardHover text-studio-muted hover:text-studio-text transition-colors"
+          className="ss-btn p-1.5 text-studio-muted hover:text-studio-text hover:bg-studio-cardHover"
           title="Dismiss warning"
           aria-label="Dismiss warning"
         >
@@ -127,7 +127,7 @@ export function DegradationTriagePanel({
 
       {/* Safe Fail-over Paths Action Group */}
       <div className="space-y-2 pt-1 border-t border-studio-border">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-studio-muted block">
+        <span className="ss-micro-label block">
           Safe Fail-Over Recovery Paths
         </span>
 
@@ -201,7 +201,7 @@ export function DegradationTriagePanel({
         {onOpenFlightDoctor ? (
           <button
             onClick={onOpenFlightDoctor}
-            className="text-[#818CF8] hover:text-[#A5B4FC] flex items-center gap-1 underline-offset-2 hover:underline transition-colors"
+            className="ss-btn p-0 text-[#818CF8] hover:text-[#A5B4FC] underline-offset-2 hover:underline"
           >
             <ShieldAlert className="w-3.5 h-3.5" strokeWidth={1.75} />
             Run Flight Doctor Probes

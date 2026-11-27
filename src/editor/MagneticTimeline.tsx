@@ -5,7 +5,7 @@ import { DEFAULT_TRANSITION_MS, ZOOM_SPEEDS } from '../engine/camera-path';
 import { AUTO_ZOOM_DEPTHS } from '../engine/spring-physics';
 import type { AutoZoomSettings } from './EditorStudio';
 import { StudioSlider } from './ui-primitives';
-import { Scissors, Plus, Trash2, Eye, Box, Sliders, Subtitles, RotateCcw, Sparkles, ZoomIn } from 'lucide-react';
+import { Scissors, Plus, Trash2, Eye, Box, Sliders, Subtitles, RotateCcw, Sparkles, ZoomIn, Play, Pause } from 'lucide-react';
 
 interface MagneticTimelineProps {
   durationMs: number;
@@ -225,27 +225,28 @@ export function MagneticTimeline({
   return (
     <div className="ss-panel border-t p-3 select-none">
       {/* Timeline Controls & Quick Actions */}
-      <div className="flex flex-wrap items-center gap-y-2 justify-between pb-2 mb-2 border-b border-studio-border text-xs">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-y-2 justify-between pb-2.5 mb-2.5 border-b border-studio-border text-xs">
+        <div className="flex flex-wrap items-center gap-2.5">
           <button
             onClick={onTogglePlay}
-            className="ss-btn ss-btn-primary w-8 h-8 p-0"
+            className="ss-btn ss-btn-primary w-8 h-8 p-0 rounded-lg"
             title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
+            aria-label={isPlaying ? 'Pause' : 'Play'}
           >
             {isPlaying ? (
-              <span className="font-bold text-xs">❚❚</span>
+              <Pause className="w-3.5 h-3.5" strokeWidth={1.75} />
             ) : (
-              <span className="font-bold text-xs ml-0.5">▶</span>
+              <Play className="w-3.5 h-3.5 ml-0.5" strokeWidth={1.75} />
             )}
           </button>
 
-          <span className="ss-num text-[#A5B4FC] font-medium text-xs">
+          <span className="ss-num text-[#A5B4FC] font-medium text-xs px-1">
             {(currentTimeMs / 1000).toFixed(2)}s / {(durationMs / 1000).toFixed(2)}s
           </span>
 
           <button
             onClick={onAddPillAtPlayhead}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#6366F1]/18 hover:bg-[#6366F1]/28 text-[#A5B4FC] border border-[#6366F1]/40 transition-colors"
+            className="ss-btn ss-chip ss-chip-active px-2.5 py-1.5 font-medium"
           >
             <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
             Add Zoom Pill
@@ -266,7 +267,7 @@ export function MagneticTimeline({
             <div className="flex items-center gap-1.5 text-[11px] text-[#CBD5E1]">
               <button
                 onClick={() => onChangeAutoZoom({ enabled: !autoZoom.enabled })}
-                className={`px-2 py-1 rounded-md border font-medium transition-colors ${
+                className={`ss-btn px-2.5 py-1.5 text-[11px] ${
                   autoZoom.enabled
                     ? 'ss-chip ss-chip-active text-studio-text'
                     : 'ss-chip'
@@ -279,7 +280,7 @@ export function MagneticTimeline({
                 value={String(autoZoom.depth)}
                 disabled={!autoZoom.enabled}
                 onChange={(e) => onChangeAutoZoom({ depth: parseFloat(e.target.value) })}
-                className="rounded bg-white/10 px-1 py-1 text-[11px] text-[#E2E8F0] focus:outline-none disabled:opacity-40"
+                className="ss-select ss-num px-2 py-1 text-[11px] text-[#E2E8F0] cursor-pointer disabled:opacity-40"
                 title="How deep every auto zoom goes"
               >
                 {AUTO_ZOOM_DEPTHS.map((d) => (
@@ -290,7 +291,7 @@ export function MagneticTimeline({
                 value={String(autoZoom.speedMs)}
                 disabled={!autoZoom.enabled}
                 onChange={(e) => onChangeAutoZoom({ speedMs: parseInt(e.target.value, 10) })}
-                className="rounded bg-white/10 px-1 py-1 text-[11px] text-[#E2E8F0] focus:outline-none disabled:opacity-40"
+                className="ss-select ss-num px-2 py-1 text-[11px] text-[#E2E8F0] cursor-pointer disabled:opacity-40"
                 title="How fast auto zooms zoom in, pan and zoom out"
               >
                 {ZOOM_SPEEDS.map((s) => (
@@ -312,7 +313,7 @@ export function MagneticTimeline({
           {showCaptions && onAddCaptionAtPlayhead && (
             <button
               onClick={onAddCaptionAtPlayhead}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#FBBF24]/15 hover:bg-[#FBBF24]/30 text-[#FCD34D] border border-[#FBBF24]/30 transition-colors"
+              className="ss-btn px-2.5 py-1.5 bg-[#FBBF24]/14 hover:bg-[#FBBF24]/24 text-[#FCD34D] border border-[#FBBF24]/30"
             >
               <Subtitles className="w-3.5 h-3.5" strokeWidth={1.75} />
               Add Caption Block
@@ -324,10 +325,10 @@ export function MagneticTimeline({
               {onToggleAutoCutSilences && (
                 <button
                   onClick={() => onToggleAutoCutSilences(!autoCutSilences)}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium transition-colors ${
+                  className={`ss-btn px-2.5 py-1.5 border text-xs ${
                     autoCutSilences
-                      ? 'bg-[#FBBF24]/15 hover:bg-[#FBBF24]/30 text-[#FCD34D] border-[#FBBF24]/40 shadow-sm shadow-amber-500/20'
-                      : 'bg-studio-card hover:bg-studio-cardHover text-studio-muted border-studio-border'
+                      ? 'bg-[#FBBF24]/15 hover:bg-[#FBBF24]/25 text-[#FCD34D] border-[#FBBF24]/40'
+                      : 'ss-btn-secondary text-studio-muted'
                   }`}
                   title="Toggle automatic silence skipping during playback & export"
                 >
@@ -338,10 +339,10 @@ export function MagneticTimeline({
 
               <button
                 onClick={onCutAllSilences}
-                className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#FB7185]/12 hover:bg-[#FB7185]/22 text-[#FDA4AF] border border-[#FB7185]/25 transition-colors"
+                className="ss-btn px-2.5 py-1.5 bg-[#FB7185]/12 hover:bg-[#FB7185]/22 text-[#FDA4AF] border border-[#FB7185]/25"
                 title="Mark all detected silences (> 1.2s) for cutting"
               >
-                Cut All ({silences.length})
+                <span className="ss-num">Cut All ({silences.length})</span>
               </button>
             </div>
           )}
@@ -350,7 +351,7 @@ export function MagneticTimeline({
             <button
               data-testid="reset-trim-btn"
               onClick={onResetTrim}
-              className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#FBBF24]/12 hover:bg-[#FBBF24]/25 text-[#FCD34D] border border-[#FBBF24]/30 transition-colors text-xs"
+              className="ss-btn px-2.5 py-1.5 bg-[#FBBF24]/12 hover:bg-[#FBBF24]/24 text-[#FCD34D] border border-[#FBBF24]/30"
               title="Reset Trim bounds to full recording"
             >
               <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.75} />
@@ -360,15 +361,15 @@ export function MagneticTimeline({
         </div>
 
         {selectedPill && (
-          <div className="ss-panel flex items-center gap-4 px-3 py-1.5 rounded-lg">
-            <span className="text-[11px] font-semibold text-[#A5B4FC] flex items-center gap-1">
-              <Sliders className="w-3 h-3" strokeWidth={1.75} />
-              Pill Inspector:
+          <div className="ss-panel border flex items-center gap-3.5 px-3 py-1.5 rounded-xl">
+            <span className="text-[11px] font-semibold text-[#A5B4FC] flex items-center gap-1.5">
+              <Sliders className="w-3.5 h-3.5" strokeWidth={1.75} />
+              Pill Inspector
             </span>
 
             {/* Zoom Slider */}
-            <label className="flex items-center gap-1.5 text-[11px]">
-              Zoom:
+            <label className="flex items-center gap-1.5 text-[11px] text-studio-muted">
+              <span>Zoom</span>
               <StudioSlider
                 min={1.2}
                 max={2.8}
@@ -381,7 +382,7 @@ export function MagneticTimeline({
               {selectedPill.targetScale > autoZoomScaleCap(sourcePixelWidth) + 1e-6 && (
                 <span
                   data-testid="sharpness-warning"
-                  className="rounded bg-[#FBBF24]/15 px-1.5 py-0.5 text-[10px] text-[#FDE68A]"
+                  className="ss-num rounded bg-[#FBBF24]/15 border border-[#FBBF24]/30 px-1.5 py-0.5 text-[10px] text-[#FDE68A]"
                   title={`This recording is ${sourcePixelWidth}px wide; zooming past ${autoZoomScaleCap(sourcePixelWidth)}x shows softness.`}
                 >
                   Soft above {autoZoomScaleCap(sourcePixelWidth)}x
@@ -390,13 +391,13 @@ export function MagneticTimeline({
             </label>
 
             {/* Transition speed: how long the camera takes to move into this zoom */}
-            <label className="flex items-center gap-1.5 text-[11px]">
-              Speed:
+            <label className="flex items-center gap-1.5 text-[11px] text-studio-muted">
+              <span>Speed</span>
               <select
                 data-testid="transition-speed"
                 value={String(selectedPill.transitionDuration ?? DEFAULT_TRANSITION_MS)}
                 onChange={(e) => onUpdatePill({ ...selectedPill, transitionDuration: parseInt(e.target.value, 10) })}
-                className="rounded bg-white/10 px-1 py-0.5 text-[11px] text-[#E2E8F0] focus:outline-none"
+                className="ss-select ss-num px-1.5 py-0.5 text-[11px] text-[#E2E8F0] cursor-pointer"
                 title="How fast the camera zooms in, pans and zooms out for this zoom"
               >
                 {!ZOOM_SPEEDS.some((s) => s.ms === (selectedPill.transitionDuration ?? DEFAULT_TRANSITION_MS)) && (
@@ -416,33 +417,34 @@ export function MagneticTimeline({
                 const nextTilt = selectedPill.tiltX !== 0 ? 0 : 4;
                 onUpdatePill({ ...selectedPill, tiltX: nextTilt, tiltY: nextTilt !== 0 ? -6 : 0 });
               }}
-              className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] transition-colors ${
+              className={`ss-btn px-2 py-1 rounded-lg text-[11px] ${
                 selectedPill.tiltX !== 0
                   ? 'ss-chip ss-chip-active text-studio-text'
-                  : 'bg-white/10 text-studio-muted hover:text-studio-text'
+                  : 'ss-chip'
               }`}
             >
-              <Box className="w-3 h-3" strokeWidth={1.75} />
+              <Box className="w-3.5 h-3.5" strokeWidth={1.75} />
               3D Tilt
             </button>
 
             {/* Spotlight Toggle */}
             <button
               onClick={() => onUpdatePill({ ...selectedPill, spotlight: !selectedPill.spotlight })}
-              className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] transition-colors ${
+              className={`ss-btn px-2 py-1 rounded-lg text-[11px] border ${
                 selectedPill.spotlight
-                  ? 'ss-chip border border-[#FBBF24]/40 bg-[#FBBF24]/18 text-studio-text'
-                  : 'bg-white/10 text-studio-muted hover:text-studio-text'
+                  ? 'border-[#FBBF24]/50 bg-[#FBBF24]/16 text-[#FDE68A]'
+                  : 'ss-chip'
               }`}
             >
-              <Eye className="w-3 h-3" strokeWidth={1.75} />
+              <Eye className="w-3.5 h-3.5" strokeWidth={1.75} />
               Spotlight Dimming
             </button>
 
             <button
               onClick={() => onDeletePill(selectedPill.id)}
-              className="p-1 hover:text-[#FB7185] transition-colors"
+              className="ss-btn p-1.5 text-studio-muted hover:text-studio-live hover:bg-[#FB7185]/12"
               title="Delete Zoom Pill"
+              aria-label="Delete Zoom Pill"
             >
               <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} />
             </button>
@@ -450,10 +452,10 @@ export function MagneticTimeline({
         )}
 
         {selectedCaption && (
-          <div className="flex items-center gap-3 bg-[#FBBF24]/10 px-3 py-1 rounded-lg border border-[#FBBF24]/20 text-[#CBD5E1]">
-            <span className="text-[11px] font-semibold text-[#FCD34D] flex items-center gap-1">
-              <Subtitles className="w-3 h-3" strokeWidth={1.75} />
-              Caption:
+          <div className="ss-panel border border-[#FBBF24]/25 flex items-center gap-3 px-3 py-1.5 rounded-xl text-[#CBD5E1]">
+            <span className="text-[11px] font-semibold text-[#FCD34D] flex items-center gap-1.5">
+              <Subtitles className="w-3.5 h-3.5" strokeWidth={1.75} />
+              Caption
             </span>
             <input
               type="text"
@@ -468,7 +470,7 @@ export function MagneticTimeline({
                 }));
                 onUpdateCaption?.({ ...selectedCaption, text: newText, words });
               }}
-              className="bg-black/50 border border-[#FBBF24]/30 rounded px-2 py-0.5 text-xs text-studio-text w-48 focus:outline-none focus:border-amber-400 font-sans"
+              className="ss-input px-2.5 py-1 text-xs text-studio-text w-48 font-sans"
               placeholder="Edit subtitle text..."
             />
             {onDeleteCaption && (
@@ -477,8 +479,9 @@ export function MagneticTimeline({
                   onDeleteCaption(selectedCaption.id);
                   setSelectedCaptionId(null);
                 }}
-                className="p-1 hover:text-[#FB7185] transition-colors"
+                className="ss-btn p-1.5 text-studio-muted hover:text-studio-live hover:bg-[#FB7185]/12"
                 title="Delete Caption Block"
+                aria-label="Delete Caption Block"
               >
                 <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} />
               </button>
@@ -653,19 +656,21 @@ export function MagneticTimeline({
                   setSelectedPillId(pill.id);
                   setSelectedCaptionId(null);
                 }}
-                className={`group absolute h-9 rounded-lg flex items-center justify-between px-2 cursor-pointer transition-all shadow-md ${
+                className={`group absolute h-9 rounded-lg flex items-center justify-between px-2.5 cursor-pointer transition-all duration-150 ease-ss ${
                   isSelected
-                    ? 'bg-gradient-to-r from-purple-600 to-indigo-600 border-2 border-white ring-2 ring-purple-500/40 z-10'
-                    : 'ss-chip border-[#818CF8]/25 bg-[#6366F1]/12 hover:bg-[#6366F1]/22 text-[#C7D2FE]'
+                    ? 'ss-pill-gradient border z-10'
+                    : 'ss-pill border-[#818CF8]/25 bg-[#6366F1]/12 hover:bg-[#6366F1]/22 text-[#C7D2FE]'
                 }`}
                 style={{ left: `${left}%`, width: `${width}%` }}
               >
                 {/* Left Drag Resize Handle */}
                 <div
                   onMouseDown={(e) => handleMouseDownResize(e, pill.id, 'start')}
-                  className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 bg-white/25 hover:bg-white/60 rounded-l-md transition-opacity"
+                  className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 flex items-center justify-center rounded-l-lg bg-white/15 hover:bg-white/35 transition-opacity duration-150"
                   title="Drag to adjust start time"
-                />
+                >
+                  <span className="w-0.5 h-3.5 rounded-full bg-white/80" />
+                </div>
 
                 <div className="flex items-center gap-1.5 min-w-0 truncate">
                   {showLabel ? (
@@ -679,16 +684,18 @@ export function MagneticTimeline({
                   ) : null}
                 </div>
 
-                <span className="text-[9px] ss-num text-[#C7D2FE]/80 ml-1 shrink-0">
+                <span className={`text-[9px] ss-num ml-1 shrink-0 ${isSelected ? 'text-white/90' : 'text-[#C7D2FE]/80'}`}>
                   {durationLabel}
                 </span>
 
                 {/* Right Drag Resize Handle */}
                 <div
                   onMouseDown={(e) => handleMouseDownResize(e, pill.id, 'end')}
-                  className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 bg-white/25 hover:bg-white/60 rounded-r-md transition-opacity"
+                  className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 flex items-center justify-center rounded-r-lg bg-white/15 hover:bg-white/35 transition-opacity duration-150"
                   title="Drag to adjust end time"
-                />
+                >
+                  <span className="w-0.5 h-3.5 rounded-full bg-white/80" />
+                </div>
               </div>
             );
           })}
@@ -699,7 +706,7 @@ export function MagneticTimeline({
           className="ss-playhead absolute top-0 bottom-0 w-[2px] pointer-events-none z-30"
           style={{ left: `${getPercent(currentTimeMs)}%` }}
         >
-          <div className="w-3 h-3 bg-white rounded-full -translate-x-[5px] -translate-y-1 shadow-lg border border-purple-600" />
+          <div className="ss-playhead-cap w-3 h-3 rounded-full -translate-x-[5px] -translate-y-1" />
         </div>
 
         {/* Shaded Trim Out Regions */}

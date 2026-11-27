@@ -39,7 +39,8 @@ export function ToastContainer({ toasts, onDismiss }: ToastContainerProps) {
         return (
           <div
             key={toast.id}
-            className={`ss-enter pointer-events-auto flex items-start gap-3 p-3.5 rounded-xl border shadow-ss-panel backdrop-blur-xl ${tone}`}
+            role="status"
+            className={`animate-slide-in pointer-events-auto flex items-start gap-3 p-3.5 rounded-xl border shadow-ss-panel backdrop-blur-xl ${tone}`}
           >
             <Icon className="w-4 h-4 shrink-0 mt-0.5" strokeWidth={1.75} />
             <div className="flex-1 pr-1">

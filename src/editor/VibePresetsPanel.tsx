@@ -311,71 +311,72 @@ export function VibePresetsPanel({
   ];
 
   return (
-    <aside className="ss-panel w-72 border-r p-4 flex flex-col gap-5 overflow-y-auto select-none">
+    <aside className="ss-panel w-72 border-r p-4 flex flex-col gap-4 overflow-y-auto select-none">
       {/* Aspect Ratio Switcher */}
       <div>
-        <label className="ss-section-title mb-2.5 block">
+        <label className="ss-section-title mb-2.5 flex items-center gap-1.5">
+          <Monitor className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
           Aspect Ratio
         </label>
 
         <div className="grid grid-cols-2 gap-1.5">
           <button
             onClick={() => onChangeAspectRatio('16:9')}
-            className={`flex items-center gap-2 p-2 rounded-lg text-xs transition-colors ${
+            className={`ss-btn justify-start px-2.5 py-2 rounded-lg text-xs ${
               aspectRatio === '16:9'
-                ? 'ss-chip-active text-studio-text font-medium'
+                ? 'ss-chip ss-chip-active text-studio-text font-medium'
                 : 'ss-chip hover:text-studio-text'
             }`}
           >
-            <Monitor className="w-3.5 h-3.5" strokeWidth={1.75} />
+            <Monitor className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
             16:9 (YouTube/X)
           </button>
 
           <button
             onClick={() => onChangeAspectRatio('9:16')}
-            className={`flex items-center gap-2 p-2 rounded-lg text-xs transition-colors ${
+            className={`ss-btn justify-start px-2.5 py-2 rounded-lg text-xs ${
               aspectRatio === '9:16'
-                ? 'ss-chip-active text-studio-text font-medium'
+                ? 'ss-chip ss-chip-active text-studio-text font-medium'
                 : 'ss-chip hover:text-studio-text'
             }`}
           >
-            <Smartphone className="w-3.5 h-3.5" strokeWidth={1.75} />
+            <Smartphone className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
             9:16 (Shorts/TikTok)
           </button>
 
           <button
             onClick={() => onChangeAspectRatio('1:1')}
-            className={`flex items-center gap-2 p-2 rounded-lg text-xs transition-colors ${
+            className={`ss-btn justify-start px-2.5 py-2 rounded-lg text-xs ${
               aspectRatio === '1:1'
-                ? 'ss-chip-active text-studio-text font-medium'
+                ? 'ss-chip ss-chip-active text-studio-text font-medium'
                 : 'ss-chip hover:text-studio-text'
             }`}
           >
-            <Square className="w-3.5 h-3.5" strokeWidth={1.75} />
+            <Square className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
             1:1 (LinkedIn)
           </button>
 
           <button
             onClick={() => onChangeAspectRatio('4:3')}
-            className={`flex items-center gap-2 p-2 rounded-lg text-xs transition-colors ${
+            className={`ss-btn justify-start px-2.5 py-2 rounded-lg text-xs ${
               aspectRatio === '4:3'
-                ? 'ss-chip-active text-studio-text font-medium'
+                ? 'ss-chip ss-chip-active text-studio-text font-medium'
                 : 'ss-chip hover:text-studio-text'
             }`}
           >
-            <Tv className="w-3.5 h-3.5" strokeWidth={1.75} />
+            <Tv className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
             4:3 (Classic)
           </button>
 
           <button
             onClick={() => onChangeAspectRatio('4:5')}
-            className={`flex items-center gap-2 p-2 rounded-lg text-xs transition-colors col-span-2 ${
+            className={`ss-btn justify-start px-2.5 py-2 rounded-lg text-xs col-span-2 ${
               aspectRatio === '4:5'
-                ? 'ss-chip-active text-studio-text font-medium'
+                ? 'ss-chip ss-chip-active text-studio-text font-medium'
                 : 'ss-chip hover:text-studio-text'
             }`}
           >
-            <Smartphone className="w-3.5 h-3.5" strokeWidth={1.75} />
+            <Smartphone className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
             4:5 (Instagram/LinkedIn)
           </button>
         </div>
@@ -383,14 +384,14 @@ export function VibePresetsPanel({
           <button
             type="button"
             onClick={() => onChangeFramingMode('fit')}
-            className={`p-1.5 rounded-lg text-[11px] border ${framingMode === 'fit' ? 'ss-chip ss-chip-active text-studio-text' : 'ss-chip'}`}
+            className={`ss-btn p-1.5 rounded-lg text-[11px] ${framingMode === 'fit' ? 'ss-chip ss-chip-active text-studio-text font-medium' : 'ss-chip'}`}
           >
             Fit
           </button>
           <button
             type="button"
             onClick={() => onChangeFramingMode('smart-fill')}
-            className={`p-1.5 rounded-lg text-[11px] border ${framingMode === 'smart-fill' ? 'ss-chip ss-chip-active text-studio-text' : 'ss-chip'}`}
+            className={`ss-btn p-1.5 rounded-lg text-[11px] ${framingMode === 'smart-fill' ? 'ss-chip ss-chip-active text-studio-text font-medium' : 'ss-chip'}`}
           >
             Smart Fill
           </button>
@@ -398,7 +399,7 @@ export function VibePresetsPanel({
       </div>
 
       {/* Vibe Presets */}
-      <div>
+      <div className="pt-3 border-t border-studio-border">
         <div className="flex items-center justify-between mb-2.5">
           <label className="ss-section-title flex items-center gap-1.5">
             <Palette className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
@@ -425,22 +426,22 @@ export function VibePresetsPanel({
                 <div className="flex items-center gap-2">
                   <span>{preset.name}</span>
                   {id === 'keynote-pro' && (
-                    <span className="ss-num text-[9px] px-1.5 py-0.5 rounded bg-[#38BDF8]/15 text-[#7DD3FC] ss-num">STUDIO</span>
+                    <span className="ss-num text-[9px] px-1.5 py-0.5 rounded bg-[#38BDF8]/15 text-[#7DD3FC]">STUDIO</span>
                   )}
                   {id === 'stripe-mesh' && (
-                    <span className="ss-num text-[9px] px-1.5 py-0.5 rounded bg-[#6366F1]/20 text-[#A5B4FC] ss-num">MESH</span>
+                    <span className="ss-num text-[9px] px-1.5 py-0.5 rounded bg-[#60A5FA]/18 text-[#93C5FD]">MESH</span>
                   )}
                   {id === 'linear-cosmic' && (
-                    <span className="ss-num text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-[#A5B4FC] ss-num">SPACE</span>
+                    <span className="ss-num text-[9px] px-1.5 py-0.5 rounded bg-[#818CF8]/18 text-[#A5B4FC]">SPACE</span>
                   )}
                 </div>
                 <div className="flex items-center gap-1">
                   <div
-                    className="w-3 h-3 rounded-full border border-white/20"
+                    className="w-3 h-3 rounded-full border border-white/25"
                     style={{ backgroundColor: preset.gradientColors[1] || preset.gradientColors[0] }}
                   />
                   <div
-                    className="w-3 h-3 rounded-full border border-white/20"
+                    className="w-3 h-3 rounded-full border border-white/25"
                     style={{ backgroundColor: preset.gradientColors[2] || preset.gradientColors[1] }}
                   />
                 </div>
@@ -455,20 +456,20 @@ export function VibePresetsPanel({
             onClick={handleMatchBrand}
             className="ss-btn ss-btn-primary w-full mt-2 py-2 px-3 text-xs"
           >
-            <Sparkles className="w-3.5 h-3.5 text-[#C7D2FE]" strokeWidth={1.75} />
+            <Sparkles className="w-3.5 h-3.5 text-white" strokeWidth={1.75} />
             Match Website Brand Colors
           </button>
         )}
       </div>
 
       {/* Advanced Backdrop Rendering Matrix Parameters */}
-      <div className="pt-2 border-t border-studio-border space-y-3">
+      <div className="pt-3 border-t border-studio-border space-y-3">
         <div className="flex items-center justify-between ss-section-title">
           <span className="flex items-center gap-1.5">
             <Layers className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
             Backdrop Matrix
           </span>
-          <span className="ss-num text-[#818CF8] text-[10px]">
+          <span className="ss-num text-[#93C5FD] text-[10px]">
             {backdropParams?.presetType === 'stripe-mesh'
               ? 'Mesh Flow'
               : backdropParams?.presetType === 'linear-cosmic'
@@ -490,9 +491,9 @@ export function VibePresetsPanel({
                 handleResetBackground();
               }
             }}
-            className={`p-1.5 rounded-lg border text-center transition-all ${
+            className={`ss-btn p-1.5 rounded-lg text-center ${
               (backdropParams?.presetType || currentPreset.backdrop?.presetType) === 'keynote-pro'
-                ? 'bg-[#38BDF8]/18 border-[#38BDF8] text-[#BAE6FD] font-medium'
+                ? 'ss-chip ss-chip-active text-studio-text font-medium'
                 : 'ss-chip'
             }`}
           >
@@ -509,7 +510,7 @@ export function VibePresetsPanel({
                 handleResetBackground();
               }
             }}
-            className={`p-1.5 rounded-lg border text-center transition-all ${
+            className={`ss-btn p-1.5 rounded-lg text-center ${
               (backdropParams?.presetType || currentPreset.backdrop?.presetType) === 'stripe-mesh'
                 ? 'ss-chip ss-chip-active text-studio-text font-medium'
                 : 'ss-chip'
@@ -528,9 +529,9 @@ export function VibePresetsPanel({
                 handleResetBackground();
               }
             }}
-            className={`p-1.5 rounded-lg border text-center transition-all ${
+            className={`ss-btn p-1.5 rounded-lg text-center ${
               (backdropParams?.presetType || currentPreset.backdrop?.presetType) === 'linear-cosmic'
-                ? 'bg-indigo-600/25 border-indigo-400 text-[#C7D2FE] font-medium'
+                ? 'ss-chip ss-chip-active text-studio-text font-medium'
                 : 'ss-chip'
             }`}
           >
@@ -638,60 +639,67 @@ export function VibePresetsPanel({
         </div>
       </div>
 
-      {/* Window Corner Radius Slider */}
-      <div>
-        <div className="flex items-center justify-between text-xs mb-1.5 text-[#CBD5E1]">
-          <span>Window Corner Radius</span>
-          <span className="ss-num text-[#818CF8]">{currentPreset.borderRadius}px</span>
-        </div>
-        <StudioSlider
-          min={0}
-          max={36}
-          value={currentPreset.borderRadius}
-          onChange={(v) => onUpdatePresetBorderRadius(v)}
-        />
-      </div>
-
-      <div className="mt-2">
-        <div className="flex items-center justify-between text-xs mb-1.5 text-[#CBD5E1]">
-          <span>Frame Shadow</span>
-          <span className="ss-num text-[#818CF8] capitalize">{shadowMode}</span>
-        </div>
-        <div className="grid grid-cols-3 gap-1.5">
-          {(['none', 'subtle', 'studio'] as ShadowMode[]).map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              onClick={() => onChangeShadowMode(mode)}
-              className={`p-1.5 rounded-lg text-[11px] border capitalize ${shadowMode === mode ? 'ss-chip ss-chip-active text-studio-text' : 'ss-chip'}`}
-            >
-              {mode}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Frame Padding Slider (0% - 20%, default 8%) */}
-      <div>
-        <div className="flex items-center justify-between text-xs mb-1.5 text-[#CBD5E1]">
+      {/* Framing & Chrome */}
+      <div className="pt-3 border-t border-studio-border space-y-3">
+        <div className="flex items-center justify-between ss-section-title">
           <span className="flex items-center gap-1.5">
             <Sliders className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
-            Frame Padding
+            Framing & Chrome
           </span>
-          <span className="ss-num text-[#818CF8]">{Math.round((framePadding ?? 0.08) * 100)}%</span>
         </div>
-        <StudioSlider
-          min={0}
-          max={20}
-          value={Math.round((framePadding ?? 0.08) * 100)}
-          onChange={(v) => onChangeFramePadding?.(v / 100)}
-        />
+
+        {/* Window Corner Radius Slider */}
+        <div>
+          <div className="flex items-center justify-between text-[11px] mb-1.5 text-[#CBD5E1]">
+            <span>Window Corner Radius</span>
+            <span className="ss-num text-[#A5B4FC]">{currentPreset.borderRadius}px</span>
+          </div>
+          <StudioSlider
+            min={0}
+            max={36}
+            value={currentPreset.borderRadius}
+            onChange={(v) => onUpdatePresetBorderRadius(v)}
+          />
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between text-[11px] mb-1.5 text-[#CBD5E1]">
+            <span>Frame Shadow</span>
+            <span className="ss-num text-[#A5B4FC] capitalize">{shadowMode}</span>
+          </div>
+          <div className="grid grid-cols-3 gap-1.5">
+            {(['none', 'subtle', 'studio'] as ShadowMode[]).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => onChangeShadowMode(mode)}
+                className={`ss-btn p-1.5 rounded-lg text-[11px] capitalize ${shadowMode === mode ? 'ss-chip ss-chip-active text-studio-text font-medium' : 'ss-chip'}`}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Frame Padding Slider (0% - 20%, default 8%) */}
+        <div>
+          <div className="flex items-center justify-between text-[11px] mb-1.5 text-[#CBD5E1]">
+            <span>Frame Padding</span>
+            <span className="ss-num text-[#A5B4FC]">{Math.round((framePadding ?? 0.08) * 100)}%</span>
+          </div>
+          <StudioSlider
+            min={0}
+            max={20}
+            value={Math.round((framePadding ?? 0.08) * 100)}
+            onChange={(v) => onChangeFramePadding?.(v / 100)}
+          />
+        </div>
       </div>
 
       {/* Custom Background: wallpapers, gradients, solid colors and images (drop an image anywhere here) */}
       <div
-        className={`pt-2 border-t border-studio-border space-y-2 rounded-lg transition-colors ${
-          isDraggingFile ? 'outline outline-2 outline-dashed outline-[#A855F7]/70 bg-[#A855F7]/10' : ''
+        className={`pt-3 border-t border-studio-border space-y-2.5 rounded-lg transition-colors ${
+          isDraggingFile ? 'outline outline-2 outline-dashed outline-[#60A5FA]/70 bg-[#60A5FA]/10' : ''
         }`}
         onDragEnter={handleBackgroundDragEnter}
         onDragOver={handleBackgroundDragOver}
@@ -699,21 +707,21 @@ export function VibePresetsPanel({
         onDrop={handleBackgroundDrop}
       >
         {isDraggingFile && (
-          <div className="text-center text-[11px] text-[#E9D5FF] py-1">Drop the image to use it as the background</div>
+          <div className="text-center text-[11px] text-[#DBEAFE] py-1">Drop the image to use it as the background</div>
         )}
         <div className="flex items-center justify-between ss-section-title">
           <span className="flex items-center gap-1.5">
-            <Palette className="w-3.5 h-3.5 text-[#A855F7]" strokeWidth={1.75} />
+            <Palette className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
             Background
           </span>
           {hasCustomBackground && (
             <button
               type="button"
               onClick={handleResetBackground}
-              className="text-[10px] text-[#FB7185] hover:text-[#FDA4AF] flex items-center gap-1 transition-colors"
+              className="ss-btn p-0 text-[10px] text-[#FB7185] hover:text-[#FDA4AF]"
               title="Back to the preset's animated backdrop"
             >
-              <RotateCcw className="w-2.5 h-2.5" strokeWidth={1.75} />
+              <RotateCcw className="w-3 h-3" strokeWidth={1.75} />
               Reset
             </button>
           )}
@@ -728,7 +736,7 @@ export function VibePresetsPanel({
               role="tab"
               aria-selected={backgroundTab === id}
               onClick={() => setBackgroundTab(id)}
-              className={`p-1.5 rounded-lg border text-center transition-colors ${
+              className={`ss-btn p-1.5 rounded-lg text-center ${
                 backgroundTab === id ? 'ss-chip ss-chip-active text-studio-text font-medium' : 'ss-chip'
               }`}
             >
@@ -746,8 +754,8 @@ export function VibePresetsPanel({
                   key={wp.id}
                   type="button"
                   onClick={() => onChangeBackground?.({ kind: 'wallpaper', id: wp.id })}
-                  className={`relative aspect-video rounded-lg overflow-hidden border transition-all ${
-                    selected ? 'border-white ring-1 ring-white/60' : 'border-studio-border hover:border-white/40'
+                  className={`relative aspect-video rounded-lg overflow-hidden border transition-all duration-150 ease-ss ${
+                    selected ? 'border-[#60A5FA] ring-1 ring-[#60A5FA]/50 shadow-ss-glow' : 'border-studio-border hover:border-studio-borderHover'
                   }`}
                   title={wp.name}
                   aria-label={`${wp.name} wallpaper`}
@@ -770,7 +778,7 @@ export function VibePresetsPanel({
                     key={g.name}
                     type="button"
                     onClick={() => onChangeBackground?.({ kind: 'gradient', colors: [...g.colors], angle: g.angle, shape: g.shape })}
-                    className={`h-9 rounded-lg border transition-all ${selected ? 'border-white ring-1 ring-white/60' : 'border-studio-border hover:border-white/40'}`}
+                    className={`h-9 rounded-lg border transition-all duration-150 ease-ss ${selected ? 'border-[#60A5FA] ring-1 ring-[#60A5FA]/50 shadow-ss-glow' : 'border-studio-border hover:border-studio-borderHover'}`}
                     style={{ background: gradientCss(g.colors, g.angle, g.shape) }}
                     title={g.name}
                     aria-label={`${g.name} gradient`}
@@ -798,7 +806,7 @@ export function VibePresetsPanel({
                 <button
                   type="button"
                   onClick={() => editGradient({ colors: [...gradientColors, gradientColors[gradientColors.length - 1]] })}
-                  className="w-6 h-6 rounded-full border border-white/20 text-[#CBD5E1] text-xs hover:bg-studio-cardHover"
+                  className="ss-btn ss-btn-secondary w-6 h-6 p-0 rounded-full text-xs"
                   title="Add a color"
                 >
                   +
@@ -808,7 +816,7 @@ export function VibePresetsPanel({
                 <button
                   type="button"
                   onClick={() => editGradient({ colors: gradientColors.slice(0, -1) })}
-                  className="w-6 h-6 rounded-full border border-white/20 text-[#CBD5E1] text-xs hover:bg-studio-cardHover"
+                  className="ss-btn ss-btn-secondary w-6 h-6 p-0 rounded-full text-xs"
                   title="Remove the last color"
                 >
                   −
@@ -820,7 +828,7 @@ export function VibePresetsPanel({
                     key={shape}
                     type="button"
                     onClick={() => editGradient({ shape })}
-                    className={`px-2 py-1 ${gradientShape === shape ? 'bg-white/15 text-studio-text' : 'text-studio-muted hover:text-studio-text'}`}
+                    className={`px-2 py-1 transition-colors ${gradientShape === shape ? 'bg-[#6366F1]/22 text-[#DBEAFE] font-medium' : 'text-studio-muted hover:text-studio-text'}`}
                   >
                     {shape === 'linear' ? 'Linear' : 'Radial'}
                   </button>
@@ -830,7 +838,7 @@ export function VibePresetsPanel({
             <div className="space-y-1">
               <div className="flex justify-between text-[11px] text-studio-muted">
                 <span>Angle</span>
-                <span className="ss-num text-[#C084FC]">{Math.round(gradientAngle)}°</span>
+                <span className="ss-num text-[#A5B4FC]">{Math.round(gradientAngle)}°</span>
               </div>
               <StudioSlider
                 min={0}
@@ -852,8 +860,8 @@ export function VibePresetsPanel({
                 key={color}
                 type="button"
                 onClick={() => onSelectBackgroundColor?.(color)}
-                className={`w-5 h-5 rounded-full border transition-all ${
-                  backgroundColor === color ? 'border-white scale-110 shadow-sm shadow-white/50' : 'border-white/20 hover:scale-105'
+                className={`w-5 h-5 rounded-full border transition-all duration-150 ease-ss ${
+                  backgroundColor === color ? 'border-[#60A5FA] ring-2 ring-[#60A5FA]/45 scale-110' : 'border-white/20 hover:scale-105'
                 }`}
                 style={{ backgroundColor: color }}
                 title={color}
@@ -871,7 +879,7 @@ export function VibePresetsPanel({
 
         {backgroundTab === 'image' && (
           <div className="pt-1 space-y-2">
-            <label className="w-full py-1.5 px-2.5 bg-studio-card hover:bg-studio-cardHover border border-studio-border rounded-lg text-xs text-[#CBD5E1] cursor-pointer flex items-center justify-center gap-2 transition-colors">
+            <label className="ss-btn ss-btn-secondary w-full py-2 px-2.5 cursor-pointer">
               <Upload className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
               <span>{backgroundImageUrl ? 'Replace image' : 'Browse for an image'}</span>
               <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
@@ -879,7 +887,7 @@ export function VibePresetsPanel({
             <p className="text-[10px] text-studio-meta text-center">…or drop an image on this panel, or paste one (Ctrl+V).</p>
             {recentUploads.length > 0 && (
               <div className="space-y-1">
-                <div className="text-[10px] uppercase tracking-wider text-studio-meta">Recent</div>
+                <div className="ss-micro-label">Recent</div>
                 <div className="grid grid-cols-4 gap-1.5">
                   {recentUploads.map((u) => {
                     const selected = background.kind === 'image' && background.uploadId === u.id;
@@ -888,8 +896,8 @@ export function VibePresetsPanel({
                         <button
                           type="button"
                           onClick={() => onSelectRecentUpload?.(u.id)}
-                          className={`block w-full aspect-video rounded-md overflow-hidden border transition-all ${
-                            selected ? 'border-white ring-1 ring-white/60' : 'border-studio-border hover:border-white/40'
+                          className={`block w-full aspect-video rounded-md overflow-hidden border transition-all duration-150 ease-ss ${
+                            selected ? 'border-[#60A5FA] ring-1 ring-[#60A5FA]/50 shadow-ss-glow' : 'border-studio-border hover:border-studio-borderHover'
                           }`}
                           title={u.name}
                           aria-label={`Use ${u.name}`}
@@ -900,7 +908,7 @@ export function VibePresetsPanel({
                         <button
                           type="button"
                           onClick={() => onDeleteRecentUpload?.(u.id)}
-                          className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/80 border border-white/20 text-[10px] leading-none text-[#CBD5E1] opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-[#FDA4AF]"
+                          className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-studio-panel border border-studio-borderHover text-[10px] leading-none text-[#CBD5E1] opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-[#FDA4AF]"
                           title={`Remove ${u.name}`}
                           aria-label={`Remove ${u.name}`}
                         >
@@ -920,7 +928,7 @@ export function VibePresetsPanel({
             <div className="space-y-1">
               <div className="flex justify-between text-[11px] text-studio-muted">
                 <span>Blur</span>
-                <span className="ss-num text-[#C084FC]">{Math.round(backgroundEffects.blur)}%</span>
+                <span className="ss-num text-[#A5B4FC]">{Math.round(backgroundEffects.blur)}%</span>
               </div>
               <StudioSlider
                 min={0}
@@ -934,7 +942,7 @@ export function VibePresetsPanel({
             <div className="space-y-1">
               <div className="flex justify-between text-[11px] text-studio-muted">
                 <span>Dim</span>
-                <span className="ss-num text-[#C084FC]">{Math.round(backgroundEffects.dim)}%</span>
+                <span className="ss-num text-[#A5B4FC]">{Math.round(backgroundEffects.dim)}%</span>
               </div>
               <StudioSlider
                 min={0}
@@ -952,7 +960,7 @@ export function VibePresetsPanel({
           <div className="space-y-1 pt-1">
             <div className="flex justify-between text-[11px] text-studio-muted">
               <span>Motion</span>
-              <span className="ss-num text-[#C084FC]">
+              <span className="ss-num text-[#A5B4FC]">
                 {backgroundEffects.motion <= 0
                   ? 'Still'
                   : backgroundEffects.motion < 35
@@ -983,20 +991,20 @@ export function VibePresetsPanel({
       </div>
 
       {/* Cursor Theme & Scale Customizer */}
-      <div className="pt-2 border-t border-studio-border space-y-3">
+      <div className="pt-3 border-t border-studio-border space-y-3">
         <div className="flex items-center justify-between ss-section-title">
           <span className="flex items-center gap-1.5">
             <MousePointer className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
             Vector Cursor Styling
           </span>
-          <span className="ss-num text-[#818CF8] text-[11px]">{cursorScale.toFixed(1)}x</span>
+          <span className="ss-num text-[#93C5FD] text-[11px]">{cursorScale.toFixed(1)}x</span>
         </div>
 
         {/* Theme pills */}
         <div className="grid grid-cols-3 gap-1 text-[11px]">
           <button
             onClick={() => onChangeCursorTheme('mac-obsidian')}
-            className={`p-1.5 rounded-lg border text-center transition-colors ${
+            className={`ss-btn p-1.5 rounded-lg text-center ${
               cursorTheme === 'mac-obsidian'
                 ? 'ss-chip ss-chip-active text-studio-text font-medium'
                 : 'ss-chip'
@@ -1006,7 +1014,7 @@ export function VibePresetsPanel({
           </button>
           <button
             onClick={() => onChangeCursorTheme('neon-glow')}
-            className={`p-1.5 rounded-lg border text-center transition-colors ${
+            className={`ss-btn p-1.5 rounded-lg text-center ${
               cursorTheme === 'neon-glow'
                 ? 'ss-chip ss-chip-active text-studio-text font-medium'
                 : 'ss-chip'
@@ -1016,7 +1024,7 @@ export function VibePresetsPanel({
           </button>
           <button
             onClick={() => onChangeCursorTheme('minimal-white')}
-            className={`p-1.5 rounded-lg border text-center transition-colors ${
+            className={`ss-btn p-1.5 rounded-lg text-center ${
               cursorTheme === 'minimal-white'
                 ? 'ss-chip ss-chip-active text-studio-text font-medium'
                 : 'ss-chip'
@@ -1030,6 +1038,7 @@ export function VibePresetsPanel({
         <div className="space-y-1">
           <div className="flex justify-between text-[11px] text-studio-muted">
             <span>Pointer Size</span>
+            <span className="ss-num text-[#A5B4FC]">{cursorScale.toFixed(1)}x</span>
           </div>
           <StudioSlider
             min={0.8}
@@ -1045,18 +1054,18 @@ export function VibePresetsPanel({
             <select
               value={cursorEngineKind}
               onChange={(e) => onChangeCursorEngine(e.target.value === 'solve' ? 'solve' : 'spline')}
-              className="bg-transparent border border-studio-border rounded px-1 py-0.5 text-[11px] text-[#A5B4FC]"
+              className="ss-select px-2 py-1 text-[11px] text-[#E2E8F0] cursor-pointer"
               aria-label="Cursor engine"
             >
-              <option value="solve">Solve (default)</option>
-              <option value="spline">Spline (classic)</option>
+              <option value="solve" className="bg-studio-panel text-studio-text">Solve (default)</option>
+              <option value="spline" className="bg-studio-panel text-studio-text">Spline (classic)</option>
             </select>
           </label>
         </div>
         <div className="space-y-1">
           <div className="flex justify-between text-[11px] text-studio-muted">
             <span>Cursor Smoothing</span>
-            <span className="text-[#A5B4FC]">{cursorSmoothing < 0.34 ? 'Crisp' : cursorSmoothing < 0.75 ? 'Smooth' : 'Cinematic'}</span>
+            <span className="ss-num text-[#A5B4FC]">{cursorSmoothing < 0.34 ? 'Crisp' : cursorSmoothing < 0.75 ? 'Smooth' : 'Cinematic'}</span>
           </div>
           <StudioSlider
             min={0}
@@ -1077,7 +1086,7 @@ export function VibePresetsPanel({
           )}
           <div className="flex justify-between text-[11px] text-studio-muted">
             <span>Sway</span>
-            <span className="text-[#A5B4FC]">{cursorEngineKind === 'solve' ? 'No effect with Solve' : `${cursorMotion.sway < 34 ? 'Tight' : cursorMotion.sway < 67 ? 'Natural' : 'Languid'} · ${Math.round(cursorMotion.sway)}`}</span>
+            <span className="ss-num text-[#A5B4FC]">{cursorEngineKind === 'solve' ? 'No effect with Solve' : `${cursorMotion.sway < 34 ? 'Tight' : cursorMotion.sway < 67 ? 'Natural' : 'Languid'} · ${Math.round(cursorMotion.sway)}`}</span>
           </div>
           <StudioSlider
             min={0}
@@ -1090,13 +1099,18 @@ export function VibePresetsPanel({
           />
         </div>
         <div className={`space-y-1${!showCursor ? ' opacity-50' : ''}`}>
-          <label className="flex justify-between items-center text-[11px] text-studio-muted">
+          <label className="flex justify-between items-center text-[11px] text-studio-muted cursor-pointer">
             <span>Tilt with speed</span>
-            <input type="checkbox" checked={cursorMotion.tiltEnabled} onChange={(e) => onChangeCursorMotion({ tiltEnabled: e.target.checked })} />
+            <input
+              type="checkbox"
+              checked={cursorMotion.tiltEnabled}
+              onChange={(e) => onChangeCursorMotion({ tiltEnabled: e.target.checked })}
+              className="ss-checkbox"
+            />
           </label>
           <div className="flex justify-between text-[11px] text-studio-meta">
             <span>Max angle</span>
-            <span>{Math.round(cursorMotion.maxTiltDeg)}°</span>
+            <span className="ss-num text-[#A5B4FC]">{Math.round(cursorMotion.maxTiltDeg)}°</span>
           </div>
           <StudioSlider
             min={2}
@@ -1109,13 +1123,18 @@ export function VibePresetsPanel({
           />
         </div>
         <div className={`space-y-1${!showCursor ? ' opacity-50' : ''}`}>
-          <label className="flex justify-between items-center text-[11px] text-studio-muted">
+          <label className="flex justify-between items-center text-[11px] text-studio-muted cursor-pointer">
             <span>Click press</span>
-            <input type="checkbox" checked={cursorMotion.pressEnabled} onChange={(e) => onChangeCursorMotion({ pressEnabled: e.target.checked })} />
+            <input
+              type="checkbox"
+              checked={cursorMotion.pressEnabled}
+              onChange={(e) => onChangeCursorMotion({ pressEnabled: e.target.checked })}
+              className="ss-checkbox"
+            />
           </label>
           <div className="flex justify-between text-[11px] text-studio-meta">
             <span>Depth</span>
-            <span>{Math.round(cursorMotion.pressDepth * 100)}%</span>
+            <span className="ss-num text-[#A5B4FC]">{Math.round(cursorMotion.pressDepth * 100)}%</span>
           </div>
           <StudioSlider
             min={0.05}
@@ -1132,7 +1151,7 @@ export function VibePresetsPanel({
         <div className={`space-y-1${!ripplesActive ? ' opacity-50' : ''}`}>
           <div className="flex justify-between text-[11px] text-studio-muted">
             <span>Click Effect</span>
-            <span className="text-[#A5B4FC]">
+            <span className="ss-num text-[#A5B4FC]">
               {clickEffectStyle === 'double-ring' ? 'Double' : clickEffectStyle === 'halo' ? 'Halo' : clickEffectStyle === 'none' ? 'None' : 'Ring'}
             </span>
           </div>
@@ -1142,7 +1161,7 @@ export function VibePresetsPanel({
                 key={style}
                 type="button"
                 onClick={() => onChangeClickEffectStyle(style)}
-                className={`p-1.5 rounded-lg border text-center transition-colors ${
+                className={`ss-btn p-1.5 rounded-lg text-center ${
                   clickEffectStyle === style
                     ? 'ss-chip ss-chip-active text-studio-text font-medium'
                     : 'ss-chip'
@@ -1167,13 +1186,13 @@ export function VibePresetsPanel({
         <div className={`space-y-1${!ripplesActive ? ' opacity-50' : ''}`}>
           <div className="flex justify-between text-[11px] text-studio-muted">
             <span>Click Accent Color</span>
-            <span className="text-[#A5B4FC]">{clickColor === 'auto' ? 'Auto' : clickColor}</span>
+            <span className="ss-num text-[#A5B4FC]">{clickColor === 'auto' ? 'Auto' : clickColor}</span>
           </div>
           <div className="flex items-center gap-1.5">
             <button
               type="button"
               onClick={() => onChangeClickColor('auto')}
-              className={`px-2 py-1 rounded-lg border text-[10px] transition-colors ${
+              className={`ss-btn px-2 py-1 rounded-lg text-[10px] ${
                 clickColor === 'auto'
                   ? 'ss-chip ss-chip-active text-studio-text font-medium'
                   : 'ss-chip'
@@ -1186,8 +1205,8 @@ export function VibePresetsPanel({
                 key={c}
                 type="button"
                 onClick={() => onChangeClickColor(c)}
-                className={`w-5 h-5 rounded-full border transition-all ${
-                  clickColor === c ? 'border-white scale-110 shadow-sm shadow-white/50' : 'border-white/20 hover:scale-105'
+                className={`w-5 h-5 rounded-full border transition-all duration-150 ease-ss ${
+                  clickColor === c ? 'border-[#60A5FA] ring-2 ring-[#60A5FA]/45 scale-110' : 'border-white/20 hover:scale-105'
                 }`}
                 style={{ backgroundColor: c }}
                 title={c}
@@ -1196,7 +1215,7 @@ export function VibePresetsPanel({
           </div>
         </div>
         <div className={`space-y-1${!showCursor ? ' opacity-50' : ''}`}>
-          <label className="flex justify-between items-center text-[11px] text-studio-muted">
+          <label className="flex justify-between items-center text-[11px] text-studio-muted cursor-pointer">
             <span>Hide when idle</span>
             <input
               type="checkbox"
@@ -1208,7 +1227,7 @@ export function VibePresetsPanel({
           </label>
           <div className="flex justify-between text-[11px] text-studio-meta">
             <span>After</span>
-            <span>{(cursorMotion.idleDelayMs / 1000).toFixed(1)} s still</span>
+            <span className="ss-num text-[#A5B4FC]">{(cursorMotion.idleDelayMs / 1000).toFixed(1)} s still</span>
           </div>
           <StudioSlider
             min={500}
@@ -1223,7 +1242,7 @@ export function VibePresetsPanel({
       </div>
 
       {/* TikTok / Reels Auto-Captions */}
-      <div className="pt-2 border-t border-studio-border space-y-2.5">
+      <div className="pt-3 border-t border-studio-border space-y-2.5">
         <div className="flex items-center justify-between ss-section-title">
           <span className="flex items-center gap-1.5">
             <Subtitles className="w-3.5 h-3.5 text-[#FBBF24]" strokeWidth={1.75} />
@@ -1242,9 +1261,9 @@ export function VibePresetsPanel({
           <div className="grid grid-cols-2 gap-1.5 text-[10px]">
             <button
               onClick={() => onChangeCaptionStyle('tiktok-bold')}
-              className={`p-1.5 rounded-lg border text-center transition-colors ${
+              className={`ss-btn p-1.5 rounded-lg text-center ${
                 captionStyle === 'tiktok-bold'
-                  ? 'bg-[#FBBF24]/25 border-amber-500 text-[#FDE68A] font-medium'
+                  ? 'ss-chip ss-chip-active text-studio-text font-medium'
                   : 'ss-chip'
               }`}
             >
@@ -1252,9 +1271,9 @@ export function VibePresetsPanel({
             </button>
             <button
               onClick={() => onChangeCaptionStyle('apple-keynote')}
-              className={`p-1.5 rounded-lg border text-center transition-colors ${
+              className={`ss-btn p-1.5 rounded-lg text-center ${
                 captionStyle === 'apple-keynote'
-                  ? 'bg-[#38BDF8]/18 border-[#38BDF8] text-[#BAE6FD] font-medium'
+                  ? 'ss-chip ss-chip-active text-studio-text font-medium'
                   : 'ss-chip'
               }`}
             >
@@ -1262,7 +1281,7 @@ export function VibePresetsPanel({
             </button>
             <button
               onClick={() => onChangeCaptionStyle('minimal-pill')}
-              className={`p-1.5 rounded-lg border text-center transition-colors ${
+              className={`ss-btn p-1.5 rounded-lg text-center ${
                 captionStyle === 'minimal-pill'
                   ? 'ss-chip ss-chip-active text-studio-text font-medium'
                   : 'ss-chip'
@@ -1272,7 +1291,7 @@ export function VibePresetsPanel({
             </button>
             <button
               onClick={() => onChangeCaptionStyle('classic-sub')}
-              className={`p-1.5 rounded-lg border text-center transition-colors ${
+              className={`ss-btn p-1.5 rounded-lg text-center ${
                 captionStyle === 'classic-sub'
                   ? 'ss-chip ss-chip-active text-studio-text font-medium'
                   : 'ss-chip'
@@ -1286,7 +1305,7 @@ export function VibePresetsPanel({
             {/* Caption Backdrop Opacity / Blur */}
             <div className="flex items-center justify-between text-[10px] text-studio-muted">
               <span>Backdrop Opacity / Blur</span>
-              <span className="ss-num text-[#FCD34D]">{captionBackdrop}%</span>
+              <span className="ss-num text-[#A5B4FC]">{captionBackdrop}%</span>
             </div>
             <StudioSlider
               min={0}
@@ -1302,8 +1321,9 @@ export function VibePresetsPanel({
       </div>
 
       {/* Visual & Sound Superpowers Toggles */}
-      <div className="pt-2 border-t border-studio-border space-y-2.5">
-        <label className="ss-section-title block">
+      <div className="pt-3 border-t border-studio-border space-y-2.5">
+        <label className="ss-section-title flex items-center gap-1.5">
+          <Sparkles className="w-3.5 h-3.5 text-[#818CF8]" strokeWidth={1.75} />
           Visual & Audio Effects
         </label>
 
@@ -1400,10 +1420,10 @@ export function VibePresetsPanel({
       </div>
 
       {/* Built-In Intro Title Hook Cards */}
-      <div className="pt-2 border-t border-studio-border space-y-2.5">
+      <div className="pt-3 border-t border-studio-border space-y-2.5">
         <label className="ss-section-title flex items-center justify-between">
           <span>Intro Title Hook Card</span>
-          <span className="text-[10px] text-[#818CF8] ss-num">1.5s 3D Zoom</span>
+          <span className="text-[10px] text-[#93C5FD] ss-num">1.5s 3D Zoom</span>
         </label>
 
         <label className="flex items-center justify-between text-xs text-[#CBD5E1] hover:text-studio-text cursor-pointer">
@@ -1419,7 +1439,7 @@ export function VibePresetsPanel({
         {showIntroCard && (
           <div className="space-y-2.5 pt-1">
             <div>
-              <span className="text-[10px] text-studio-muted uppercase font-medium block mb-1">Headline</span>
+              <span className="ss-micro-label block mb-1">Headline</span>
               <input
                 type="text"
                 value={introHeadline || ''}
@@ -1430,13 +1450,13 @@ export function VibePresetsPanel({
             </div>
 
             <div>
-              <span className="text-[10px] text-studio-muted uppercase font-medium block mb-1">Subheadline</span>
+              <span className="ss-micro-label block mb-1">Subheadline</span>
               <input
                 type="text"
                 value={introSubheadline || ''}
                 onChange={(e) => onChangeIntroSubheadline?.(e.target.value)}
                 placeholder="Subheadline text"
-                className="ss-input w-full px-2.5 py-1.5 text-xs placeholder:text-studio-meta"
+                className="ss-input w-full px-2.5 py-1.5 text-xs text-studio-text placeholder:text-studio-meta"
               />
             </div>
 
@@ -1448,10 +1468,10 @@ export function VibePresetsPanel({
       </div>
 
       {/* Built-In Outro CTA Title Hook Cards */}
-      <div className="pt-2 border-t border-studio-border space-y-2.5">
+      <div className="pt-3 border-t border-studio-border space-y-2.5">
         <label className="ss-section-title flex items-center justify-between">
           <span>Outro CTA Card</span>
-          <span className="text-[10px] text-[#A855F7] ss-num">Final 1.5s 3D Zoom</span>
+          <span className="text-[10px] text-[#A5B4FC] ss-num">Final 1.5s 3D Zoom</span>
         </label>
 
         <label className="flex items-center justify-between text-xs text-[#CBD5E1] hover:text-studio-text cursor-pointer">
@@ -1467,7 +1487,7 @@ export function VibePresetsPanel({
         {showOutroCard && (
           <div className="space-y-2.5 pt-1">
             <div>
-              <span className="text-[10px] text-studio-muted uppercase font-medium block mb-1">Outro Headline</span>
+              <span className="ss-micro-label block mb-1">Outro Headline</span>
               <input
                 type="text"
                 value={outroHeadline || ''}
@@ -1478,13 +1498,13 @@ export function VibePresetsPanel({
             </div>
 
             <div>
-              <span className="text-[10px] text-studio-muted uppercase font-medium block mb-1">Outro CTA Badge / URL</span>
+              <span className="ss-micro-label block mb-1">Outro CTA Badge / URL</span>
               <input
                 type="text"
                 value={outroCtaText || ''}
                 onChange={(e) => onChangeOutroCtaText?.(e.target.value)}
                 placeholder="Outro CTA text"
-                className="ss-input w-full px-2.5 py-1.5 text-xs placeholder:text-studio-meta"
+                className="ss-input w-full px-2.5 py-1.5 text-xs text-studio-text placeholder:text-studio-meta"
               />
             </div>
 

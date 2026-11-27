@@ -69,8 +69,6 @@ import {
   CircleDot,
   Loader2,
   CheckCircle2,
-  Play,
-  Pause,
   Activity,
   AlertTriangle,
   HardDrive,
@@ -2019,9 +2017,8 @@ export function EditorStudio() {
   return (
     <div className="ss-app flex flex-col h-screen w-screen text-studio-text font-sans overflow-hidden select-none">
       {/* Top Studio Header */}
-      {/* Top Studio Header */}
-      <header className="ss-panel relative z-20 shrink-0 h-14 px-5 flex items-center justify-between border-b">
-        <div className="flex items-center gap-3 shrink-0">
+      <header className="ss-panel relative z-20 shrink-0 h-14 px-4 xl:px-5 flex items-center justify-between gap-3 border-b">
+        <div className="flex items-center gap-3 min-w-0 shrink-0">
           <BrandMark size={32} />
           <div className="min-w-0">
             <h1 className="ss-title-tight text-[13px] font-semibold text-studio-text flex items-center gap-2">
@@ -2029,14 +2026,14 @@ export function EditorStudio() {
               <span className="ss-num text-[10px] px-1.5 py-0.5 rounded-md border border-[#60A5FA]/25 bg-[#60A5FA]/10 text-[#93C5FD]">v1.0 Pro</span>
             </h1>
             <p className="text-[11px] text-studio-muted flex items-center gap-2 min-w-0">
-              <span className="truncate">{telemetry?.metadata.title || 'Cinematic 3D Video Studio'}</span>
+              <span className="truncate max-w-[200px] xl:max-w-[260px]">{telemetry?.metadata.title || 'Cinematic 3D Video Studio'}</span>
               <span className="ss-num text-[10px] text-studio-meta shrink-0">60 FPS · Canvas 2D</span>
             </p>
           </div>
         </div>
 
         {/* Live Recording Switcher */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 xl:gap-2 shrink-0">
           {isRecordingLive ? (
             <button
               id="stop-live-recording-top-btn"
@@ -2051,7 +2048,7 @@ export function EditorStudio() {
               id="record-new-screen-top-btn"
               onClick={() => handleStartLiveRecording()}
               disabled={recordingPhase !== 'idle' || isExporting || isExportingGif || load.phase === 'loading'}
-              className="ss-btn ss-btn-secondary px-3 py-2"
+              className="ss-btn ss-btn-secondary px-2.5 xl:px-3 py-2"
             >
               <CircleDot className="w-4 h-4 text-[#FB7185]" strokeWidth={1.75} />
               {recordingPhase === 'starting' ? 'Starting…' : recordingPhase === 'stopping' ? 'Stopping…' : 'Record New Screen'}
@@ -2061,7 +2058,7 @@ export function EditorStudio() {
           <div className="hidden xl:block">
             <button
               onClick={() => setShowDoctor(true)}
-              className="ss-btn ss-btn-secondary px-3 py-2"
+              className="ss-btn ss-btn-secondary px-2.5 xl:px-3 py-2"
               title="Flight Doctor & Live Diagnostics (Ctrl+Shift+D)"
             >
               <Activity className="w-4 h-4 text-[#818CF8]" strokeWidth={1.75} />
@@ -2103,21 +2100,21 @@ export function EditorStudio() {
         </div>
 
         {/* Multi-format export actions — secondary stays calm, MP4 anchors hierarchy */}
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-1.5 xl:gap-2 min-w-0 shrink-0">
           {/* SOP Markdown Guide & Copy */}
           <div className="hidden xl:flex items-center rounded-xl bg-studio-card border border-studio-border overflow-hidden">
             <button
               onClick={handleExportSopGuide}
-              className="ss-btn px-3 py-2 rounded-none hover:bg-studio-cardHover"
+              className="ss-btn px-2.5 py-2 rounded-none border-0 hover:bg-studio-cardHover"
               title="Download Step-by-Step Markdown SOP guide with screenshots"
             >
               <FileText className="w-4 h-4 text-studio-success" strokeWidth={1.75} />
               SOP Guide (.md)
             </button>
-            <div className="w-[1px] h-4 bg-white/10" />
+            <div className="w-[1px] h-4 bg-white/[0.08]" />
             <button
               onClick={handleCopySopGuide}
-              className="ss-btn px-2.5 py-2 rounded-none hover:bg-studio-cardHover text-studio-muted"
+              className="ss-btn px-2.5 py-2 rounded-none border-0 hover:bg-studio-cardHover text-studio-muted hover:text-studio-text"
               title="Copy SOP markdown formatted for Notion & Obsidian"
             >
               {copiedSop ? (
@@ -2134,7 +2131,7 @@ export function EditorStudio() {
           <div className="hidden xl:block">
             <button
               onClick={handleExportInteractiveWidget}
-              className="ss-btn ss-btn-secondary px-3 py-2"
+              className="ss-btn ss-btn-secondary px-2.5 xl:px-3 py-2"
               title="Export standalone HTML click-through walkthrough widget"
             >
               <MousePointerClick className="w-4 h-4 text-[#818CF8]" strokeWidth={1.75} />
@@ -2143,11 +2140,11 @@ export function EditorStudio() {
           </div>
 
           {/* Hardware GIF Exporter */}
-          <div className="hidden 2xl:block">
+          <div className="hidden lg:block">
           <button
             onClick={handleExportGif}
             disabled={isExportingGif || isExporting}
-            className="ss-btn ss-btn-secondary px-3 py-2"
+            className="ss-btn ss-btn-secondary px-2.5 xl:px-3 py-2"
             title="Export animated lightweight GIF"
           >
             {isExportingGif ? (
@@ -2198,7 +2195,7 @@ export function EditorStudio() {
             value={exportResPreset}
             onChange={(e) => setExportResPreset(e.target.value as any)}
             disabled={isExporting || isExportingGif}
-            className="ss-select px-2.5 py-2 text-xs cursor-pointer disabled:opacity-50"
+            className="ss-select ss-num px-2.5 py-2 text-xs cursor-pointer disabled:opacity-50"
             title="Export Resolution"
           >
             <option value="source" className="bg-studio-panel text-studio-text">
@@ -2233,7 +2230,7 @@ export function EditorStudio() {
             id="export-mp4-btn"
             onClick={handleExportMp4}
             disabled={isExporting || isExportingGif}
-            className="ss-btn ss-btn-primary px-4 py-2"
+            className="ss-btn ss-btn-primary px-3.5 xl:px-4 py-2"
           >
             {isExporting ? (
               <>
@@ -2242,15 +2239,17 @@ export function EditorStudio() {
               </>
             ) : exportComplete ? (
               <>
-                <CheckCircle2 className="w-4 h-4 text-studio-success" strokeWidth={1.75} />
+                <CheckCircle2 className="w-4 h-4 text-white" strokeWidth={1.75} />
                 Exported MP4!
               </>
             ) : (
               <>
                 <Download className="w-4 h-4" strokeWidth={1.75} />
-                {isUpscaled
-                  ? `Export ${targetResLabel}/60fps (Upscaled from ${sourceResLabel})`
-                  : `Export ${targetResLabel}/60fps MP4`}
+                <span className="ss-num font-sans">
+                  {isUpscaled
+                    ? `Export ${targetResLabel}/60fps (Upscaled from ${sourceResLabel})`
+                    : `Export ${targetResLabel}/60fps MP4`}
+                </span>
               </>
             )}
           </button>
@@ -2397,93 +2396,107 @@ export function EditorStudio() {
 
         {/* Record Prompt Dialog Overlay */}
         {showRecordPrompt && recordingPhase === 'idle' && (
-          <div className="absolute inset-0 z-40 bg-[#08090D]/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center">
-            <div className="ss-brand-tile w-16 h-16 rounded-2xl flex items-center justify-center mb-5">
-              <Video className="w-8 h-8" strokeWidth={1.75} />
+          <div className="ss-app absolute inset-0 z-40 bg-[#08090D]/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center">
+            <div className="ss-panel ss-enter border rounded-2xl px-8 py-7 max-w-md w-full shadow-ss-panel flex flex-col items-center">
+              <div className="ss-brand-tile w-14 h-14 rounded-2xl flex items-center justify-center mb-5 text-[#93C5FD]">
+                <Video className="w-7 h-7" strokeWidth={1.75} />
+              </div>
+              <h2 className="ss-title-tight text-xl font-semibold text-studio-text mb-2">Ready to Record Screen</h2>
+              <p className="text-sm text-studio-muted mb-6 leading-relaxed">
+                SmoothStudio is ready to capture high-definition 60 FPS video with 120 Hz DOM telemetry and cursor smoothing.
+              </p>
+              <button
+                id="start-capture-prompt-btn"
+                onClick={() => {
+                  setShowRecordPrompt(false);
+                  handleStartLiveRecording(recordTargetTabId, recordIncludeMic);
+                }}
+                className="ss-btn ss-btn-primary px-6 py-3 text-sm font-semibold cursor-pointer"
+              >
+                <CircleDot className="w-[18px] h-[18px] text-white" strokeWidth={1.75} />
+                Select Screen / Tab to Record
+              </button>
             </div>
-            <h2 className="ss-title-tight text-xl font-semibold text-studio-text mb-2">Ready to Record Screen</h2>
-            <p className="text-sm text-studio-muted max-w-md mb-6">
-              SmoothStudio is ready to capture high-definition 60 FPS video with 120 Hz DOM telemetry and cursor smoothing.
-            </p>
-            <button
-              id="start-capture-prompt-btn"
-              onClick={() => {
-                setShowRecordPrompt(false);
-                handleStartLiveRecording(recordTargetTabId, recordIncludeMic);
-              }}
-              className="ss-btn ss-btn-primary px-6 py-3 text-sm font-semibold cursor-pointer"
-            >
-              <CircleDot className="w-5 h-5 text-studio-text animate-pulse" strokeWidth={1.75} />
-              Select Screen / Tab to Record
-            </button>
           </div>
         )}
 
         {/* Empty State Overlay when No Recording Exists */}
         {hasNoRecording && !videoElement && recordingPhase === 'idle' && !showRecordPrompt && load.phase !== 'loading' && (
-          <div className="absolute inset-0 z-30 bg-[#08090D]/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-[#FB7185]/10 border border-[#FB7185]/30 flex items-center justify-center mb-5 text-[#FB7185]">
-              <AlertTriangle className="w-8 h-8" strokeWidth={1.75} />
+          <div className="ss-app absolute inset-0 z-30 bg-[#08090D]/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center">
+            <div className="ss-panel ss-enter border rounded-2xl px-8 py-7 max-w-md w-full shadow-ss-panel flex flex-col items-center">
+              <div className="ss-brand-tile w-14 h-14 rounded-2xl flex items-center justify-center mb-5 text-[#93C5FD]">
+                <CircleDot className="w-7 h-7" strokeWidth={1.75} />
+              </div>
+              <h2 className="ss-title-tight text-xl font-semibold text-studio-text mb-2">No Screen Recording Found</h2>
+              <p className="text-sm text-studio-muted mb-6 leading-relaxed">
+                No recording was found in local storage. Start a new recording session to generate cinematic videos.
+              </p>
+              <button
+                id="record-new-screen-empty-btn"
+                onClick={() => handleStartLiveRecording(undefined, true)}
+                className="ss-btn ss-btn-primary px-6 py-3 text-sm font-semibold cursor-pointer"
+              >
+                <CircleDot className="w-[18px] h-[18px] text-white" strokeWidth={1.75} />
+                Record New Screen
+              </button>
             </div>
-            <h2 className="ss-title-tight text-xl font-semibold text-studio-text mb-2">No Screen Recording Found</h2>
-            <p className="text-sm text-studio-muted max-w-md mb-6">
-              No recording was found in local storage. Start a new recording session to generate cinematic videos.
-            </p>
-            <button
-              id="record-new-screen-empty-btn"
-              onClick={() => handleStartLiveRecording(undefined, true)}
-              className="ss-btn ss-btn-primary px-6 py-3 text-sm font-semibold cursor-pointer"
-            >
-              <CircleDot className="w-5 h-5 text-[#FB7185]" strokeWidth={1.75} />
-              Record New Screen
-            </button>
           </div>
         )}
 
         {/* Loading: nothing is shown or playable until the recording is fully in sync */}
         {load.phase === 'loading' && (
           <div
-            className="absolute inset-0 z-40 bg-[#08090D]/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center"
+            className="ss-app absolute inset-0 z-40 bg-[#08090D]/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center"
             role="status"
             aria-live="polite"
           >
-            <div className="w-10 h-10 rounded-full border-2 border-[#818CF8]/25 border-t-[#60A5FA] animate-spin mb-5" />
-            <h2 className="ss-title-tight text-lg font-semibold text-studio-text mb-4">Preparing your recording…</h2>
-            <ol className="text-left space-y-1.5 text-sm">
-              {LOAD_STEPS.map((item, index) => {
-                const current = LOAD_STEPS.findIndex((s) => s.step === load.step);
-                const status = index < current ? 'done' : index === current ? 'active' : 'todo';
-                return (
-                  <li
-                    key={item.step}
-                    className={`flex items-center gap-2 ${
-                      status === 'done' ? 'text-studio-muted' : status === 'active' ? 'text-studio-text font-medium' : 'text-[#475569]'
-                    }`}
-                  >
-                    <span className={`ss-num w-4 text-center ${status === 'done' ? 'text-studio-success' : status === 'active' ? 'text-[#A5B4FC]' : ''}`}>
-                      {status === 'done' ? '✓' : status === 'active' ? '●' : '○'}
-                    </span>
-                    {item.label}
-                  </li>
-                );
-              })}
-            </ol>
+            <div className="ss-panel ss-enter border rounded-2xl px-8 py-7 max-w-sm w-full shadow-ss-panel flex flex-col items-center">
+              <div className="w-10 h-10 rounded-full border-2 border-[#818CF8]/25 border-t-[#60A5FA] animate-spin mb-5" />
+              <h2 className="ss-title-tight text-lg font-semibold text-studio-text mb-4">Preparing your recording…</h2>
+              <ol className="text-left space-y-2 text-sm w-full">
+                {LOAD_STEPS.map((item, index) => {
+                  const current = LOAD_STEPS.findIndex((s) => s.step === load.step);
+                  const status = index < current ? 'done' : index === current ? 'active' : 'todo';
+                  return (
+                    <li
+                      key={item.step}
+                      className={`flex items-center gap-2.5 ${
+                        status === 'done' ? 'text-studio-muted' : status === 'active' ? 'text-studio-text font-medium' : 'text-studio-meta'
+                      }`}
+                    >
+                      <span className={`ss-num w-4 text-center flex items-center justify-center ${status === 'done' ? 'text-studio-success' : status === 'active' ? 'text-[#93C5FD]' : ''}`}>
+                        {status === 'done' ? (
+                          <CheckCircle2 className="w-3.5 h-3.5" strokeWidth={1.75} />
+                        ) : status === 'active' ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={1.75} />
+                        ) : (
+                          '○'
+                        )}
+                      </span>
+                      {item.label}
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
           </div>
         )}
 
         {load.phase === 'failed' && !videoElement && (
-          <div className="absolute inset-0 z-40 bg-[#08090D]/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center" role="alert">
-            <div className="w-14 h-14 rounded-2xl bg-[#FB7185]/10 border border-[#FB7185]/30 flex items-center justify-center mb-4 text-[#FB7185]">
-              <AlertTriangle className="w-7 h-7" strokeWidth={1.75} />
+          <div className="ss-app absolute inset-0 z-40 bg-[#08090D]/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center" role="alert">
+            <div className="ss-panel ss-enter border border-[#FB7185]/30 rounded-2xl px-8 py-7 max-w-md w-full shadow-ss-panel flex flex-col items-center">
+              <div className="w-14 h-14 rounded-2xl bg-[#FB7185]/12 border border-[#FB7185]/35 flex items-center justify-center mb-4 text-[#FB7185]">
+                <AlertTriangle className="w-7 h-7" strokeWidth={1.75} />
+              </div>
+              <h2 className="ss-title-tight text-lg font-semibold text-studio-text mb-2">The recording could not be loaded</h2>
+              <p className="text-sm text-studio-muted mb-5 leading-relaxed">{load.message}</p>
+              <button
+                onClick={() => { dispatchLoad({ type: 'reset' }); setHasNoRecording(true); }}
+                className="ss-btn ss-btn-secondary px-5 py-2 text-sm"
+              >
+                Dismiss
+              </button>
             </div>
-            <h2 className="ss-title-tight text-lg font-semibold text-studio-text mb-2">The recording could not be loaded</h2>
-            <p className="text-sm text-studio-muted max-w-md mb-5">{load.message}</p>
-            <button
-              onClick={() => { dispatchLoad({ type: 'reset' }); setHasNoRecording(true); }}
-              className="ss-btn ss-btn-secondary px-5 py-2 text-sm"
-            >
-              Dismiss
-            </button>
           </div>
         )}
       </div>

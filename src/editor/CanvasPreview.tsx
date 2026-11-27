@@ -296,24 +296,24 @@ export function CanvasPreview({
         const ringRadius = 24;
         ctx.beginPath();
         ctx.arc(gizmoCanvasX, gizmoCanvasY, ringRadius, 0, Math.PI * 2);
-        ctx.strokeStyle = '#A855F7';
-        ctx.lineWidth = 3;
-        ctx.shadowColor = 'rgba(168, 85, 247, 0.7)';
-        ctx.shadowBlur = 10;
+        ctx.strokeStyle = '#60A5FA';
+        ctx.lineWidth = 2.5;
+        ctx.shadowColor = 'rgba(99, 132, 255, 0.72)';
+        ctx.shadowBlur = 12;
         ctx.stroke();
 
         // Center dot
         ctx.beginPath();
-        ctx.arc(gizmoCanvasX, gizmoCanvasY, 6, 0, Math.PI * 2);
+        ctx.arc(gizmoCanvasX, gizmoCanvasY, 5.5, 0, Math.PI * 2);
         ctx.fillStyle = '#FFFFFF';
-        ctx.shadowColor = '#A855F7';
-        ctx.shadowBlur = 6;
+        ctx.shadowColor = '#38BDF8';
+        ctx.shadowBlur = 8;
         ctx.fill();
 
         // Crosshair ticks
         ctx.shadowBlur = 0;
-        ctx.strokeStyle = '#C084FC';
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#93C5FD';
+        ctx.lineWidth = 1.75;
         const tickGap = 28;
         const tickLen = 12;
 
@@ -339,22 +339,22 @@ export function CanvasPreview({
 
         // Badge showing target coordinates
         const badgeText = `Target: (${Math.round(selectedPill.targetX * 100)}%, ${Math.round(selectedPill.targetY * 100)}%)`;
-        ctx.font = '600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        ctx.font = '600 12px "JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, monospace';
         const textMetrics = ctx.measureText(badgeText);
         const badgeW = textMetrics.width + 16;
         const badgeH = 22;
         const badgeX = gizmoCanvasX - badgeW / 2;
         const badgeY = gizmoCanvasY + ringRadius + 14;
 
-        ctx.fillStyle = 'rgba(15, 17, 26, 0.88)';
-        ctx.strokeStyle = 'rgba(168, 85, 247, 0.5)';
+        ctx.fillStyle = 'rgba(15, 17, 23, 0.92)';
+        ctx.strokeStyle = 'rgba(96, 165, 250, 0.55)';
         ctx.lineWidth = 1;
         ctx.beginPath();
         drawRoundedRect(ctx, badgeX, badgeY, badgeW, badgeH, 6);
         ctx.fill();
         ctx.stroke();
 
-        ctx.fillStyle = '#E9D5FF';
+        ctx.fillStyle = '#DBEAFE';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(badgeText, gizmoCanvasX, badgeY + badgeH / 2);
@@ -542,9 +542,9 @@ export function CanvasPreview({
   };
 
   return (
-    <div className="relative flex-1 bg-[#0B0C10] flex items-center justify-center p-6 overflow-hidden">
+    <div className="relative flex-1 bg-[radial-gradient(ellipse_at_center,rgba(66,133,244,0.035)_0%,transparent_72%)] flex items-center justify-center p-6 overflow-hidden">
       {/* 60fps Center Canvas */}
-      <div className="relative max-w-full max-h-full flex items-center justify-center shadow-2xl rounded-2xl overflow-hidden group">
+      <div className="relative max-w-full max-h-full flex items-center justify-center border border-studio-border shadow-ss-panel rounded-2xl overflow-hidden group">
         <canvas
           ref={canvasRef}
           width={targetWidth}
@@ -562,27 +562,46 @@ export function CanvasPreview({
         />
 
         {/* Quick Playback Overlay Button */}
-        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 ease-ss pointer-events-none">
           <button
             onClick={(e) => {
               e.stopPropagation();
               onTogglePlay();
             }}
-            className="p-4 bg-purple-600/80 hover:bg-purple-600 text-white rounded-full shadow-xl pointer-events-auto backdrop-blur-sm transition-transform active:scale-95"
+            className="ss-btn ss-btn-primary w-14 h-14 p-0 rounded-full shadow-ss-glow pointer-events-auto backdrop-blur-md"
+            aria-label={isPlaying ? 'Pause preview' : 'Play preview'}
           >
-            {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 ml-0.5" />}
+            {isPlaying ? (
+              <Pause className="w-5 h-5" strokeWidth={1.75} />
+            ) : (
+              <Play className="w-5 h-5 ml-0.5" strokeWidth={1.75} />
+            )}
           </button>
         </div>
 
         {/* Floating Quick Transport Bar */}
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/60 backdrop-blur-md px-4 py-2 rounded-full border border-white/10 flex items-center gap-3 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity">
-          <button onClick={onRestart} className="hover:text-purple-300" title="Restart">
-            <RotateCcw className="w-3.5 h-3.5" />
+        <div className="ss-panel border absolute bottom-4 left-1/2 -translate-x-1/2 px-3.5 py-1.5 rounded-full shadow-ss-panel flex items-center gap-2.5 text-studio-text text-xs opacity-0 group-hover:opacity-100 transition-opacity duration-200 ease-ss">
+          <button
+            onClick={onRestart}
+            className="ss-btn p-1 rounded-full text-studio-muted hover:text-[#93C5FD]"
+            title="Restart"
+            aria-label="Restart preview"
+          >
+            <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.75} />
           </button>
-          <button onClick={onTogglePlay} className="hover:text-purple-300" title="Play/Pause">
-            {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+          <button
+            onClick={onTogglePlay}
+            className="ss-btn p-1 rounded-full text-studio-muted hover:text-[#93C5FD]"
+            title="Play/Pause"
+            aria-label={isPlaying ? 'Pause preview' : 'Play preview'}
+          >
+            {isPlaying ? (
+              <Pause className="w-3.5 h-3.5" strokeWidth={1.75} />
+            ) : (
+              <Play className="w-3.5 h-3.5" strokeWidth={1.75} />
+            )}
           </button>
-          <span className="font-mono text-[11px] text-gray-300">
+          <span className="ss-num text-[11px] text-[#A5B4FC]">
             {(currentTimeMs / 1000).toFixed(1)}s / {(durationMs / 1000).toFixed(1)}s
           </span>
         </div>

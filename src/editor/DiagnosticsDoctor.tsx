@@ -290,18 +290,18 @@ export function DiagnosticsDoctor({
   const keyCount = telemetry?.keystrokes?.length || 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/75 backdrop-blur-md animate-fade-in select-none">
-      <div className="ss-panel w-[680px] max-h-[85vh] flex flex-col rounded-2xl shadow-ss-panel overflow-hidden ss-enter">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-[#08090D]/80 backdrop-blur-md animate-fade-in select-none">
+      <div className="ss-panel border w-[680px] max-h-[85vh] flex flex-col rounded-2xl shadow-ss-panel overflow-hidden ss-enter">
         {/* Header */}
         <div className="h-16 px-6 bg-white/[0.02] border-b border-studio-border flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="ss-brand-tile w-9 h-9 rounded-xl flex items-center justify-center">
-              <Activity className="w-5 h-5 animate-pulse" strokeWidth={1.75} />
+            <div className="ss-brand-tile w-9 h-9 rounded-xl flex items-center justify-center text-[#93C5FD]">
+              <Activity className="w-[18px] h-[18px]" strokeWidth={1.75} />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="ss-title-tight text-sm font-semibold text-studio-text">Flight Doctor & Live Diagnostics</h2>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#34D399]/12 text-studio-success border border-[#34D399]/30">
+                <span className="ss-status-badge bg-[#34D399]/12 text-studio-success border-[#34D399]/30">
                   REAL-TIME
                 </span>
               </div>
@@ -310,7 +310,8 @@ export function DiagnosticsDoctor({
           </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-studio-muted hover:text-studio-text hover:bg-studio-cardHover transition-colors"
+            className="ss-btn w-8 h-8 p-0 text-studio-muted hover:text-studio-text hover:bg-studio-cardHover"
+            aria-label="Close Diagnostics"
           >
             <X className="w-4 h-4" strokeWidth={1.75} />
           </button>
@@ -320,15 +321,15 @@ export function DiagnosticsDoctor({
         <div className="p-6 overflow-y-auto space-y-6">
           <div className="grid grid-cols-4 gap-3">
             <div className="ss-card p-3 flex flex-col">
-              <span className="text-[10px] text-studio-muted font-medium uppercase tracking-wider">Mouse Points</span>
+              <span className="ss-micro-label">Mouse Points</span>
               <span className="ss-num text-xl font-semibold text-studio-text mt-1">{mouseCount}</span>
-              <span className="text-[10px] text-[#818CF8] mt-1 flex items-center gap-1">
+              <span className="ss-num text-[10px] text-[#818CF8] mt-1 flex items-center gap-1">
                 <MousePointer className="w-3 h-3" strokeWidth={1.75} /> 120Hz Spline
               </span>
             </div>
 
             <div className="ss-card p-3 flex flex-col">
-              <span className="text-[10px] text-studio-muted font-medium uppercase tracking-wider">DOM Clicks</span>
+              <span className="ss-micro-label">DOM Clicks</span>
               <span className="ss-num text-xl font-semibold text-studio-text mt-1">{clickCount}</span>
               <span className="text-[10px] text-studio-success mt-1 flex items-center gap-1">
                 <CheckCircle2 className="w-3 h-3" strokeWidth={1.75} /> Auto-Zoom Ready
@@ -336,19 +337,19 @@ export function DiagnosticsDoctor({
             </div>
 
             <div className="ss-card p-3 flex flex-col">
-              <span className="text-[10px] text-studio-muted font-medium uppercase tracking-wider">Keystrokes</span>
+              <span className="ss-micro-label">Keystrokes</span>
               <span className="ss-num text-xl font-semibold text-studio-text mt-1">{keyCount}</span>
-              <span className="text-[10px] text-[#818CF8] mt-1 flex items-center gap-1">
+              <span className="ss-num text-[10px] text-[#818CF8] mt-1 flex items-center gap-1">
                 <Layers className="w-3 h-3" strokeWidth={1.75} /> 3D HUD Sync
               </span>
             </div>
 
             <div className="ss-card p-3 flex flex-col">
-              <span className="text-[10px] text-studio-muted font-medium uppercase tracking-wider">Video Source</span>
+              <span className="ss-micro-label">Video Source</span>
               <span className="ss-num text-xl font-semibold text-studio-text mt-1">
                 {videoBlob ? `${(videoBlob.size / (1024 * 1024)).toFixed(1)}MB` : 'Demo'}
               </span>
-              <span className="text-[10px] text-[#A855F7] mt-1 flex items-center gap-1">
+              <span className="ss-num text-[10px] text-[#A5B4FC] mt-1 flex items-center gap-1">
                 <Cpu className="w-3 h-3" strokeWidth={1.75} /> {(durationMs / 1000).toFixed(1)}s Length
               </span>
             </div>
@@ -363,9 +364,9 @@ export function DiagnosticsDoctor({
               <button
                 onClick={runAllDiagnostics}
                 disabled={isRunningAll}
-                className="px-3 py-1 rounded-lg bg-[#6366F1]/18 hover:bg-[#6366F1]/28 text-[#A5B4FC] border border-[#6366F1]/40 text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                className="ss-btn ss-chip ss-chip-active px-3 py-1.5 text-xs font-medium"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${isRunningAll ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-3.5 h-3.5 ${isRunningAll ? 'animate-spin' : ''}`} strokeWidth={1.75} />
                 Re-Run Health Checks
               </button>
             </div>
@@ -379,7 +380,7 @@ export function DiagnosticsDoctor({
                   <div className="flex items-center gap-3">
                     {test.status === 'pass' && <CheckCircle2 className="w-4 h-4 text-studio-success shrink-0" strokeWidth={1.75} />}
                     {test.status === 'warn' && <AlertTriangle className="w-4 h-4 text-[#FBBF24] shrink-0" strokeWidth={1.75} />}
-                    {test.status === 'fail' && <XCircle className="w-4 h-4 text-rose-400 shrink-0" strokeWidth={1.75} />}
+                    {test.status === 'fail' && <XCircle className="w-4 h-4 text-studio-live shrink-0" strokeWidth={1.75} />}
                     {test.status === 'running' && (
                       <RefreshCw className="w-4 h-4 text-[#818CF8] animate-spin shrink-0" strokeWidth={1.75} />
                     )}
@@ -390,7 +391,7 @@ export function DiagnosticsDoctor({
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-medium text-studio-text">{test.name}</span>
-                        <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-studio-card text-studio-muted">
+                        <span className="ss-num px-1.5 py-0.5 rounded text-[9px] font-medium bg-white/[0.04] border border-studio-border text-studio-muted">
                           {test.category}
                         </span>
                       </div>
@@ -418,7 +419,7 @@ export function DiagnosticsDoctor({
               onClick={() => {
                 diagnosticChannel.recordFrameDrop('Flight Doctor simulated GPU hardware frame drop probe');
               }}
-              className="px-2.5 py-1 rounded-lg bg-[#FBBF24]/12 hover:bg-[#FBBF24]/25 text-[#FCD34D] text-[11px] font-medium border border-[#FBBF24]/30 transition-colors"
+              className="ss-btn px-2.5 py-1.5 bg-[#FBBF24]/12 hover:bg-[#FBBF24]/22 text-[#FCD34D] text-[11px] font-medium border border-[#FBBF24]/30"
               title="Test the visual triage and recovery flow"
             >
               Simulate Drop

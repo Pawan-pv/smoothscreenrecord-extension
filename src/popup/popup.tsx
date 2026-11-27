@@ -217,7 +217,8 @@ export function PopupApp() {
         <button
           onClick={handleOpenStudio}
           title="Open Studio Workspace"
-          className="ss-btn p-1.5 text-studio-muted hover:text-studio-text"
+          aria-label="Open Studio Workspace"
+          className="ss-btn p-1.5 rounded-lg border border-transparent text-studio-muted hover:text-studio-text hover:bg-studio-cardHover hover:border-studio-border"
         >
           <ExternalLink className="w-4 h-4" strokeWidth={1.75} />
         </button>
@@ -317,8 +318,8 @@ export function PopupApp() {
           <span className="ss-status-badge text-studio-success border-[#34D399]/30 bg-[#34D399]/10">$0 Leak</span>
         </div>
 
-        <div className="space-y-1 text-[11px]">
-          <label className="flex items-center justify-between text-[#CBD5E1] hover:text-studio-text cursor-pointer py-1">
+        <div className="space-y-0.5 text-[11px]">
+          <label className="flex items-center justify-between text-[#CBD5E1] hover:text-studio-text hover:bg-white/[0.03] px-2 -mx-2 rounded-lg cursor-pointer py-1.5 transition-colors">
             <span>Auto-Blur Emails</span>
             <input
               type="checkbox"
@@ -328,7 +329,7 @@ export function PopupApp() {
             />
           </label>
 
-          <label className="flex items-center justify-between text-[#CBD5E1] hover:text-studio-text cursor-pointer py-1">
+          <label className="flex items-center justify-between text-[#CBD5E1] hover:text-studio-text hover:bg-white/[0.03] px-2 -mx-2 rounded-lg cursor-pointer py-1.5 transition-colors">
             <span>Auto-Blur Revenue & Numbers</span>
             <input
               type="checkbox"
@@ -338,7 +339,7 @@ export function PopupApp() {
             />
           </label>
 
-          <label className="flex items-center justify-between text-[#CBD5E1] hover:text-studio-text cursor-pointer py-1">
+          <label className="flex items-center justify-between text-[#CBD5E1] hover:text-studio-text hover:bg-white/[0.03] px-2 -mx-2 rounded-lg cursor-pointer py-1.5 transition-colors">
             <span>Auto-Blur API Keys & Secrets</span>
             <input
               type="checkbox"
@@ -353,7 +354,7 @@ export function PopupApp() {
           onClick={handleTogglePicker}
           className={`ss-btn w-full py-2 mt-1 ${
             pickerActive
-              ? 'border border-[#818CF8] bg-[#6366F1]/18 text-[#C7D2FE]'
+              ? 'ss-chip-active'
               : 'ss-btn-secondary'
           }`}
         >
@@ -363,11 +364,11 @@ export function PopupApp() {
       </div>
 
       {/* Footer Info */}
-      <div className="flex items-center justify-between gap-2 whitespace-nowrap text-[9px] tracking-tight text-studio-meta px-1">
+      <div className="flex items-center justify-between gap-2 whitespace-nowrap text-[10px] tracking-tight text-studio-meta px-1">
         <span className="ss-num shrink-0">Hardware 60fps · $0 Server Cost</span>
         <button
           onClick={handleOpenStudio}
-          className="ss-btn p-0 shrink-0 text-[#818CF8] hover:text-[#A5B4FC] underline underline-offset-2 transition-colors"
+          className="ss-btn p-0 shrink-0 text-[10px] text-[#93C5FD] hover:text-[#DBEAFE] underline underline-offset-2"
         >
           Open Studio Workspace →
         </button>
